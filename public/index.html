@@ -2462,6 +2462,18 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* permissions --------------------------------------------------------- */
+  .level-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
+  .level-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 12px; cursor: pointer; }
+  .level-opt:has(input:checked) { border-color: var(--accent, #8b7cf6); background: var(--panel-2); }
+  .level-opt input { margin-top: 3px; }
+  .level-opt b { display: block; font-weight: 600; }
+  .level-opt small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .deny-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .deny-item { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border: 1px solid var(--border-soft); border-radius: 8px; }
+  .deny-add { display: flex; gap: 8px; }
+  .deny-add .field { flex: 1; margin: 0; }
+
   /* @mention picker --------------------------------------------------- */
   .composer { position: relative; }
   .mention-pop { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; min-width: 220px; max-width: 320px; max-height: 260px; overflow: auto; }
@@ -2730,7 +2742,7 @@
   <div class="settings-body">
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
-      <button class="setnav" type="button" data-set-target="sec-run">运行方式</button>
+      <button class="setnav" type="button" data-set-target="sec-run">权限</button>
       <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
       <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
       <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
@@ -2817,12 +2829,25 @@
       </section>
 
       <section class="dsec" id="sec-run">
-        <div class="dsec-head">运行方式</div>
-        <label class="switch-row" for="auto-approve-all">
-          <input type="checkbox" id="auto-approve-all" />
-          <span>完全自主，不再逐条询问</span>
-        </label>
-        <div class="row-note" id="policy-note">关着的时候，删数据、发消息、写工作区外这类动作会停下来等你点确认。打开后它自己决定，所有决定仍会记录；命中危险命令黑名单（例如 rm -rf）的仍然会问你。</div>
+        <div class="dsec-head">权限</div>
+        <div class="row-note" id="policy-note">这台机器上，机器人做事前要不要先问你。每台机器单独设置。</div>
+        <div class="level-list" id="level-list" role="radiogroup" aria-label="审批级别">
+          <label class="level-opt"><input type="radio" name="approval-level" value="careful" />
+            <span><b>谨慎</b><small>删文件、执行命令、发消息、改设置等有影响的操作，每次都先问我（所有机器人一样）。</small></span></label>
+          <label class="level-opt"><input type="radio" name="approval-level" value="standard" />
+            <span><b>标准</b><small>高风险操作先问我；常规操作信任的机器人（如助理）可以直接做。</small></span></label>
+          <label class="level-opt"><input type="radio" name="approval-level" value="auto" />
+            <span><b>放手</b><small>都让机器人自己做，只有危险命令还会问我。适合专门给机器人用的电脑。</small></span></label>
+        </div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">禁止的命令</div>
+        <div class="row-note" id="deny-builtin-note">内置的危险命令始终会拦下：删除整个系统、格式化磁盘、关机、改密码、把桌面暴露到网络等。</div>
+        <div class="deny-list" id="deny-list"></div>
+        <div class="deny-add">
+          <input class="field" id="deny-input" placeholder="再加一条，比如 git push 或 docker rm" autocomplete="off" spellcheck="false" />
+          <button class="btn" id="deny-add-btn" type="button">添加</button>
+        </div>
+        <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
+        <input type="checkbox" id="auto-approve-all" hidden />
       </section>
 
       <section class="dsec" id="sec-machines">
@@ -7296,28 +7321,46 @@ function closeSettings() {
 /* Autonomy switch: does this installation ask before high-risk actions? */
 async function loadPolicy() {
   const policy = await api('/api/policy');
+  renderPolicy(policy);
+}
+
+function renderPolicy(policy) {
   state.policy = policy;
+  const level = policy?.level || (policy?.autoApproveAll ? 'auto' : 'standard');
+  document.querySelectorAll('input[name="approval-level"]').forEach((r) => { r.checked = r.value === level; });
   const box = $('auto-approve-all');
-  if (box) box.checked = Boolean(policy && policy.autoApproveAll);
-  // A remote machine is the assistant's own: autonomy is its default.
-  if ($('policy-note') && policy?.mode === 'remote') {
-    $('policy-note').textContent = '这是一台远程机器，默认完全自主：助手可以用 sudo、装软件，不再逐条问你。只有会让机器失联或数据全毁的操作（例如格式化磁盘、关机、停掉 SSH）仍然会问。';
+  if (box) box.checked = level === 'auto';
+  if ($('policy-note')) {
+    $('policy-note').textContent = policy?.mode === 'remote'
+      ? '这是一台远程机器，默认「放手」：机器人可以装软件、用 sudo，不用逐条问你。'
+      : '这台电脑上，机器人做事前要不要先问你。每台机器单独设置。';
+  }
+  const list = $('deny-list');
+  if (list) {
+    list.innerHTML = '';
+    for (const item of policy?.extraDeny || []) {
+      const row = el('div', 'deny-item');
+      row.appendChild(el('code', '', item.text));
+      const x = el('button', 'att-x', '移除');
+      x.type = 'button';
+      x.addEventListener('click', () => savePolicy({ removeDeny: item.id }, '已移除'));
+      row.appendChild(x);
+      list.appendChild(row);
+    }
   }
 }
 
-async function savePolicy(next) {
-  const box = $('auto-approve-all');
-  if (box) box.disabled = true;
+async function savePolicy(next, okText = '') {
   try {
     const saved = await api('/api/policy', { method: 'PUT', body: next });
-    state.policy = saved;
-    if (box) box.checked = Boolean(saved.autoApproveAll);
-    toast(saved.autoApproveAll ? '完全自主已开启：不再询问审批' : '已恢复审批确认');
+    renderPolicy(saved);
+    const names = { careful: '谨慎', standard: '标准', auto: '放手' };
+    toast(okText || (next.level ? `已改为「${names[saved.level] || saved.level}」` : '已保存'));
+    return saved;
   } catch (err) {
-    if (box) box.checked = !next.autoApproveAll;
     toast(`保存失败：${err.message}`, true);
-  } finally {
-    if (box) box.disabled = false;
+    loadPolicy().catch(() => {});
+    return null;
   }
 }
 
@@ -8406,9 +8449,17 @@ function wireChrome() {
     if ($('vnc-modal')?.classList.contains('open')) { closeMachineModal(); return; }
     if (document.body.classList.contains('panel-max')) togglePanelMax(false);
   });
-  $('auto-approve-all').addEventListener('change', (event) => {
-    savePolicy({ autoApproveAll: Boolean(event.target.checked) });
+  document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
+    radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
+  const addDeny = () => {
+    const input = $('deny-input');
+    const text = input.value.trim();
+    if (!text) return;
+    savePolicy({ addDeny: text }, `已添加：${text}`).then((saved) => { if (saved) input.value = ''; });
+  };
+  $('deny-add-btn')?.addEventListener('click', addDeny);
+  $('deny-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDeny(); } });
   $('panel-toggle').addEventListener('click', () => {
     state.panelOpen = !state.panelOpen;
     try { localStorage.setItem('desk.panelOpen', state.panelOpen ? '1' : '0'); } catch { /* private mode */ }

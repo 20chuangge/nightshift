@@ -52,7 +52,7 @@ import {
 } from './bots.mjs';
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
-import { ApprovalQueue, effectivePolicy } from './approvals.mjs';
+import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern } from './approvals.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
 import * as memory from './memory.mjs';
@@ -1319,29 +1319,51 @@ route('GET', /^\/api\/computer\/screenshot$/, async (_req, res) => {
 
 // --- policy ----------------------------------------------------------------
 
-route('GET', /^\/api\/policy$/, async (_req, _res, { state }) => ({
-  // autoApproveAll is what applies on THIS machine (remote: on by default).
-  mode: effectivePolicy(state.config.policy).mode,
-  autoApproveAll: effectivePolicy(state.config.policy).autonomous,
-  autoApproveMedium: Boolean(state.config.policy?.autoApproveMedium),
-  denyPatterns: state.config.policy?.denyPatterns?.length || 0,
-}));
+//   GET /api/policy -> {mode, level, autoApproveAll, builtinDeny:n, extraDeny:[{id,text}]}
+//   PUT /api/policy {level?} | {addDeny: "git push"} | {removeDeny: id} | {autoApproveAll} (older clients)
+
+function publicPolicy(policy) {
+  const eff = effectivePolicy(policy);
+  return {
+    mode: eff.mode,
+    level: eff.level,
+    // kept for older clients and the machine checks
+    autoApproveAll: eff.autonomous,
+    autoApproveMedium: Boolean(policy?.autoApproveMedium),
+    builtinDeny: eff.builtinDeny.length,
+    extraDeny: eff.extraDeny.map((e) => ({ id: e.id, text: e.text })),
+    denyPatterns: eff.denyPatterns.length,
+  };
+}
+
+route('GET', /^\/api\/policy$/, async (_req, _res, { state }) => publicPolicy(state.config.policy));
 
 route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   const next = { ...(state.config.policy || {}) };
+  if (body?.level !== undefined) {
+    if (!APPROVAL_LEVELS.includes(body.level)) throw httpError(400, 'BAD_LEVEL', `level must be one of ${APPROVAL_LEVELS.join(', ')}`);
+    next.level = body.level;
+  }
   if (typeof body?.autoApproveAll === 'boolean') {
+    next.level = body.autoApproveAll ? 'auto' : 'standard';
     if (effectivePolicy(next).mode === 'remote') next.remoteAutonomy = body.autoApproveAll;
     else next.autoApproveAll = body.autoApproveAll;
   }
   if (typeof body?.autoApproveMedium === 'boolean') next.autoApproveMedium = body.autoApproveMedium;
+  if (body?.addDeny !== undefined) {
+    const text = String(body.addDeny || '').trim().slice(0, 80);
+    const pattern = phraseToPattern(text);
+    if (!pattern) throw httpError(400, 'BAD_DENY', '填一个命令或词，比如 git push');
+    next.extraDeny = [...(next.extraDeny || []).filter((e) => e.text !== text), { id: uid('deny'), text, pattern }];
+  }
+  if (body?.removeDeny !== undefined) {
+    next.extraDeny = (next.extraDeny || []).filter((e) => e.id !== body.removeDeny);
+  }
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
-  state.bus.emit({ type: 'policy.changed', autoApproveAll: Boolean(next.autoApproveAll) });
-  return {
-    mode: effectivePolicy(next).mode,
-    autoApproveAll: effectivePolicy(next).autonomous,
-    autoApproveMedium: Boolean(next.autoApproveMedium),
-  };
+  const pub = publicPolicy(next);
+  state.bus.emit({ type: 'policy.changed', autoApproveAll: pub.autoApproveAll, level: pub.level });
+  return pub;
 });
 
 // --- approvals -------------------------------------------------------------

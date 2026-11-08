@@ -90,6 +90,21 @@ export const REMOTE_DENY_PATTERNS = [
   '\\bnetsh\\s+advfirewall\\b.*\\bblock',
 ];
 
+/**
+ * Approval levels a human picks per machine:
+ *   careful  - every medium and high risk action asks, for every bot
+ *   standard - high risk asks; medium asks unless the bot is trusted (today's default)
+ *   auto     - everything runs; only the danger list still asks
+ */
+export const APPROVAL_LEVELS = ['careful', 'standard', 'auto'];
+
+/** A plain phrase the human typed ("git push") as a whole-word pattern. */
+export function phraseToPattern(text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!words.length) return '';
+  return `(?:^|[^\\w-])${words.join('\\s+')}(?![\\w-])`;
+}
+
 /** 'remote' on a machine set up by hub/setup-linux.sh, 'local' otherwise. */
 export function machineMode() {
   return process.env.DESK_MACHINE_MODE === 'remote' ? 'remote' : 'local';
@@ -103,12 +118,22 @@ export function machineMode() {
 export function effectivePolicy(configPolicy = {}) {
   const mode = machineMode();
   const remote = mode === 'remote';
+  // Older configs only had the on/off switch: map it onto the levels.
+  const legacyAuto = remote ? configPolicy.remoteAutonomy !== false : Boolean(configPolicy.autoApproveAll);
+  const level = APPROVAL_LEVELS.includes(configPolicy.level) ? configPolicy.level : (legacyAuto ? 'auto' : 'standard');
+  const builtin = remote
+    ? REMOTE_DENY_PATTERNS
+    : (configPolicy.denyPatterns?.length ? configPolicy.denyPatterns : DEFAULT_DENY_PATTERNS);
+  // The human's own additions never replace the built-in floor.
+  const extra = (configPolicy.extraDeny || []).map((e) => e?.pattern).filter(Boolean);
   return {
     mode,
-    autonomous: remote ? configPolicy.remoteAutonomy !== false : Boolean(configPolicy.autoApproveAll),
-    denyPatterns: remote
-      ? REMOTE_DENY_PATTERNS
-      : (configPolicy.denyPatterns?.length ? configPolicy.denyPatterns : DEFAULT_DENY_PATTERNS),
+    level,
+    autonomous: level === 'auto',
+    careful: level === 'careful',
+    builtinDeny: builtin,
+    extraDeny: configPolicy.extraDeny || [],
+    denyPatterns: [...builtin, ...extra],
   };
 }
 

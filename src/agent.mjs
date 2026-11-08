@@ -757,9 +757,10 @@ export class AgentRuntime {
     const verdict = classify(name, args, {
       baseRisk: riskInfo.risk,
       granted,
-      autoApproveMedium: Boolean(bot.policy?.autoApproveMedium) || machine.autonomous,
+      // "careful" means every bot asks, including a trusted one.
+      autoApproveMedium: machine.careful ? false : (Boolean(bot.policy?.autoApproveMedium) || machine.autonomous),
       autoApproveAll: machine.autonomous,
-      denyPatterns: bot.policy?.denyPatterns?.length ? bot.policy.denyPatterns : machine.denyPatterns,
+      denyPatterns: bot.policy?.denyPatterns?.length ? [...bot.policy.denyPatterns, ...machine.extraDeny.map((e) => e.pattern)] : machine.denyPatterns,
       extraRiskReason: riskInfo.reason || '',
       unattended: ctx.unattended,
     });

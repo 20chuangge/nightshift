@@ -2729,6 +2729,36 @@ main().catch(async (err) => {
 });
 
 async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
+  // Approval levels and the human's own blocked words.
+  {
+    const ap = await import('../src/approvals.mjs');
+    const lvl = (policy) => ap.effectivePolicy(policy);
+    check('levels: old configs map onto standard / auto', lvl({}).level === 'standard' && lvl({ autoApproveAll: true }).level === 'auto' && lvl({ level: 'careful', autoApproveAll: true }).level === 'careful');
+    const decide = (level, risk, trusted = false, cmd = 'ls', extra = []) => {
+      const m = ap.effectivePolicy({ level, extraDeny: extra });
+      return ap.classify('shell', { command: cmd }, {
+        baseRisk: risk,
+        autoApproveMedium: m.careful ? false : (trusted || m.autonomous),
+        autoApproveAll: m.autonomous,
+        denyPatterns: m.denyPatterns,
+      }).decision;
+    };
+    check('levels: careful asks even for a trusted bot', decide('careful', 'MEDIUM', true) === 'ask' && decide('careful', 'HIGH') === 'ask');
+    check('levels: standard lets a trusted bot do routine work, asks for high risk', decide('standard', 'MEDIUM', true) === 'auto' && decide('standard', 'MEDIUM', false) === 'ask' && decide('standard', 'HIGH') === 'ask');
+    check('levels: hands-off runs high risk but the danger list still asks', decide('auto', 'HIGH') === 'auto' && decide('auto', 'MEDIUM', false, 'rm -rf /') === 'ask');
+    const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
+    check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
+  }
+  {
+    const get = await api('/api/policy');
+    const set = await api('/api/policy', { method: 'PUT', body: { level: 'careful' } });
+    const add = await api('/api/policy', { method: 'PUT', body: { addDeny: 'git push' } });
+    const id = add.json?.extraDeny?.[0]?.id;
+    const del = await api('/api/policy', { method: 'PUT', body: { removeDeny: id } });
+    const bad = await api('/api/policy', { method: 'PUT', body: { level: 'yolo' } });
+    await api('/api/policy', { method: 'PUT', body: { level: 'standard' } });
+    check('policy API: level, add and remove a blocked word, bad level refused', get.status === 200 && set.json?.level === 'careful' && add.json?.extraDeny?.[0]?.text === 'git push' && del.json?.extraDeny?.length === 0 && bad.status === 400);
+  }
   const registry = toolsMod.createRegistry({
     workspaceDir: path.join(home, 'workspace'),
     config: {},
