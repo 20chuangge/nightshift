@@ -2492,6 +2492,9 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* other models ------------------------------------------------------ */
+  .models-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+
   /* vault ------------------------------------------------------------- */
   .vault-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
   .vault-row { border: 1px solid var(--border-soft); border-radius: 12px; padding: 9px 11px; }
@@ -2870,6 +2873,31 @@
           <button class="btn" id="model-sync" type="button" style="margin-top:10px">同步到所有机器</button>
           <div class="row-note" id="model-sync-note" hidden></div>
         </div>
+        <div class="voice-set" id="models-set">
+          <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">其他模型</div>
+          <div class="row-note">上面是这台机器的默认模型。在这里再加几个，就能在每个助手的设置里给它单独选一个：简单的活用便宜的，难的用强的。没选的助手用默认模型。</div>
+          <div class="models-list" id="models-list"></div>
+          <details class="vault-add" id="models-add">
+            <summary>添加一个模型</summary>
+            <label class="lbl" for="mp-provider">服务商</label>
+            <select class="field" id="mp-provider"></select>
+            <label class="lbl" for="mp-model">模型</label>
+            <input class="field" id="mp-model" autocomplete="off" spellcheck="false" list="mp-suggestions" />
+            <datalist id="mp-suggestions"></datalist>
+            <label class="lbl" for="mp-baseurl">接口地址</label>
+            <input class="field" id="mp-baseurl" autocomplete="off" spellcheck="false" inputmode="url" />
+            <label class="lbl" for="mp-label">名字（可不填）</label>
+            <input class="field" id="mp-label" maxlength="40" autocomplete="off" placeholder="比如：便宜的 / 推理强的" />
+            <label class="lbl" for="mp-apikey">API 密钥</label>
+            <input class="field" id="mp-apikey" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-…" />
+            <div class="row-note">和默认模型是同一个服务商时，密钥可以不填，会用默认模型的密钥。</div>
+            <div class="btn-row">
+              <button class="btn primary" id="mp-save" type="button">保存</button>
+              <button class="btn" id="mp-test" type="button">测试连接</button>
+            </div>
+            <div class="row-note" id="mp-note" hidden></div>
+          </details>
+        </div>
         <div class="voice-set" id="voice-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">语音输入</div>
           <div class="row-note" id="voice-state">正在读取…</div>
@@ -3184,6 +3212,9 @@
     <input class="field" id="botedit-name-input" autocomplete="off" maxlength="40" />
     <label class="form-label" for="botedit-role-input" style="margin-top:12px">职责</label>
     <input class="field" id="botedit-role-input" autocomplete="off" maxlength="160" placeholder="这个 Bot 负责什么" />
+    <label class="form-label" for="botedit-model" style="margin-top:12px">模型</label>
+    <select class="field" id="botedit-model"></select>
+    <div class="row-note" id="botedit-model-note">想要更多选择：设置 → 模型 → 其他模型。</div>
     <label class="lbl">它能做什么</label>
     <div class="ability-list" id="botedit-abilities"></div>
     <label class="switch-row ability-trust" for="botedit-trust">
@@ -4398,6 +4429,7 @@ function openBotEdit(botId, options = {}) {
   $('botedit-title').textContent = `管理助手 · ${bot.name}`;
   $('botedit-name-input').value = bot.name || '';
   $('botedit-role-input').value = bot.role || '';
+  renderBotModelSelect(bot);
   renderAbilities(bot);
   $('botedit-note').hidden = true;
   const preview = $('botedit-preview');
@@ -4441,8 +4473,9 @@ async function saveBotEdit() {
   try {
     const tools = toolsFromAbilities(bot);
     const policy = { autoApproveMedium: $('botedit-trust').checked };
-    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy } });
-    const updated = (res && res.bot) || { ...bot, name, role, tools, policy: { ...(bot.policy || {}), ...policy } };
+    const model = $('botedit-model')?.value || '';
+    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy, model } });
+    const updated = (res && res.bot) || { ...bot, name, role, tools, model, policy: { ...(bot.policy || {}), ...policy } };
     const index = state.bots.findIndex((b) => b.id === bot.id);
     if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
     renderBots();
@@ -7404,6 +7437,7 @@ function renderProviderHints(provider) {
 }
 
 function renderSettingsForm() {
+  fillModelPreset().catch(() => {});
   const m = (state.settings && state.settings.model) || {};
   const cfg = (state.config && state.config.model) || {};
 
@@ -7524,6 +7558,7 @@ function openSettings(section) {
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
   loadVault().catch(() => {});
+  loadModels().catch(() => {});
   closeSidebar();
   closePanel();
   state.settingsOpen = true;
@@ -7762,6 +7797,142 @@ async function finishTakeover() {
   const input = $('composer');
   input.value = '我弄好了，继续';
   await send();
+}
+
+/* --- other models (Settings > 模型, and each bot's model) ----------------------- */
+state.models = null;
+
+async function loadModels() {
+  try { state.models = await api('/api/models'); } catch { state.models = state.models || { default: null, models: [] }; }
+  renderModels();
+  return state.models;
+}
+
+function defaultModelLabel() {
+  const d = state.models?.default || state.settings?.model;
+  return d && d.model ? `默认（${d.model}）` : '默认';
+}
+
+function providerLabel(name) {
+  return (state.providers || []).find((p) => p.name === name)?.label || name;
+}
+
+/** The bot's model picker: default, then every extra model. */
+function renderBotModelSelect(bot) {
+  const select = $('botedit-model');
+  if (!select) return;
+  const fill = () => {
+    const list = state.models?.models || [];
+    select.innerHTML = `<option value="">${escapeHtml(defaultModelLabel())}</option>`
+      + list.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(`${m.label} · ${providerLabel(m.provider)}${m.hasKey ? '' : '（缺密钥）'}`)}</option>`).join('');
+    const known = !bot.model || list.some((m) => m.id === bot.model);
+    select.value = known ? (bot.model || '') : '';
+    $('botedit-model-note').textContent = !known
+      ? '它原来的模型已被删除，现在用默认模型。'
+      : list.length ? '没选的话用这台机器的默认模型。' : '想要更多选择：设置 → 模型 → 其他模型。';
+  };
+  fill();
+  Promise.all([ensureProviderOptions(), loadModels()]).then(fill).catch(() => {});
+}
+
+function renderModels() {
+  const box = $('models-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = state.models?.models || [];
+  if (!list.length) { box.appendChild(el('div', 'row-note', '还没有其他模型。')); return; }
+  for (const m of list) {
+    const users = state.bots.filter((b) => b.model === m.id).map((b) => b.name);
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', m.label));
+    title.appendChild(el('small', '', [providerLabel(m.provider), m.model, m.hasKey ? '' : '缺密钥', users.length ? `在用：${users.join('、')}` : ''].filter(Boolean).join(' · ')));
+    head.appendChild(title);
+    const key = el('button', 'btn tiny', '换密钥');
+    key.type = 'button';
+    const del = el('button', 'btn tiny danger', '删除');
+    del.type = 'button';
+    head.appendChild(key);
+    head.appendChild(del);
+    row.appendChild(head);
+    const form = el('div', 'vault-edit');
+    form.hidden = true;
+    const input = document.createElement('input');
+    input.className = 'field';
+    input.type = 'password';
+    input.autocomplete = 'new-password';
+    input.placeholder = '新的 API 密钥';
+    const save = el('button', 'btn primary tiny', '保存');
+    save.type = 'button';
+    save.addEventListener('click', async () => {
+      if (!input.value.trim()) return;
+      try { await api(`/api/models/${encodeURIComponent(m.id)}`, { method: 'PUT', body: { apiKey: input.value } }); toast('密钥已更新'); loadModels(); } catch (err) { toast(`保存失败：${err.message}`, true); }
+    });
+    form.appendChild(input);
+    form.appendChild(save);
+    row.appendChild(form);
+    key.addEventListener('click', () => { form.hidden = !form.hidden; });
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = users.length ? '再点一次（在用的助手会改回默认）' : '再点一次删除'; return; }
+      try { await api(`/api/models/${encodeURIComponent(m.id)}`, { method: 'DELETE' }); toast(`已删除「${m.label}」`); loadModels(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+    });
+    box.appendChild(row);
+  }
+}
+
+/** Provider picked in "添加一个模型": suggest its models and address. */
+async function fillModelPreset(changed = false) {
+  await ensureProviderOptions();
+  const select = $('mp-provider');
+  if (!select) return;
+  if (!select.options.length) {
+    select.innerHTML = (state.providers || []).filter((p) => p.name !== 'mock')
+      .map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.label)}</option>`).join('');
+  }
+  const preset = (state.providers || []).find((p) => p.name === select.value);
+  if (!preset) return;
+  $('mp-suggestions').innerHTML = (preset.models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+  if (changed || !$('mp-baseurl').value) $('mp-baseurl').value = preset.baseUrl || '';
+  if (changed || !$('mp-model').value) $('mp-model').value = (preset.models || [])[0] || '';
+}
+
+function newModelBody() {
+  return {
+    provider: $('mp-provider').value,
+    model: $('mp-model').value.trim(),
+    baseUrl: $('mp-baseurl').value.trim(),
+    label: $('mp-label').value.trim(),
+    apiKey: $('mp-apikey').value,
+  };
+}
+
+function modelNote(text, bad = false) {
+  const note = $('mp-note');
+  note.hidden = !text;
+  note.textContent = text;
+  note.style.color = bad ? 'var(--red)' : '';
+}
+
+async function testNewModel() {
+  modelNote('正在测试…');
+  try {
+    const r = await api('/api/models/test', { method: 'POST', body: newModelBody() });
+    modelNote(r.ok ? `连接正常（${r.latencyMs} ms）` : `连接失败：${r.error?.message || '未知原因'}`, !r.ok);
+  } catch (err) { modelNote(`连接失败：${err.message}`, true); }
+}
+
+async function saveNewModel() {
+  const body = newModelBody();
+  if (!body.model) { modelNote('填上模型名', true); return; }
+  try {
+    const r = await api('/api/models', { method: 'POST', body });
+    ['mp-label', 'mp-apikey'].forEach((id) => { $(id).value = ''; });
+    modelNote('');
+    $('models-add').open = false;
+    toast(`已添加「${r.model.label}」，可以在助手设置里选它了`);
+    loadModels();
+  } catch (err) { modelNote(`保存失败：${err.message}`, true); }
 }
 
 /* --- vault (Settings > 保险箱, and the login card in chat) --------------------- */
@@ -9136,6 +9307,9 @@ function wireChrome() {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
+  $('mp-save')?.addEventListener('click', saveNewModel);
+  $('mp-test')?.addEventListener('click', testNewModel);
+  $('mp-provider')?.addEventListener('change', () => fillModelPreset(true));
   document.querySelectorAll('#audit-filters .chip-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       auditView = btn.dataset.view;

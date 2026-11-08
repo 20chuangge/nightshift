@@ -2764,6 +2764,28 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
   }
+  // A model per bot: extra models with their own keys; a bot without one (or
+  // whose model was deleted) uses the machine's default.
+  {
+    const KEY = 'sk-model-test-4471';
+    const made = await api('/api/models', { method: 'POST', body: { provider: 'deepseek', model: 'deepseek-reasoner', label: '推理', apiKey: KEY } });
+    const listed = await api('/api/models');
+    const id = made.json?.model?.id;
+    check('models: added with its own key; the key never comes back', made.status === 200 && id && made.json.model.hasKey && listed.json?.models?.some((m) => m.id === id) && !JSON.stringify(listed.json).includes(KEY) && !JSON.stringify(made.json).includes(KEY));
+    const bad = await api('/api/models', { method: 'POST', body: { provider: 'nope', model: 'x' } });
+    const mock = await api('/api/models', { method: 'POST', body: { provider: 'mock', model: 'x' } });
+    check('models: unknown or demo providers are refused', bad.status === 400 && mock.status === 400);
+    const patched = await api('/api/bots/chief', { method: 'PATCH', body: { model: id } });
+    const M = await import('../src/models.mjs');
+    const client = await M.modelForBot(patched.json?.bot);
+    check('models: a bot keeps its model and turns use it', patched.json?.bot?.model === id && client?.model === 'deepseek-reasoner' && client?.provider === 'deepseek');
+    check('models: no model of its own means the default', (await M.modelForBot({ model: '' })) === null);
+    const kept = await api(`/api/models/${id}`, { method: 'PUT', body: { label: '推理强', apiKey: '' } });
+    check('models: an update with an empty key keeps the key', kept.json?.model?.label === '推理强' && kept.json?.model?.hasKey);
+    const gone = await api(`/api/models/${id}`, { method: 'DELETE' });
+    check('models: deleting one sends its bots back to the default', gone.status === 200 && (await M.modelForBot({ model: id })) === null);
+    await api('/api/bots/chief', { method: 'PATCH', body: { model: '' } });
+  }
   // Vault: values go in, never come out of any route; encrypted on disk.
   {
     const fsx = await import('node:fs');

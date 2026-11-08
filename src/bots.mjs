@@ -325,6 +325,8 @@ function normalizeBot(raw, index) {
     // Tools the human took away: a later release's grant migration must not
     // hand them back.
     revokedTools: Array.isArray(raw.revokedTools) ? raw.revokedTools.map(String) : [],
+    // Its own model (an id from Settings → 模型), or '' for the machine's default.
+    model: String(raw.model || '').slice(0, 40),
     // Kept through edits: without it, renaming a built-in bot re-ran the
     // grant migration on the next start.
     ...(raw.seedGrantsVersion ? { seedGrantsVersion: Number(raw.seedGrantsVersion) } : {}),

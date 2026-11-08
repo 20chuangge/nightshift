@@ -68,6 +68,7 @@ import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
+import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
@@ -238,6 +239,9 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   await routines.load();
   routines.start();
+
+  // Each bot may talk to its own model (Settings → 模型 → 其他模型).
+  runtime.modelFor = (bot) => modelsModule.modelForBot(bot);
 
   const state = {
     config,
@@ -631,6 +635,49 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- extra models (a bot can use its own) -------------------------------------
+//   GET    /api/models           -> {default:{provider,model,...}, models:[{id,label,provider,baseUrl,model,hasKey}]}
+//   POST   /api/models           {label?, provider, baseUrl?, model, apiKey}
+//   PUT    /api/models/:id       same fields; empty apiKey keeps the old one
+//   DELETE /api/models/:id       bots using it go back to the default
+//   POST   /api/models/test      {id?} or {provider, baseUrl, model, apiKey}
+
+route('GET', /^\/api\/models$/, async (_req, _res, { state }) => ({
+  default: settingsModule.publicModel(state.settings, state.apiKey),
+  models: await modelsModule.publicProfiles(),
+}));
+
+route('POST', /^\/api\/models$/, async (_req, _res, { body }) => {
+  const model = await modelsModule.saveProfile({ ...body, id: undefined });
+  await audit({ kind: 'model.saved', id: model.id, provider: model.provider, model: model.model });
+  return { model };
+});
+
+route('POST', /^\/api\/models\/test$/, async (_req, _res, { body }) => {
+  const started = Date.now();
+  try {
+    const client = await modelsModule.testClient(body || {});
+    if (client.provider === 'mock') return { ok: false, error: { message: '没有密钥' } };
+    const r = await client.complete([{ role: 'user', content: 'Reply with the single word: ok' }], { maxTokens: 8, temperature: 0, timeoutMs: 20000 });
+    return { ok: true, latencyMs: Date.now() - started, reply: String(r?.content || '').slice(0, 80) };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - started, error: { message: err.message } };
+  }
+});
+
+route('PUT', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, body }) => {
+  const model = await modelsModule.saveProfile({ ...body, id: params.id });
+  await audit({ kind: 'model.saved', id: model.id, provider: model.provider, model: model.model });
+  return { model };
+});
+
+route('DELETE', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
+  const result = await modelsModule.deleteProfile(params.id);
+  await audit({ kind: 'model.deleted', id: params.id });
+  state.bus.emit({ type: 'roster.changed' });
+  return result;
+});
 
 // --- attention (sidebar status) ----------------------------------------------
 //   GET  /api/attention        -> {items:{"bot:<id>"|"group:<id>": {working, needsYou, unread}}, needsYou, unread, working}
@@ -1955,6 +2002,7 @@ function publicBot(bot) {
     tools: bot.tools,
     skills: bot.skills,
     policy: bot.policy,
+    model: bot.model || '',
     createdAt: bot.createdAt,
   };
 }

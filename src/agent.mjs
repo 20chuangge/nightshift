@@ -152,6 +152,11 @@ export class AgentRuntime {
     this.model = model;
   }
 
+  /** A bot's own model, when it has one that works; null means the default. */
+  async modelFor() {
+    return null;
+  }
+
 
   activeTurns() {
     return [...this.active.entries()].map(([turnId, info]) => ({ turnId, botId: info.botId }));
@@ -310,6 +315,7 @@ export class AgentRuntime {
     recordUser = true,
   }) {
     const bot = await this.bots.getBot(botId);
+    const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
 
     const groupContext = group?.id && this.groups ? group : null;
@@ -447,7 +453,7 @@ export class AgentRuntime {
 
         let response;
         try {
-          response = await this.model.complete(messages, {
+          response = await turnModel.complete(messages, {
             tools: this.registry.schemasFor(bot),
             signal: controller.signal,
             onDelta,
