@@ -146,6 +146,10 @@ foreach ($item in 'config', 'skills') {
 }
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir 'data'), (Join-Path $AppDir 'workspace') | Out-Null
+# Bump SETUP_VERSION when this script changes the system: a machine set up
+# with a lower number cannot take a code-only self-update.
+$SETUP_VERSION = 1
+Set-Content -Path (Join-Path $AppDir '.setup-version') -Value $SETUP_VERSION -Encoding ASCII
 
 # The browser the bots drive: Edge ships with Windows; Chrome if installed.
 $browser = @(

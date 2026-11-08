@@ -25,6 +25,10 @@
 # =============================================================================
 set -euo pipefail
 
+# Bump when this script changes the system (packages, service, users): a
+# machine set up with a lower number cannot take a code-only self-update.
+SETUP_VERSION=1
+
 PORT=4390
 PKG=""
 while [ $# -gt 0 ]; do
@@ -275,6 +279,8 @@ for item in config skills; do
 done
 rm -rf "$STAGE"
 mkdir -p "$APP_DIR/data" "$APP_DIR/workspace"
+printf '%s
+' "$SETUP_VERSION" > "$APP_DIR/.setup-version"
 chown -R "$RUN_USER:$RUN_GROUP" "$APP_DIR"
 has restorecon && restorecon -R "$APP_DIR" >/dev/null 2>&1 || true
 

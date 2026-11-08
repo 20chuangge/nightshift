@@ -64,6 +64,8 @@ import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesk
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
+import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
+import { packApp, cleanupPack } from './bundle.mjs';
 import {
   evaluateAuth,
   isAuthExemptPath,
@@ -494,6 +496,11 @@ route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
     requireAuth: Boolean(state.requireAuth),
     lanUrl: state.lanUrl,
     recoveredTurns: state.recoveredTurns.length,
+    // Self-update: what this machine was set up with, and what this build's
+    // scripts would install (a client compares them before pushing an update).
+    setupVersion: installedSetupVersion(),
+    shippedSetupVersion: shippedSetupVersion(),
+    selfUpdate: true,
   };
 });
 
@@ -710,6 +717,76 @@ route('GET', /^\/api\/remote\/provision\/(?<id>[^/]+)$/, async (_req, _res, { pa
   const job = state.provisioner.get(params.id);
   if (!job) throw httpError(404, 'PROVISION_NOT_FOUND', `no provisioning job "${params.id}"`);
   return job;
+});
+
+// --- self-update ------------------------------------------------------------
+//
+//   POST /api/system/update        raw .tar.gz (the same package setup installs)
+//        -> {ok, from, to, restarting}; then this process exits and its
+//           supervisor (systemd / the Windows launcher loop) starts the new code
+//   POST /api/remote/push-update   {url, cookie}  loopback only: this computer
+//        packs itself and updates that machine, then waits for the new version
+
+route(
+  'POST',
+  /^\/api\/system\/update$/,
+  async (req, _res, { state }) => {
+    if (state.runtime.activeTurns().length) {
+      throw httpError(409, 'UPDATE_BUSY', '这台机器上有任务正在进行，等它做完再更新');
+    }
+    const bytes = await readRawBody(req, UPDATE_MAX_BYTES, { code: 'UPDATE_TOO_LARGE', message: '更新包太大' });
+    const result = await applyUpdate({ bytes, currentVersion: VERSION, log: (line) => console.error(line) });
+    if (process.env.ASSIST_UPDATE_NO_EXIT !== '1') {
+      setTimeout(() => process.exit(0), 800).unref?.();
+    }
+    return { ok: true, ...result, restarting: true };
+  },
+  { rawBody: true },
+);
+
+route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
+  if (!isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can push updates');
+  const url = String(body?.url || '').replace(/\/+$/, '');
+  if (!/^https?:\/\/[^/]+$/.test(url)) throw httpError(400, 'BAD_URL', 'url must be a machine address like http://host:4390');
+  const headers = body?.cookie ? { cookie: String(body.cookie) } : {};
+  const health = async () => {
+    const res = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  };
+  const before = await health().catch((err) => { throw httpError(502, 'MACHINE_UNREACHABLE', `连不上这台机器：${err.message}`); });
+  if (compareVersions(before.version, VERSION) >= 0) return { ok: true, updated: false, version: before.version };
+  if (!before.selfUpdate) {
+    // Installed before self-update existed: one last manual add, automatic after that.
+    return { ok: false, needsSetup: true, version: before.version, message: `这台机器还是 ${before.version}，不支持自动更新：重新添加一次，以后就会自动更新了` };
+  }
+  if (shippedSetupVersion() > Number(before.setupVersion || 1)) {
+    return { ok: false, needsSetup: true, version: before.version, message: '这次更新需要改动系统组件，请重新添加一次这台机器' };
+  }
+  const packed = await packApp();
+  try {
+    const res = await fetch(`${url}/api/system/update`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION },
+      body: fs.readFileSync(packed.file),
+      signal: AbortSignal.timeout(180000),
+    });
+    const reply = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const code = reply?.error?.code;
+      return { ok: false, busy: code === 'UPDATE_BUSY', needsSetup: code === 'UPDATE_NEEDS_SETUP', version: before.version, message: reply?.error?.message || `HTTP ${res.status}` };
+    }
+  } finally {
+    cleanupPack(packed.file);
+  }
+  // It restarts on its own; wait until it answers with the new version.
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const now = await health().catch(() => null);
+    if (now && compareVersions(now.version, VERSION) >= 0) return { ok: true, updated: true, from: before.version, to: now.version };
+  }
+  return { ok: false, version: before.version, message: '新版本已经装上，但 90 秒内没有重新连上，稍后再看' };
 });
 
 // --- bots ------------------------------------------------------------------

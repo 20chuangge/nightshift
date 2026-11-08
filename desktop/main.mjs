@@ -519,6 +519,7 @@ async function switchTo(url, message = '') {
   } else {
     showWindow();
   }
+  if (target) setTimeout(() => autoUpdateMachine(readMachines().find((m) => m.url === target)), 3000);
   return { ok: true };
 }
 
@@ -754,6 +755,89 @@ ipcMain.handle('desk:local-provision', async (_event, { method = 'GET', path: ap
   }
 });
 
+// --- machines follow this app's version ------------------------------------
+// After the human installs a new Nightshift, every machine it set up is
+// brought to the same version on its own: this computer's hub packs itself
+// and the machine swaps its code in and restarts (see src/selfupdate.mjs).
+const updating = new Set();
+const updateChecked = new Set();
+
+function versionCmp(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function notifyPage(text, bad = false) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.executeJavaScript(`window.deskNotify && window.deskNotify(${JSON.stringify(text)}, ${bad})`).catch(() => {});
+}
+
+async function cookieHeaderFor(url) {
+  try {
+    const list = await session.defaultSession.cookies.get({ url });
+    return list.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    return '';
+  }
+}
+
+async function autoUpdateMachine(machine) {
+  const url = machine?.url;
+  if (!url || HUB_MODE || updating.has(url) || updateChecked.has(url)) return;
+  updating.add(url);
+  const name = machine.name || url.replace(/^https?:\/\//, '');
+  const mine = app.getVersion();
+  try {
+    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+    if (!res || !res.ok) return; // off or unpaired: look again next time
+    const health = await res.json();
+    updateChecked.add(url);
+    if (versionCmp(health.version, mine) >= 0) return;
+    if (!health.selfUpdate) {
+      notifyPage(L(`「${name}」还是 ${health.version}：重新添加一次这台机器就能更新到 ${mine}，之后会自动更新`, `"${name}" is still on ${health.version}: add it again once to update it to ${mine}; after that it updates on its own`), true);
+      return;
+    }
+    bootLog(`update ${url}: ${health.version} -> ${mine}`);
+    notifyPage(L(`正在把「${name}」更新到 ${mine}…`, `Updating "${name}" to ${mine}…`));
+    const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url, cookie: await cookieHeaderFor(url) }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (out.ok && out.updated) {
+      bootLog(`update ${url}: now ${out.to}`);
+      if (remoteHub === url && win && !win.isDestroyed()) {
+        win.webContents.reload();
+        setTimeout(() => notifyPage(L(`「${name}」已更新到 ${out.to}`, `"${name}" is now on ${out.to}`)), 3000);
+      } else {
+        notifyPage(L(`「${name}」已更新到 ${out.to}`, `"${name}" is now on ${out.to}`));
+      }
+    } else if (out.busy) {
+      // A bot is working there; try again in a few minutes.
+      updateChecked.delete(url);
+      setTimeout(() => autoUpdateMachine(machine), 5 * 60 * 1000);
+    } else {
+      const why = out.message || out.error?.message || L('未知原因', 'unknown reason');
+      bootLog(`update ${url} failed: ${why}`);
+      notifyPage(L(`「${name}」没能自动更新：${why}`, `Could not update "${name}": ${why}`), true);
+    }
+  } catch (err) {
+    bootLog(`update ${url} failed: ${err.message}`);
+  } finally {
+    updating.delete(url);
+  }
+}
+
+async function autoUpdateMachines() {
+  for (const machine of readMachines()) await autoUpdateMachine(machine);
+}
+
 /** PUT JSON to a hub with this app's pairing cookie. -> {ok, error} */
 async function putToMachine(url, apiPath, body) {
   try {
@@ -877,6 +961,7 @@ if (!gotLock) {
       }
       createWindowFor(DEV_URL || remoteHub || localUrl());
       createTray();
+      setTimeout(() => autoUpdateMachines().catch(() => {}), 8000);
     } catch (err) {
       dialog.showErrorBox(L('夜班启动失败', 'Nightshift failed to start'), String(err?.stack || err));
       app.quit();

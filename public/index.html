@@ -4288,12 +4288,16 @@ function hideToast() {
   node.className = 'toast';
 }
 
+/* The desktop app reports background work (machine updates) through here. */
+window.deskNotify = (text, isError = false) => toast(String(text || ''), Boolean(isError));
+
 function toast(text, isError = false) {
   const node = $('toast');
   node.textContent = text;
   node.className = `toast show${isError ? ' error' : ''}`;
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => { node.className = 'toast'; }, 3200);
+  // Longer messages stay up longer (up to 9 s) so they can be read.
+  toast._t = setTimeout(() => { node.className = 'toast'; }, Math.min(9000, Math.max(3200, String(text).length * 110)));
 }
 
 /* One fetch wrapper. Every failure is an Error with .status and .code. */
