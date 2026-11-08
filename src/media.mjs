@@ -203,16 +203,14 @@ export async function generateImages(service, { prompt, size = '1024x1024', coun
 // ---------------------------------------------------------------------------
 
 /**
- * -> {path, model, latencyMs}
+ * Start a video. -> {kind, baseUrl, model, taskId}; keep it to check later.
  * imageDataUrl: optional first frame (image-to-video) as a data: URL.
  */
-export async function generateVideo(service, { prompt, size = '1280x720', imageDataUrl = '' } = {}, { workspaceDir, fetchImpl = fetch, signal, pollMs = 5000, maxWaitMs = 15 * 60 * 1000, onProgress } = {}) {
+export async function submitVideo(service, { prompt, size = '1280x720', imageDataUrl = '' } = {}, { fetchImpl = fetch } = {}) {
   if (!service) throw mediaError(409, 'VIDEO_NOT_CONFIGURED', '还没有配置生视频：在「设置 → 模型 → 生视频」里选一个服务并填密钥（硅基流动的密钥就能用）');
   const text = String(prompt || '').trim();
   if (!text) throw mediaError(400, 'EMPTY_PROMPT', '要生成什么视频？prompt 是空的');
-  const started = Date.now();
   const base = trimUrl(service.baseUrl);
-  let check;
   if (service.kind === 'siliconflow') {
     const model = imageDataUrl && service.imageModel ? service.imageModel : service.model;
     const body = { model, prompt: text.slice(0, 2000), image_size: /^(1280x720|720x1280|960x960)$/.test(size) ? size : '1280x720' };
@@ -220,38 +218,55 @@ export async function generateVideo(service, { prompt, size = '1280x720', imageD
     const out = await callJson(`${base}/video/submit`, { apiKey: service.apiKey, body, fetchImpl });
     const id = out.requestId || out.request_id;
     if (!id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
-    check = async () => {
-      const s = await callJson(`${base}/video/status`, { apiKey: service.apiKey, body: { requestId: id }, fetchImpl });
-      const st = String(s.status || '').toLowerCase();
-      if (st === 'succeed' || st === 'succeeded') return { done: true, url: s.results?.videos?.[0]?.url };
-      if (st === 'failed') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.reason || '未知原因'}`);
-      return { done: false, status: st };
-    };
-  } else if (service.kind === 'ark') {
+    return { kind: 'siliconflow', baseUrl: base, model, taskId: String(id) };
+  }
+  if (service.kind === 'ark') {
     const content = [{ type: 'text', text: text.slice(0, 2000) }];
     if (imageDataUrl) content.push({ type: 'image_url', image_url: { url: imageDataUrl } });
     const out = await callJson(`${base}/contents/generations/tasks`, { apiKey: service.apiKey, body: { model: service.model, content }, fetchImpl });
     if (!out.id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
-    check = async () => {
-      const s = await callJson(`${base}/contents/generations/tasks/${encodeURIComponent(out.id)}`, { method: 'GET', apiKey: service.apiKey, fetchImpl });
-      const st = String(s.status || '').toLowerCase();
-      if (st === 'succeeded') return { done: true, url: s.content?.video_url };
-      if (st === 'failed' || st === 'cancelled') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.error?.message || st}`);
-      return { done: false, status: st };
-    };
-  } else {
-    throw mediaError(400, 'VIDEO_UNSUPPORTED', '这个服务不支持生成视频');
+    return { kind: 'ark', baseUrl: base, model: service.model, taskId: String(out.id) };
   }
+  throw mediaError(400, 'VIDEO_UNSUPPORTED', '这个服务不支持生成视频');
+}
+
+/** Ask once how a submitted video is doing. -> {done, url?, status} ; throws when it failed */
+export async function checkVideo(task, apiKey, { fetchImpl = fetch } = {}) {
+  if (task.kind === 'siliconflow') {
+    const s = await callJson(`${task.baseUrl}/video/status`, { apiKey, body: { requestId: task.taskId }, fetchImpl });
+    const st = String(s.status || '').toLowerCase();
+    if (st === 'succeed' || st === 'succeeded') return { done: true, url: s.results?.videos?.[0]?.url, status: st };
+    if (st === 'failed') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.reason || '未知原因'}`);
+    return { done: false, status: st };
+  }
+  const s = await callJson(`${task.baseUrl}/contents/generations/tasks/${encodeURIComponent(task.taskId)}`, { method: 'GET', apiKey, fetchImpl });
+  const st = String(s.status || '').toLowerCase();
+  if (st === 'succeeded') return { done: true, url: s.content?.video_url, status: st };
+  if (st === 'failed' || st === 'cancelled') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.error?.message || st}`);
+  return { done: false, status: st };
+}
+
+/** Download a finished video into the workspace. -> workspace-relative path */
+export async function saveVideo(url, { workspaceDir, fetchImpl = fetch } = {}) {
+  if (!url) throw mediaError(502, 'MEDIA_EMPTY', '生成服务没有返回视频地址');
+  return (await saveResult({ url }, { workspaceDir, folder: 'video', ext: '.mp4', fetchImpl })).path;
+}
+
+/** Submit and wait (tests, and anything that can afford to block). -> {path, model, latencyMs} */
+export async function generateVideo(service, opts = {}, { workspaceDir, fetchImpl = fetch, signal, pollMs = 5000, maxWaitMs = 15 * 60 * 1000, onProgress } = {}) {
+  const started = Date.now();
+  const task = await submitVideo(service, opts, { fetchImpl });
+  const check = () => checkVideo(task, service.apiKey, { fetchImpl });
   for (;;) {
     if (signal?.aborted) throw mediaError(499, 'CANCELLED', '已取消');
     if (Date.now() - started > maxWaitMs) throw mediaError(504, 'MEDIA_TIMEOUT', `视频 ${Math.round(maxWaitMs / 60000)} 分钟还没生成好`);
     await sleep(pollMs);
     const r = await check();
     if (r.done) {
-      if (!r.url) throw mediaError(502, 'MEDIA_EMPTY', '生成服务没有返回视频地址');
-      const saved = await saveResult({ url: r.url }, { workspaceDir, folder: 'video', ext: '.mp4', fetchImpl });
-      return { path: saved.path, model: service.model, latencyMs: Date.now() - started };
+      if (onProgress) onProgress('done', Date.now() - started);
+      const saved = await saveVideo(r.url, { workspaceDir, fetchImpl });
+      return { path: saved, model: task.model, latencyMs: Date.now() - started };
     }
-    if (onProgress) onProgress(r.status);
+    if (onProgress) onProgress(r.status, Date.now() - started);
   }
 }

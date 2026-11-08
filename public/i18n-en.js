@@ -1021,4 +1021,6 @@ window.DESK_I18N_EN = {
   "生成视频": "Generate a video",
   "想生成一段视频": "Wants to generate a video",
   "会调用生视频服务，按条计费，比图片贵；要等几分钟。": "Calls the video service, billed per clip (more than images); takes a few minutes.",
+  "后台任务：视频没有生成成功": "Background job: the video could not be made",
+  "后台任务：视频生成好了": "Background job: the video is ready",
 };

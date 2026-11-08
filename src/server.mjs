@@ -67,6 +67,7 @@ import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
+import { createVideoJobs } from './videojobs.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -187,6 +188,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     // Resolved at call time: settings, voice and vision keys can change live.
     getVision: () => (refs.getVision ? refs.getVision() : null),
     getMedia: (kind) => (refs.getMedia ? refs.getMedia(kind) : null),
+    getVideoJobs: () => refs.videoJobs || null,
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -283,6 +285,20 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   };
   refs.getVision = () => visionModule.resolveVision(state.vision, { settings: state.settings, chatKey: state.apiKey, voice: state.voice });
   refs.getMedia = (kind) => mediaModule.resolveMedia(state.media, kind, { voice: state.voice });
+
+  // Videos finish in the background; the bot that asked gets a turn to show it.
+  const tellBot = (job, text) => {
+    if (!job.botId) return;
+    runtime.runTurn({ botId: job.botId, text, source: 'media' }).catch((err) => console.error('[video] could not report:', err.message));
+  };
+  refs.videoJobs = createVideoJobs({
+    file: path.join(P.dataDir, 'video-jobs.json'),
+    getKey: () => refs.getMedia('video')?.apiKey || '',
+    workspaceDir,
+    onDone: (job) => tellBot(job, `[后台任务] 你之前提交的视频生成好了：${job.path}（内容：${job.prompt}）。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`),
+    onFail: (job) => tellBot(job, `[后台任务] 你之前提交的视频没有生成成功：${job.error}（内容：${job.prompt}）。告诉用户原因，问要不要重试。`),
+  });
+  await refs.videoJobs.load();
 
   // -------------------------------------------------------------------------
   // product-state callbacks used by the primary bot's settings/ui tools

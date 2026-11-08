@@ -414,6 +414,8 @@ export class AgentRuntime {
         unattended,
         depth,
         signal: controller.signal,
+        // Long tools (video) report what they are waiting for; the chat shows it.
+        progress: (text) => this.bus.emit({ type: 'tool.progress', ...baseEvent, text: String(text || '').slice(0, 120) }),
         memory: this.memory,
         skills: this.skills,
         bots: this.bots,

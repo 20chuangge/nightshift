@@ -5442,6 +5442,8 @@ function looksMarkdown(text) {
 function renderItem(item) {
   switch (item.role) {
     case 'user':
+      // A background job reporting back (video ready): a note, not something the human said.
+      if (item.source === 'media') return el('div', 'status-line', /没有生成成功/.test(item.text || '') ? '后台任务：视频没有生成成功' : '后台任务：视频生成好了');
       return userRow(item);
     case 'assistant':
       return assistantRow(item.text, { system: item.system });
@@ -6593,6 +6595,11 @@ function handleEvent(ev) {
   }
   if (ev.type === 'attention.changed') {
     loadAttention();
+    return;
+  }
+  if (ev.type === 'tool.progress') {
+    // "Video queued, waited 2 min": shown in the working line, not the activity feed.
+    if (chatKeyOf(ev) === currentChatKey()) showTyping(ev.botId || state.botId, ev.text || '正在处理…');
     return;
   }
   if (ev.type === 'tool.result' && isActionCard(ev.name) && ev.ok !== false) onActionRequest(ev);

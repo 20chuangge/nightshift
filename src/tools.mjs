@@ -19,7 +19,7 @@ import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
 import { describeImage, imageMime } from './vision.mjs';
-import { generateImages, generateVideo } from './media.mjs';
+import { generateImages, generateVideo, submitVideo } from './media.mjs';
 import { listVault, revealVault } from './vault.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -442,7 +442,7 @@ export function createRegistry(deps) {
   add({
     name: 'video_generate',
     description:
-      'Make a short video clip (about 5 seconds) from a description, optionally starting from a workspace image as the first frame. Takes 1-10 minutes; the mp4 is saved under generated/ and plays in the chat when you mention its path. Costs noticeably more than an image: make one clip unless asked for more.',
+      'Make a short video clip (about 5 seconds) from a description, optionally starting from a workspace image as the first frame. It is made in the background: this returns at once, you tell the human it is on its way (usually 3-15 minutes), and when it is ready you get a new turn with the mp4 path (under generated/) to show them. Costs noticeably more than an image: make one clip unless asked for more.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
@@ -463,7 +463,19 @@ export function createRegistry(deps) {
         if (!mime) throw toolError('IMAGE_BAD_TYPE', `${r.rel} is not an image`);
         try { imageDataUrl = `data:${mime};base64,${(await fsp.readFile(r.abs)).toString('base64')}`; } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
       }
+      const jobs = typeof deps.getVideoJobs === 'function' ? deps.getVideoJobs() : null;
       try {
+        if (jobs) {
+          // Background: a video can sit in the provider's queue for a long time.
+          const task = await submitVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl });
+          const job = await jobs.add({ botId: ctx.bot?.id, prompt: args?.prompt, task });
+          return {
+            submitted: true,
+            job: job.id,
+            model: task.model,
+            note: 'The video is being made in the background (usually 3-15 minutes, longer when the service is busy). Tell the human that now and end your turn; when it is ready you will get a new turn with the file path to show them.',
+          };
+        }
         const out = await generateVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl }, { workspaceDir: ctx.workspaceDir, signal: ctx.signal });
         return { path: out.path, model: out.model, seconds: Math.round(out.latencyMs / 1000), note: 'Mention the path in your reply so the human can play it.' };
       } catch (err) {

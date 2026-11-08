@@ -2794,11 +2794,37 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const oa = MD.resolveMedia({ image: { service: 'openai', apiKey: 'sk-own', baseUrl: '', model: '' } }, 'image', {});
     const img2 = await MD.generateImages(oa, { prompt: 'a cat', count: 2 }, { workspaceDir: ws, fetchImpl: fakeFetch });
     check('generation: OpenAI-shaped (base64) images, one call each', oa.source === 'own' && img2.paths.length === 2);
-    const vid = await MD.generateVideo(MD.resolveMedia({}, 'video', { voice: { apiKey: 'sk-voice' } }), { prompt: '海浪' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5 });
+    const progress = [];
+    const vid = await MD.generateVideo(MD.resolveMedia({}, 'video', { voice: { apiKey: 'sk-voice' } }), { prompt: '海浪' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5, onProgress: (s) => progress.push(s) });
     check('generation: SiliconFlow video is submitted, polled until done, saved as mp4', polls === 2 && /^generated\/.+\/video-.+\.mp4$/.test(vid.path) && fsx.existsSync(path.join(ws, vid.path)));
+    check('generation: a video reports its progress while it waits', progress.includes('inprogress') && progress.at(-1) === 'done');
     const ark = await MD.generateVideo(MD.resolveMedia({ video: { service: 'ark', apiKey: 'ark-key' } }, 'video', {}), { prompt: '海浪', imageDataUrl: 'data:image/png;base64,AA' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5 });
     const arkBody = calls.find((c) => c[1].endsWith('/contents/generations/tasks'))[2];
     check('generation: Ark Seedance task with a first frame', /\.mp4$/.test(ark.path) && arkBody.content.some((c) => c.type === 'image_url'));
+    // Background video jobs: survive a restart, report back when done or failed.
+    {
+      const { createVideoJobs } = await import('../src/videojobs.mjs');
+      const jobFile = path.join(ws, 'video-jobs.json');
+      const done = [];
+      const failed = [];
+      polls = 0;
+      const mk = () => createVideoJobs({ file: jobFile, getKey: () => 'sk-voice', workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 60000, onDone: (j) => done.push(j), onFail: (j) => failed.push(j) });
+      const first = mk();
+      await first.load();
+      const task = await MD.submitVideo(MD.resolveMedia({}, 'video', { voice: { apiKey: 'sk-voice' } }), { prompt: '海浪' }, { fetchImpl: fakeFetch });
+      await first.add({ botId: 'chief', prompt: '海浪', task });
+      const again = mk(); // a restart before it finished
+      await again.load();
+      await again.tick(); // InProgress
+      await again.tick(); // Succeed
+      check('video jobs: kept across a restart, then downloaded and reported to the bot that asked', done.length === 1 && done[0].botId === 'chief' && /\.mp4$/.test(done[0].path) && fsx.existsSync(path.join(ws, done[0].path)) && !JSON.stringify(fsx.readFileSync(jobFile, 'utf8')).includes('sk-voice'));
+      const badFetch = async (url, init) => (url.endsWith('/video/status') ? { ok: true, status: 200, headers: new Map(), text: async () => JSON.stringify({ status: 'Failed', reason: '内容不合规' }) } : fakeFetch(url, init));
+      const third = createVideoJobs({ file: path.join(ws, 'vj2.json'), getKey: () => 'k', workspaceDir: ws, fetchImpl: badFetch, pollMs: 60000, onFail: (j) => failed.push(j) });
+      await third.load();
+      await third.add({ botId: 'chief', prompt: 'x', task });
+      await third.tick();
+      check('video jobs: a failed video is reported with the reason', failed.length === 1 && /内容不合规/.test(failed[0].error));
+    }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }
     check('generation: not configured says where to set it up', none === 'IMAGE_NOT_CONFIGURED');
