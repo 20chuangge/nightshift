@@ -2790,6 +2790,24 @@
             <button class="btn tiny danger" id="voice-clear" type="button" hidden>清除语音密钥</button>
           </div>
         </div>
+        <div class="voice-set" id="vision-set">
+          <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">看图</div>
+          <div class="row-note">聊天模型（如 DeepSeek）只能读文字。这里配一个看图模型，Bot 就能看懂你发的图片和它自己的截图。</div>
+          <div class="row-note" id="vision-state">正在读取…</div>
+          <label class="lbl" for="vision-provider">看图服务</label>
+          <select class="field" id="vision-provider"></select>
+          <label class="lbl" for="vision-baseurl">接口地址</label>
+          <input class="field" id="vision-baseurl" autocomplete="off" spellcheck="false" inputmode="url" />
+          <label class="lbl" for="vision-model">模型</label>
+          <input class="field" id="vision-model" autocomplete="off" spellcheck="false" />
+          <label class="lbl" for="vision-apikey">API 密钥</label>
+          <input class="field" id="vision-apikey" type="password" placeholder="sk-…" autocomplete="new-password" spellcheck="false" />
+          <a class="row-note key-link" id="vision-keyurl" href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noreferrer">获取密钥</a>
+          <div class="btn-row">
+            <button class="btn" id="vision-save" type="button">保存看图设置</button>
+            <button class="btn tiny danger" id="vision-clear" type="button" hidden>清除看图密钥</button>
+          </div>
+        </div>
       </section>
 
       <section class="dsec" id="sec-run">
@@ -5288,6 +5306,74 @@ async function saveVoice(clear = false) {
   }
 }
 
+/* --- vision (image_view) settings ------------------------------------------ */
+const vision = { status: null, providers: [] };
+
+async function loadVision() {
+  const v = await api('/api/vision');
+  vision.status = v;
+  vision.providers = v.providers || [];
+  const note = $('vision-state');
+  if (!note) return v;
+  note.textContent = !v.available
+    ? '还不能用：选一个看图服务并填密钥（硅基流动的密钥就行）。'
+    : v.source === 'own' ? `已可用：${v.model}。`
+      : v.source === 'voice' ? `已可用：沿用语音输入的硅基流动密钥，看图模型 ${v.model}。`
+        : `已可用：沿用聊天模型的密钥，看图模型 ${v.model}。`;
+  const select = $('vision-provider');
+  select.innerHTML = vision.providers.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`).join('');
+  const match = vision.providers.find((p) => p.baseUrl && v.source === 'own' && p.baseUrl === v.baseUrl);
+  select.value = v.source === 'own' ? (match ? match.id : 'custom') : (vision.providers[0]?.id || 'custom');
+  applyVisionProvider(false);
+  if (v.source === 'own') {
+    $('vision-baseurl').value = v.baseUrl;
+    $('vision-model').value = v.model;
+  }
+  $('vision-apikey').value = '';
+  $('vision-apikey').placeholder = v.hasKey ? '已保存（留空不改）' : 'sk-…';
+  $('vision-clear').hidden = !v.hasKey;
+  return v;
+}
+
+function applyVisionProvider(fill = true) {
+  const p = vision.providers.find((x) => x.id === $('vision-provider').value);
+  if (!p) return;
+  const custom = p.id === 'custom';
+  $('vision-baseurl').placeholder = p.baseUrl || 'https://…/v1';
+  $('vision-model').placeholder = p.model || 'model-name';
+  if (fill) {
+    $('vision-baseurl').value = custom ? '' : p.baseUrl;
+    $('vision-model').value = custom ? '' : p.model;
+  }
+  const link = $('vision-keyurl');
+  link.hidden = !p.keyUrl;
+  if (p.keyUrl) link.href = p.keyUrl;
+}
+
+async function saveVision(clear = false) {
+  const body = clear ? { apiKey: '' } : { baseUrl: $('vision-baseurl').value.trim(), model: $('vision-model').value.trim() };
+  const key = $('vision-apikey').value.trim();
+  if (!clear && key) body.apiKey = key;
+  try {
+    await api('/api/vision', { method: 'PUT', body });
+    await loadVision();
+    if (!clear && body.apiKey && window.desk?.syncConfig) {
+      const res = await window.desk.syncConfig({ path: '/api/vision', body }).catch(() => null);
+      const failed = (res?.results || []).filter((r) => !r.ok);
+      toast(
+        !res?.ok ? '看图设置已保存（没同步到其他机器）'
+          : failed.length ? `看图设置已保存；没同步上：${failed.map((r) => `${r.name}（${r.error}）`).join('、')}`
+          : '看图设置已保存，并同步到所有机器',
+        Boolean(failed.length || !res?.ok),
+      );
+      return;
+    }
+    toast(clear ? '看图密钥已清除' : '看图设置已保存');
+  } catch (err) {
+    toast(`保存失败：${err.message}`, true);
+  }
+}
+
 function setMicUi(mode) {
   const btn = $('mic-btn');
   const box = btn.closest('.composer-box');
@@ -7115,6 +7201,7 @@ function openSettings(section) {
   loadMemory();
   loadSettings().catch(() => { /* keep whatever we have */ });
   loadVoice().catch(() => { /* older server: no voice */ });
+  loadVision().catch(() => { /* older server: no vision */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   closeSidebar();
   closePanel();
@@ -8303,6 +8390,9 @@ function wireChrome() {
   $('mic-btn').addEventListener('click', toggleVoice);
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
   $('voice-provider')?.addEventListener('change', () => applyVoiceProvider(true));
+  $('vision-save')?.addEventListener('click', () => saveVision(false));
+  $('vision-clear')?.addEventListener('click', () => saveVision(true));
+  $('vision-provider')?.addEventListener('change', () => applyVisionProvider(true));
   $('voice-clear')?.addEventListener('click', () => saveVoice(true));
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'd' && !state.settingsOpen) {

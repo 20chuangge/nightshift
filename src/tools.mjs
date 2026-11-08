@@ -18,6 +18,7 @@ import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
+import { describeImage, imageMime } from './vision.mjs';
 import { getBrowserManager } from './browser.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
@@ -261,6 +262,42 @@ export function createRegistry(deps) {
       }
       entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
       return { path: r.rel, count: entries.length, entries };
+    },
+  });
+
+  add({
+    name: 'image_view',
+    description:
+      'Look at an image in the workspace (an attachment the human sent, a screenshot you took) and get a description of it, including any text in it. Ask a specific question when you need something specific (e.g. "这个报错弹窗写了什么？", "表格第三列的数字"). Use it whenever the human sends an image or you need to know what a screenshot shows - you cannot see images otherwise.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Image path relative to the workspace root, e.g. uploads/2026-11-08/a.png or artifacts/shot.png.' },
+        question: { type: 'string', description: 'What you want to know about it (optional; default: describe everything and transcribe the text).' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      if (!args?.path) throw toolError('FS_BAD_ARGS', 'image_view needs a path');
+      const r = resolvePath(ctx.workspaceDir, args.path);
+      const mime = imageMime(r.abs);
+      if (!mime) throw toolError('IMAGE_BAD_TYPE', `${r.rel} is not an image (png, jpg, gif, webp, bmp)`);
+      let bytes;
+      try {
+        bytes = await fsp.readFile(r.abs);
+      } catch (err) {
+        if (err.code === 'ENOENT') throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`);
+        throw err;
+      }
+      const service = typeof deps.getVision === 'function' ? deps.getVision() : null;
+      try {
+        const seen = await describeImage(service, bytes, mime, args.question);
+        return { path: r.rel, model: seen.model, description: seen.text };
+      } catch (err) {
+        throw toolError(err.code || 'VISION_FAILED', err.message);
+      }
     },
   });
 
@@ -1442,7 +1479,8 @@ export function createRegistry(deps) {
       return api.all().filter((t) => api.isGranted(bot, t.name));
     },
     isGranted(bot, name) {
-      if (name === 'task_finish') return true;
+      // Read-only and workspace-only: every bot may look at the images it is sent.
+      if (name === 'task_finish' || name === 'image_view') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;

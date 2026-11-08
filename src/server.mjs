@@ -64,6 +64,7 @@ import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesk
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
+import * as visionModule from './vision.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
@@ -123,6 +124,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const settings = await settingsModule.loadSettings();
   const apiKey = await settingsModule.loadSecret();
   const voice = await voiceModule.loadVoice();
+  const vision = await visionModule.loadVision();
   const security = await loadOrCreateSecurity();
 
   const bus = new EventBus();
@@ -154,6 +156,10 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       const v = state?.voice;
       return v?.apiKey ? { baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey } : null;
     },
+    visionToShare: () => {
+      const v = state?.vision;
+      return v?.apiKey ? { baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey } : null;
+    },
   });
 
   // Per-bot desktops read the VNC password the installer stored, if any.
@@ -170,6 +176,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       if (!refs.routines) throw new Error('routines are not ready yet');
       return refs.routines;
     },
+    // Resolved at call time: settings, voice and vision keys can change live.
+    getVision: () => (refs.getVision ? refs.getVision() : null),
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -237,6 +245,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     settings,
     apiKey, // never projected into a response; only `hasKey` leaves this module
     voice, // speech-to-text config; its key is write-only too
+    vision, // image-understanding config; same rules
     security,
     workspaceDir,
     startedAt: Date.now(),
@@ -258,6 +267,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       updatedAt: null,
     },
   };
+  refs.getVision = () => visionModule.resolveVision(state.vision, { settings: state.settings, chatKey: state.apiKey, voice: state.voice });
 
   // -------------------------------------------------------------------------
   // product-state callbacks used by the primary bot's settings/ui tools
@@ -616,6 +626,22 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
 
+// --- vision (image_view) --------------------------------------------------
+//   GET /api/vision -> {available, source:'own'|'voice'|'model'|null, baseUrl, model, hasKey, providers}
+//   PUT /api/vision {baseUrl?, model?, apiKey?}
+
+const visionCtx = (state) => ({ settings: state.settings, chatKey: state.apiKey, voice: state.voice });
+
+route('GET', /^\/api\/vision$/, async (_req, _res, { state }) => visionModule.publicVision(state.vision, visionCtx(state)));
+
+route('PUT', /^\/api\/vision$/, async (_req, _res, { body, state }) => {
+  const patch = {};
+  for (const k of ['baseUrl', 'model', 'apiKey']) if (body?.[k] !== undefined) patch[k] = body[k];
+  if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {baseUrl?, model?, apiKey?}');
+  state.vision = await visionModule.saveVision(state.vision, patch);
+  return visionModule.publicVision(state.vision, visionCtx(state));
+});
+
 route('GET', /^\/api\/voice$/, async (_req, _res, { state }) => voiceModule.publicVoice(state.voice, state.settings, state.apiKey));
 
 route('PUT', /^\/api\/voice$/, async (_req, _res, { body, state }) => {
@@ -950,7 +976,9 @@ function withAttachments(text, attachments) {
   if (!attachments.length) return text;
   const kb = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   const lines = attachments.map((a) => `- ${a.path}（${a.mime.startsWith('image/') ? '图片' : '文件'}，${kb(a.size)}）`);
-  return `${text || '（见附件）'}\n\n[附件] 都在共享工作区里：\n${lines.join('\n')}`;
+  // The chat model reads text only: point it at image_view for the pictures.
+  const hint = attachments.some((a) => a.mime.startsWith('image/')) ? '\n（图片的内容要用 image_view 工具看。）' : '';
+  return `${text || '（见附件）'}\n\n[附件] 都在共享工作区里：\n${lines.join('\n')}${hint}`;
 }
 
 // --- bot avatars -----------------------------------------------------------

@@ -685,12 +685,21 @@ ipcMain.handle('desk:sync-model', async () => {
     const v = JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'voice.json'), 'utf8'));
     if (v?.apiKey) voice = { baseUrl: v.baseUrl || '', model: v.model || '', apiKey: v.apiKey };
   } catch { /* no voice key here */ }
+  let vision = null;
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'vision.json'), 'utf8'));
+    if (v?.apiKey) vision = { baseUrl: v.baseUrl || '', model: v.model || '', apiKey: v.apiKey };
+  } catch { /* no vision key here */ }
   const results = [];
   for (const machine of readMachines()) {
     const r = await putToMachine(machine.url, '/api/settings', model);
     if (r.ok && voice) {
       const v = await putToMachine(machine.url, '/api/voice', voice);
       if (!v.ok) Object.assign(r, { ok: false, error: L(`语音：${v.error}`, `voice: ${v.error}`) });
+    }
+    if (r.ok && vision) {
+      const v = await putToMachine(machine.url, '/api/vision', vision);
+      if (!v.ok) Object.assign(r, { ok: false, error: L(`看图：${v.error}`, `vision: ${v.error}`) });
     }
     results.push({ name: machine.name, ...r });
   }
@@ -866,6 +875,19 @@ async function putToMachine(url, apiPath, body) {
  * A voice key saved on any machine goes to all of them (this computer too),
  * while the UI still holds it: hubs never hand a key back out.
  */
+/** The same, for other write-only per-machine settings (vision). */
+ipcMain.handle('desk:sync-config', async (_event, { path: apiPath = '', body = {} } = {}) => {
+  if (!['/api/vision', '/api/voice'].includes(apiPath)) return { ok: false, error: 'bad path' };
+  if (!body.apiKey) return { ok: false, error: L('没有密钥可同步', 'no key to sync') };
+  const targets = [{ name: L('本机', 'This computer'), url: localUrl() }, ...readMachines()];
+  const results = [];
+  for (const machine of targets) {
+    if (!machine.url) continue;
+    results.push({ name: machine.name, ...(await putToMachine(machine.url.replace(/\/+$/, ''), apiPath, body)) });
+  }
+  return { ok: true, results };
+});
+
 ipcMain.handle('desk:sync-voice', async (_event, voice = {}) => {
   const body = { baseUrl: String(voice.baseUrl || ''), model: String(voice.model || ''), apiKey: String(voice.apiKey || '') };
   if (!body.apiKey) return { ok: false, error: L('没有密钥可同步', 'no key to sync') };

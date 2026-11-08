@@ -1595,6 +1595,28 @@ async function scenarioAttachmentsAndVoice() {
     check('voice: a rejected key is reported, not swallowed', denied.status === 502 && /Key/.test(deniedJson.error?.message || ''));
     const empty = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', headers: { 'content-type': 'audio/webm' } });
     check('voice: empty recording is rejected', empty.status === 400);
+    // Vision: who pays, what is sent, and the settings round trip.
+    const vis = await import('../src/vision.mjs');
+    const own = vis.resolveVision({ apiKey: 'v-own', baseUrl: '', model: '' }, {});
+    const viaVoice = vis.resolveVision({}, { voice: { apiKey: 'sf-key', baseUrl: '' } });
+    const viaChat = vis.resolveVision({}, { settings: { provider: 'openai', baseUrl: 'https://api.openai.com/v1' }, chatKey: 'c-key' });
+    const none = vis.resolveVision({}, { settings: { provider: 'deepseek' }, chatKey: 'd-key', voice: { apiKey: 'x', baseUrl: 'https://api.openai.com/v1' } });
+    check('vision: own key wins, SiliconFlow voice key next, then a vision-capable chat provider',
+      own?.source === 'own' && own.model === 'Qwen/Qwen3-VL-32B-Instruct'
+      && viaVoice?.source === 'voice' && viaVoice.apiKey === 'sf-key' && /siliconflow/.test(viaVoice.baseUrl)
+      && viaChat?.source === 'model' && viaChat.model === 'gpt-4o-mini' && none === null);
+    let sent = null;
+    const fakeFetch = async (url, opts) => { sent = { url, body: JSON.parse(opts.body), auth: opts.headers.authorization }; return new Response(JSON.stringify({ choices: [{ message: { content: '一只猫' } }] }), { status: 200 }); };
+    const looked = await vis.describeImage(own, Buffer.from('png-bytes'), 'image/png', '这是什么？', { fetchImpl: fakeFetch });
+    const parts = sent?.body?.messages?.[0]?.content || [];
+    check('vision: image goes as a data URL with the question, answer comes back', looked.text === '一只猫' && sent.url.endsWith('/chat/completions') && sent.auth === 'Bearer v-own' && parts[0]?.image_url?.url?.startsWith('data:image/png;base64,') && parts[1]?.text === '这是什么？');
+    let visErr = null;
+    try { await vis.describeImage(own, Buffer.from('x'), 'image/png', '', { fetchImpl: async () => new Response('{"error":{"message":"bad key"}}', { status: 401 }) }); } catch (err) { visErr = err; }
+    check('vision: a rejected key is reported in plain words', visErr?.code === 'VISION_FAILED' && /密钥无效/.test(visErr.message));
+    const vGet = await api('/api/vision');
+    const vPut = await api('/api/vision', { method: 'PUT', body: { baseUrl: 'https://example.test/v1', model: 'vl-1', apiKey: 'vision-secret' } });
+    check('vision settings: saved, available, key never returned', vGet.status === 200 && vPut.status === 200 && vPut.json.available && vPut.json.source === 'own' && vPut.json.model === 'vl-1' && !JSON.stringify(vPut.json).includes('vision-secret'));
+    await api('/api/vision', { method: 'PUT', body: { apiKey: '' } });
     const cleared = await api('/api/voice', { method: 'PUT', body: { apiKey: '' } });
     check('voice: clearing the key turns it off again', cleared.status === 200 && cleared.json.available === false);
   } finally {

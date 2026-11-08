@@ -232,7 +232,7 @@ function execStream(client, command, { stdin = '', onLine = () => {}, timeoutMs 
  * code, then PUTs the settings; the key travels once, over the LAN, to the
  * hub that will use it.
  */
-async function shareModel(hubUrl, pairCode, model, voice = null) {
+async function shareModel(hubUrl, pairCode, model, voice = null, vision = null) {
   const pair = await fetch(`${hubUrl}/api/pair`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -256,6 +256,15 @@ async function shareModel(hubUrl, pairCode, model, voice = null) {
       signal: AbortSignal.timeout(15000),
     });
     if (!v.ok) throw new Error(`voice HTTP ${v.status}`);
+  }
+  if (vision) {
+    const v = await fetch(`${hubUrl}/api/vision`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify(vision),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!v.ok) throw new Error(`vision HTTP ${v.status}`);
   }
 }
 
@@ -296,7 +305,7 @@ async function tightVncInstaller() {
 
 /** modelToShare: () => {provider, baseUrl, model, apiKey} | null
  *  voiceToShare: () => {baseUrl, model, apiKey} | null  (speech-to-text) */
-export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null } = {}) {
+export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null } = {}) {
   /** @type {Map<string, object>} */
   const jobs = new Map();
 
@@ -470,7 +479,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       if (model) {
         setProgress(job, '把模型设置同步过去…');
         try {
-          await shareModel(job.hubUrl, job.pairCode, model, voiceToShare());
+          await shareModel(job.hubUrl, job.pairCode, model, voiceToShare(), visionToShare());
           job.modelShared = true;
         } catch (err) {
           job.warning = job.warning || `装好了，但模型设置没同步过去（${err.message}）；切过去后在「设置 → 模型」里填一下。`;
