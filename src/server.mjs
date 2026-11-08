@@ -1334,6 +1334,8 @@ function publicPolicy(policy) {
     builtinDeny: eff.builtinDeny.length,
     extraDeny: eff.extraDeny.map((e) => ({ id: e.id, text: e.text })),
     rules: (policy?.rules || []).map((r) => ({ id: r.id, text: r.text, action: r.action })),
+    // Desktop takeover on this machine: 'control' (see and use) or 'view' (see only).
+    takeover: policy?.takeover === 'view' ? 'view' : 'control',
     denyPatterns: eff.denyPatterns.length,
   };
 }
@@ -1360,6 +1362,10 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   }
   if (body?.removeDeny !== undefined) {
     next.extraDeny = (next.extraDeny || []).filter((e) => e.id !== body.removeDeny);
+  }
+  if (body?.takeover !== undefined) {
+    if (!['view', 'control'].includes(body.takeover)) throw httpError(400, 'BAD_TAKEOVER', "takeover must be 'view' or 'control'");
+    next.takeover = body.takeover;
   }
   if (body?.addRule !== undefined) {
     const rule = normalizeRule(body.addRule);

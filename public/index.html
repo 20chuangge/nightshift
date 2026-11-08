@@ -2855,6 +2855,13 @@
           <label class="level-opt"><input type="radio" name="approval-level" value="auto" />
             <span><b>放手</b><small>都让机器人自己做，只有危险命令还会问我。适合专门给机器人用的电脑。</small></span></label>
         </div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">接管桌面</div>
+        <div class="level-list takeover-list" role="radiogroup" aria-label="接管桌面">
+          <label class="level-opt"><input type="radio" name="takeover-mode" value="control" />
+            <span><b>能看能控</b><small>看得到这台机器的屏幕，也能用鼠标键盘操作（登录、付款时要用）。</small></span></label>
+          <label class="level-opt"><input type="radio" name="takeover-mode" value="view" />
+            <span><b>只能看</b><small>只看画面，鼠标键盘不会传过去，防止误点。这是防误操作，不是安全隔离：已配对的设备随时可以改回来。</small></span></label>
+        </div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">我的规则</div>
         <div class="row-note">用一句话告诉机器人什么要先问你、什么可以直接做。按意思判断，不用写得很精确。</div>
         <div class="rule-list" id="rule-list"></div>
@@ -6023,7 +6030,9 @@ function takeoverCard(item) {
   row.appendChild(go);
   row.appendChild(done);
   card.appendChild(row);
-  card.appendChild(el('div', 'row-note', '密码、验证码只在屏幕上输入，不要发在聊天里。'));
+  card.appendChild(el('div', 'row-note', state.policy?.takeover === 'view'
+    ? '这台机器的接管设成了「只能看」：要操作的话，先在 设置 → 权限 里改成「能看能控」。'
+    : '密码、验证码只在屏幕上输入，不要发在聊天里。'));
   return card;
 }
 
@@ -7417,6 +7426,7 @@ function renderPolicy(policy) {
   state.policy = policy;
   const level = policy?.level || (policy?.autoApproveAll ? 'auto' : 'standard');
   document.querySelectorAll('input[name="approval-level"]').forEach((r) => { r.checked = r.value === level; });
+  document.querySelectorAll('input[name="takeover-mode"]').forEach((r) => { r.checked = r.value === (policy?.takeover || 'control'); });
   const box = $('auto-approve-all');
   if (box) box.checked = level === 'auto';
   if ($('policy-note')) {
@@ -7686,6 +7696,7 @@ function renderPcWho() {
 
 async function loadComputer() {
   let data;
+  if (!state.policy) await loadPolicy().catch(() => {});
   renderPcWho();
   try {
     // Ask for THIS bot's desktop: every bot has its own screen, so the viewer
@@ -8014,7 +8025,9 @@ function parseTargetAddress(raw) {
 /** The live view: the hub hands out the current bot's own desktop URL. A
  *  machine without one shows screenshots instead of a dead viewer. */
 function currentViewerUrl() {
-  return state.computer?.desktop?.url || '';
+  const url = state.computer?.desktop?.url || '';
+  // "只能看": noVNC sends no mouse or keyboard input.
+  return url && state.policy?.takeover === 'view' ? `${url}&view_only=1` : url;
 }
 
 function renderComputerPane() {
@@ -8555,6 +8568,13 @@ function wireChrome() {
   });
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
+  });
+  document.querySelectorAll('input[name="takeover-mode"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      savePolicy({ takeover: radio.value }, radio.value === 'view' ? '接管桌面改为「只能看」' : '接管桌面改为「能看能控」')
+        .then(() => syncViewer());
+    });
   });
   const addDeny = () => {
     const input = $('deny-input');

@@ -890,4 +890,11 @@ window.DESK_I18N_EN = {
   "比如：发邮件先问我 / 装软件直接做 / 不许动 D 盘": "e.g. ask before sending email / installing software is fine / never touch drive D",
   "还没有规则。": "No rules yet.",
   "已添加规则：{0}": "Rule added: {0}",
+  "能看能控": "View and control",
+  "看得到这台机器的屏幕，也能用鼠标键盘操作（登录、付款时要用）。": "See this machine’s screen and use its mouse and keyboard (needed for logins and payments).",
+  "只能看": "View only",
+  "只看画面，鼠标键盘不会传过去，防止误点。这是防误操作，不是安全隔离：已配对的设备随时可以改回来。": "Only see the screen; mouse and keyboard are not sent, so nothing gets clicked by accident. This guards against mistakes, it is not a security boundary: any paired device can switch it back.",
+  "这台机器的接管设成了「只能看」：要操作的话，先在 设置 → 权限 里改成「能看能控」。": "Takeover on this machine is set to “view only”: to use the screen, switch it to “view and control” under Settings → Permissions.",
+  "接管桌面改为「只能看」": "Takeover set to “view only”",
+  "接管桌面改为「能看能控」": "Takeover set to “view and control”",
 };

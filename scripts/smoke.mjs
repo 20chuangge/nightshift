@@ -2773,6 +2773,10 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const rid = add.json?.rules?.[0]?.id;
     const bad = await api('/api/policy', { method: 'PUT', body: { addRule: { text: '  ' } } });
     const del = await api('/api/policy', { method: 'PUT', body: { removeRule: rid } });
+    const tv = await api('/api/policy', { method: 'PUT', body: { takeover: 'view' } });
+    const tbad = await api('/api/policy', { method: 'PUT', body: { takeover: 'drive' } });
+    const tback = await api('/api/policy', { method: 'PUT', body: { takeover: 'control' } });
+    check('takeover setting: view only and back, bad value refused', tv.json?.takeover === 'view' && tbad.status === 400 && tback.json?.takeover === 'control');
     check('rules API: add, refuse empty, remove', add.json?.rules?.[0]?.action === 'ask' && bad.status === 400 && del.json?.rules?.length === 0);
   }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
