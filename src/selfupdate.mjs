@@ -76,7 +76,10 @@ function run(cmd, args, opts) {
 }
 
 /** Start the new server on a scratch home and port; resolve when it says it is ready. */
-function trialBoot(newRoot, scratch, timeoutMs = 25000) {
+// Generous on purpose: a 1-core Windows VM in session 0 took 12 s for a cold
+// start while the live hub kept the CPU at 100%. A broken build still fails
+// at once, because the child exits.
+function trialBoot(newRoot, scratch, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -95,7 +98,10 @@ function trialBoot(newRoot, scratch, timeoutMs = 25000) {
       try { child.kill(); } catch { /* gone */ }
       fn(value);
     };
-    const timer = setTimeout(() => done(reject, new Error('新版本 25 秒内没有启动起来')), timeoutMs);
+    const timer = setTimeout(() => {
+      const last = errText.trim().split('\n').pop() || '';
+      done(reject, new Error(`新版本 ${Math.round(timeoutMs / 1000)} 秒内没有启动起来${last ? `（最后输出：${last.slice(0, 160)}）` : ''}`));
+    }, timeoutMs);
     child.stdout.on('data', (b) => {
       out += b;
       if (/"event"\s*:\s*"ready"/.test(out)) done(resolve);

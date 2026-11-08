@@ -259,6 +259,41 @@ async function shareModel(hubUrl, pairCode, model, voice = null) {
   }
 }
 
+/**
+ * The TightVNC MSI for Windows targets, downloaded once on this computer and
+ * cached in the temp dir. DESK_VNC_MSI points at a file to use instead (tests,
+ * offline installs). Returns {file, bytes} or null when it cannot be had; the
+ * target then tries to download it itself.
+ */
+async function tightVncInstaller() {
+  const override = process.env.DESK_VNC_MSI;
+  if (override) {
+    const st = await fsp.stat(override).catch(() => null);
+    return st?.isFile() ? { file: override, bytes: st.size } : null;
+  }
+  const dir = path.join(os.tmpdir(), 'nightshift-cache');
+  await fsp.mkdir(dir, { recursive: true });
+  const cached = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^tightvnc-[\d.]+-gpl-setup-64bit\.msi$/.test(n)).sort().pop();
+  if (cached) {
+    const st = await fsp.stat(path.join(dir, cached));
+    if (st.size > 1024 * 1024) return { file: path.join(dir, cached), bytes: st.size };
+  }
+  let url = 'https://www.tightvnc.com/download/2.8.90/tightvnc-2.8.90-gpl-setup-64bit.msi';
+  try {
+    const page = await (await fetch('https://www.tightvnc.com/download.php', { signal: AbortSignal.timeout(15000) })).text();
+    const m = /\/download\/([0-9.]+)\/tightvnc-[0-9.]+-gpl-setup-64bit\.msi/.exec(page);
+    if (m) url = `https://www.tightvnc.com${m[0]}`;
+  } catch { /* keep the known version */ }
+  const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length < 1024 * 1024) throw new Error('installer too small');
+  const file = path.join(dir, path.basename(new URL(url).pathname));
+  await fsp.writeFile(`${file}.part`, bytes);
+  await fsp.rename(`${file}.part`, file);
+  return { file, bytes: bytes.length };
+}
+
 /** modelToShare: () => {provider, baseUrl, model, apiKey} | null
  *  voiceToShare: () => {baseUrl, model, apiKey} | null  (speech-to-text) */
 export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null } = {}) {
@@ -316,6 +351,17 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
    */
   async function installWindows(client, job, packed, hubPort) {
     await uploadFile(client, packed.file, 'desk-hub.tar.gz');
+    // The desktop (TightVNC) installer comes from here, not from the target:
+    // a freshly installed Windows often cannot validate tightvnc.com's
+    // certificate ("未能为 SSL/TLS 安全通道建立信任关系"), and some networks
+    // cannot reach it. The target still checks GlavSoft's signature.
+    let vncArg = '';
+    const msi = await tightVncInstaller().catch(() => null);
+    if (msi) {
+      setProgress(job, `上传桌面组件 TightVNC（${Math.max(1, Math.round(msi.bytes / 1024 / 1024))} MB）…`);
+      await uploadFile(client, msi.file, 'desk-tightvnc.msi');
+      vncArg = ' -VncMsi desk-tightvnc.msi';
+    }
     // PowerShell 5.1 reads a BOM-less script as the ANSI code page, which
     // garbles the Chinese progress text; ship it with a UTF-8 BOM.
     const source = await fsp.readFile(SETUP_SCRIPTS.windows);
@@ -330,7 +376,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     setProgress(job, '安装并启动（首次 2-5 分钟）…');
     return execStream(
       client,
-      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz`,
+      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz${vncArg}`,
       {
         onLine: (line) => {
           const text = line.trim();

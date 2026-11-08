@@ -769,7 +769,8 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION },
       body: fs.readFileSync(packed.file),
-      signal: AbortSignal.timeout(180000),
+      // The machine test-starts the new version (up to 2 min) before answering.
+      signal: AbortSignal.timeout(300000),
     });
     const reply = await res.json().catch(() => ({}));
     if (!res.ok) {

@@ -71,7 +71,7 @@ const uploads = [];
 
 /** -> [exitCode, output] */
 function respond(command) {
-  seen.push(command.split('\n')[0].slice(0, 120));
+  seen.push(command.split('\n')[0].slice(0, 300));
   const windows = scenario === 'windows';
   if (command === 'uname -s') return windows || scenario === 'alien' ? [127, "'uname' is not recognized\n"] : [0, 'Linux\n'];
   if (command === 'ver') return windows ? [0, 'Microsoft Windows [Version 10.0.26100.1]\n'] : [127, ''];
@@ -144,6 +144,10 @@ const listen = (server) => new Promise((resolve) => {
   server.listen(0, '127.0.0.1', () => resolve(server.address().port));
 });
 
+// A stand-in TightVNC installer, so the test never downloads the real one.
+const fakeMsi = path.join((await import('node:os')).tmpdir(), `fake-tightvnc-${process.pid}.msi`);
+(await import('node:fs')).writeFileSync(fakeMsi, Buffer.alloc(4096, 7));
+
 const fakeHub = net.createServer((socket) => socket.end());
 const [sshPort, hubPort] = await Promise.all([listen(ssh), listen(fakeHub)]);
 console.log(`模拟 SSH :${sshPort} / 模拟 Hub :${hubPort}`);
@@ -161,6 +165,7 @@ async function runVerify(name) {
       DESK_TARGET_PASS: PASSWORD,
       DESK_SSH_PORT: String(sshPort),
       DESK_HUB_PORT: String(hubPort),
+      DESK_VNC_MSI: fakeMsi,
     },
   });
   let output = '';
@@ -188,6 +193,7 @@ const checks = [
   ['Windows：程序包和 ps1 传到账号主目录', ['desk-hub.tar.gz', 'desk-setup.ps1'].every((f) => windows.uploads.some((u) => u.filename === f && u.bytes > 0))],
   ['Windows：ps1 带 UTF-8 BOM（PowerShell 5.1 才不会乱码）', windows.uploads.some((u) => u.filename === 'desk-setup.ps1' && u.head && u.head.equals(Buffer.from([0xef, 0xbb, 0xbf])))],
   ['Windows：用 Windows PowerShell 执行，带端口和程序包', windows.seen.some((c) => /^powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup\.ps1 -Port \d+ -Pkg desk-hub\.tar\.gz/.test(c))],
+  ['Windows：TightVNC 安装包由客户端带过去，脚本用它（不在目标机下载）', windows.uploads.some((u) => u.filename === 'desk-tightvnc.msi' && u.bytes === 4096) && windows.seen.some((c) => / -VncMsi desk-tightvnc.msi/.test(c))],
   ['Windows：检查了计划任务、防火墙和远程模式', ['Get-ScheduledTask', 'Get-NetFirewallRule', '/api/policy'].every((k) => windows.seen.some((c) => c.includes(k)))],
   ['既不是 Linux 也不是 Windows：UNSUPPORTED，什么都没传', alien.code === 3 && /结论: UNSUPPORTED/.test(alien.output) && alien.uploads.length === 0],
   ['Hub 没起来：判 FAIL，不误报成功', broken.code === 1 && /结论: FAIL/.test(broken.output)],
@@ -198,4 +204,5 @@ for (const [name, ok] of checks) console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}
 
 ssh.close();
 fakeHub.close();
+(await import('node:fs')).rmSync(fakeMsi, { force: true });
 process.exitCode = checks.every(([, ok]) => ok) ? 0 : 1;

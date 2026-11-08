@@ -23,6 +23,8 @@ param(
   [int]$Port = 4390,
   [string]$Pkg = '',
   [string]$AppDir = '',
+  # TightVNC installer uploaded by the client (preferred over downloading here).
+  [string]$VncMsi = '',
   # Test mode: download and unpack only, touch nothing system-wide.
   [switch]$NoSystem
 )
@@ -209,15 +211,21 @@ Say '5/7 桌面：TightVNC（只听本机，经 Hub 配对后才能看和接管�
 $desktopOk = 0
 try {
   if (-not (Get-Service tvnserver -ErrorAction SilentlyContinue)) {
-    $msiUrl = 'https://www.tightvnc.com/download/2.8.90/tightvnc-2.8.90-gpl-setup-64bit.msi'
-    try {
-      $page = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 'https://www.tightvnc.com/download.php').Content
-      $m = [regex]::Match([string]$page, '/download/([0-9.]+)/tightvnc-[0-9.]+-gpl-setup-64bit\.msi')
-      if ($m.Success) { $msiUrl = "https://www.tightvnc.com$($m.Value)" }
-    } catch { }
     $msi = Join-Path $env:TEMP 'desk-tightvnc.msi'
-    Say "下载 $(Split-Path -Leaf $msiUrl)"
-    Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 $msiUrl -OutFile $msi
+    if ($VncMsi -and (Test-Path $VncMsi)) {
+      # Brought along by the client: no download from this machine at all.
+      Move-Item -Force (Resolve-Path $VncMsi).Path $msi
+      Say '使用客户端带来的 TightVNC 安装包'
+    } else {
+      $msiUrl = 'https://www.tightvnc.com/download/2.8.90/tightvnc-2.8.90-gpl-setup-64bit.msi'
+      try {
+        $page = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 'https://www.tightvnc.com/download.php').Content
+        $m = [regex]::Match([string]$page, '/download/([0-9.]+)/tightvnc-[0-9.]+-gpl-setup-64bit\.msi')
+        if ($m.Success) { $msiUrl = "https://www.tightvnc.com$($m.Value)" }
+      } catch { }
+      Say "下载 $(Split-Path -Leaf $msiUrl)"
+      Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 $msiUrl -OutFile $msi
+    }
     # No published checksum: require GlavSoft's valid Authenticode signature.
     $sig = Get-AuthenticodeSignature $msi
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'GlavSoft') {

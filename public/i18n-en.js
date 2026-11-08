@@ -831,4 +831,5 @@ window.DESK_I18N_EN = {
   "每个成员都回答": "every member answers",
   "看 {0} 的屏幕": "Watch {0}’s screen",
   "连不上本机的夜班服务": "Can’t reach Nightshift on this computer",
+  "上传桌面组件 TightVNC（{0} MB）…": "Uploading the desktop component TightVNC ({0} MB)…",
 };
