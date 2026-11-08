@@ -31,6 +31,7 @@ import {
   turnFile,
 } from './store.mjs';
 import { effectivePolicy, classify, DECISION } from './approvals.mjs';
+import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
 const RECOVERY_NOTE =
@@ -754,7 +755,7 @@ export class AgentRuntime {
     // Whole-machine autonomy: on a remote machine by default, on this computer
     // only when the human turns it on. The denylist still asks either way.
     const machine = effectivePolicy(this.config.policy);
-    const verdict = classify(name, args, {
+    let verdict = classify(name, args, {
       baseRisk: riskInfo.risk,
       granted,
       // "careful" means every bot asks, including a trusted one.
@@ -764,6 +765,19 @@ export class AgentRuntime {
       extraRiskReason: riskInfo.reason || '',
       unattended: ctx.unattended,
     });
+
+    // The human's one-sentence rules, matched by meaning.
+    const rules = Array.isArray(this.config.policy?.rules) ? this.config.policy.rules : [];
+    if (rules.length && verdict.decision !== DECISION.DENY && !RULE_EXEMPT.has(name)) {
+      try {
+        verdict = applyRules(verdict, await judgeRules({ rules, toolName: name, args, model: this.model }), DECISION);
+      } catch (err) {
+        // Could not check: with any "ask first" rule on the books, ask.
+        if (rules.some((r) => r.action === 'ask') && verdict.decision === DECISION.AUTO) {
+          verdict = { ...verdict, decision: DECISION.ASK, reason: `没能对照你的规则（${err.message}），先问你` };
+        }
+      }
+    }
 
     this.bus.emit({
       type: 'tool.call',

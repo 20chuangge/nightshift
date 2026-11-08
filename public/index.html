@@ -2479,6 +2479,13 @@
   .level-opt b { display: block; font-weight: 600; }
   .level-opt small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .deny-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .rule-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .rule-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border-soft); border-radius: 10px; }
+  .rule-text { flex: 1; }
+  .rule-badge { font-size: 11px; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+  .rule-badge.ask { background: rgba(240, 160, 60, 0.18); color: #f0a03c; }
+  .rule-badge.allow { background: rgba(80, 200, 120, 0.16); color: #50c878; }
+  .rule-action { width: auto; flex: none; margin: 0; }
   .deny-item { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border: 1px solid var(--border-soft); border-radius: 8px; }
   .deny-add { display: flex; gap: 8px; }
   .deny-add .field { flex: 1; margin: 0; }
@@ -2848,6 +2855,18 @@
           <label class="level-opt"><input type="radio" name="approval-level" value="auto" />
             <span><b>放手</b><small>都让机器人自己做，只有危险命令还会问我。适合专门给机器人用的电脑。</small></span></label>
         </div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">我的规则</div>
+        <div class="row-note">用一句话告诉机器人什么要先问你、什么可以直接做。按意思判断，不用写得很精确。</div>
+        <div class="rule-list" id="rule-list"></div>
+        <div class="deny-add">
+          <input class="field" id="rule-input" placeholder="比如：发邮件先问我 / 装软件直接做 / 不许动 D 盘" autocomplete="off" maxlength="120" />
+          <select class="field rule-action" id="rule-action">
+            <option value="ask">先问我</option>
+            <option value="allow">直接做</option>
+          </select>
+          <button class="btn" id="rule-add-btn" type="button">添加</button>
+        </div>
+        <div class="row-note">规则冲突时「先问我」优先；内置的危险命令拦截和机器人的能力限制始终有效。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">禁止的命令</div>
         <div class="row-note" id="deny-builtin-note">内置的危险命令始终会拦下：删除整个系统、格式化磁盘、关机、改密码、把桌面暴露到网络等。</div>
         <div class="deny-list" id="deny-list"></div>
@@ -7405,6 +7424,21 @@ function renderPolicy(policy) {
       ? '这是一台远程机器，默认「放手」：机器人可以装软件、用 sudo，不用逐条问你。'
       : '这台电脑上，机器人做事前要不要先问你。每台机器单独设置。';
   }
+  const rules = $('rule-list');
+  if (rules) {
+    rules.innerHTML = '';
+    for (const rule of policy?.rules || []) {
+      const row = el('div', 'rule-item');
+      row.appendChild(el('span', `rule-badge ${rule.action}`, rule.action === 'allow' ? '直接做' : '先问我'));
+      row.appendChild(el('span', 'rule-text', rule.text));
+      const x = el('button', 'att-x', '移除');
+      x.type = 'button';
+      x.addEventListener('click', () => savePolicy({ removeRule: rule.id }, '已移除'));
+      row.appendChild(x);
+      rules.appendChild(row);
+    }
+    if (!(policy?.rules || []).length) rules.appendChild(el('div', 'row-note', '还没有规则。'));
+  }
   const list = $('deny-list');
   if (list) {
     list.innerHTML = '';
@@ -8529,6 +8563,14 @@ function wireChrome() {
     savePolicy({ addDeny: text }, `已添加：${text}`).then((saved) => { if (saved) input.value = ''; });
   };
   $('deny-add-btn')?.addEventListener('click', addDeny);
+  const addRule = () => {
+    const input = $('rule-input');
+    const text = input.value.trim();
+    if (!text) return;
+    savePolicy({ addRule: { text, action: $('rule-action').value } }, `已添加规则：${text}`).then((saved) => { if (saved) input.value = ''; });
+  };
+  $('rule-add-btn')?.addEventListener('click', addRule);
+  $('rule-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addRule(); } });
   $('deny-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDeny(); } });
   $('panel-toggle').addEventListener('click', () => {
     state.panelOpen = !state.panelOpen;

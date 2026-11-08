@@ -2749,6 +2749,32 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
   }
+  // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
+  {
+    const R = await import('../src/rules.mjs');
+    const ap = await import('../src/approvals.mjs');
+    const rules = [{ id: 'r1', text: '发邮件先问我', action: 'ask' }, { id: 'r2', text: '装软件直接做', action: 'allow' }];
+    let calls = 0;
+    const fakeModel = { complete: async (msgs) => { calls += 1; const a = msgs[1].content; return { content: /sendmail|smtp/.test(a) ? '{"rules":[1]}' : /apt-get install/.test(a) ? '{"rules":[2]}' : /both/.test(a) ? '{"rules":[2,1]}' : '{"rules":[]}' }; } };
+    const D = ap.DECISION;
+    const v = (decision, reason = 'medium-risk tool') => ({ risk: 'MEDIUM', decision, reason });
+    const mail = R.applyRules(v(D.AUTO), await R.judgeRules({ rules, toolName: 'shell', args: { command: 'sendmail bob@x <a.txt' }, model: fakeModel }), D);
+    const install = R.applyRules(v(D.ASK), await R.judgeRules({ rules, toolName: 'shell', args: { command: 'apt-get install htop' }, model: fakeModel }), D);
+    const both = R.applyRules(v(D.ASK), await R.judgeRules({ rules, toolName: 'shell', args: { command: 'both' }, model: fakeModel }), D);
+    const danger = R.applyRules(v(D.ASK, 'command matches danger denylist (x)'), await R.judgeRules({ rules, toolName: 'shell', args: { command: 'apt-get install x' }, model: fakeModel }), D);
+    const none = R.applyRules(v(D.AUTO), await R.judgeRules({ rules, toolName: 'fs_list', args: { path: '.' }, model: fakeModel }), D);
+    check('rules: an ask-first rule makes a hands-off action ask', mail.decision === 'ask' && /发邮件先问我/.test(mail.reason));
+    check('rules: an allow rule removes the prompt, ask wins when both match', install.decision === 'auto' && both.decision === 'ask');
+    check('rules: an allow rule never overrides the danger list; unrelated actions untouched', danger.decision === 'ask' && none.decision === 'auto');
+    const before = calls;
+    await R.judgeRules({ rules, toolName: 'shell', args: { command: 'sendmail bob@x <a.txt' }, model: fakeModel });
+    check('rules: the same action is judged once (cached)', calls === before);
+    const add = await api('/api/policy', { method: 'PUT', body: { addRule: { text: '发邮件先问我', action: 'ask' } } });
+    const rid = add.json?.rules?.[0]?.id;
+    const bad = await api('/api/policy', { method: 'PUT', body: { addRule: { text: '  ' } } });
+    const del = await api('/api/policy', { method: 'PUT', body: { removeRule: rid } });
+    check('rules API: add, refuse empty, remove', add.json?.rules?.[0]?.action === 'ask' && bad.status === 400 && del.json?.rules?.length === 0);
+  }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
   {
     const fsx = await import('node:fs');

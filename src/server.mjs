@@ -53,6 +53,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern } from './approvals.mjs';
+import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
 import * as memory from './memory.mjs';
@@ -1332,6 +1333,7 @@ function publicPolicy(policy) {
     autoApproveMedium: Boolean(policy?.autoApproveMedium),
     builtinDeny: eff.builtinDeny.length,
     extraDeny: eff.extraDeny.map((e) => ({ id: e.id, text: e.text })),
+    rules: (policy?.rules || []).map((r) => ({ id: r.id, text: r.text, action: r.action })),
     denyPatterns: eff.denyPatterns.length,
   };
 }
@@ -1358,6 +1360,15 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   }
   if (body?.removeDeny !== undefined) {
     next.extraDeny = (next.extraDeny || []).filter((e) => e.id !== body.removeDeny);
+  }
+  if (body?.addRule !== undefined) {
+    const rule = normalizeRule(body.addRule);
+    if (!rule) throw httpError(400, 'BAD_RULE', '写一句规则，比如「发邮件先问我」');
+    if ((next.rules || []).length >= 30) throw httpError(400, 'TOO_MANY_RULES', '规则最多 30 条');
+    next.rules = [...(next.rules || []).filter((r) => r.text !== rule.text), { id: uid('rule'), ...rule }];
+  }
+  if (body?.removeRule !== undefined) {
+    next.rules = (next.rules || []).filter((r) => r.id !== body.removeRule);
   }
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });

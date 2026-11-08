@@ -882,4 +882,12 @@ window.DESK_I18N_EN = {
   "建机器人和群、派活": "Create bots and groups, hand off work",
   "改设置": "Change settings",
   "模型、主题等": "model, theme and so on",
+  "我的规则": "My rules",
+  "用一句话告诉机器人什么要先问你、什么可以直接做。按意思判断，不用写得很精确。": "Tell the bots in one sentence what to ask you about and what they can just do. Matched by meaning, so it needn’t be precise.",
+  "先问我": "Ask me first",
+  "直接做": "Just do it",
+  "规则冲突时「先问我」优先；内置的危险命令拦截和机器人的能力限制始终有效。": "When rules conflict, “ask me first” wins; the built-in danger list and each bot’s abilities always apply.",
+  "比如：发邮件先问我 / 装软件直接做 / 不许动 D 盘": "e.g. ask before sending email / installing software is fine / never touch drive D",
+  "还没有规则。": "No rules yet.",
+  "已添加规则：{0}": "Rule added: {0}",
 };
