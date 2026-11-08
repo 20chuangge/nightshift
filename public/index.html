@@ -1283,7 +1283,9 @@
     display: grid; place-items: center; color: var(--dim); font-size: 15px;
     opacity: 0; transition: opacity 120ms var(--ease), background 120ms var(--ease);
   }
-  .bot:hover .bot-more, .bot:focus-within .bot-more, .bot-more[aria-expanded="true"] { opacity: 1; }
+  .bot:hover .bot-more, .bot:focus-within .bot-more,
+  .group:hover .bot-more, .group:focus-within .bot-more, .bot-more[aria-expanded="true"] { opacity: 1; }
+  .group { position: relative; }
   .bot-more:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
   .bot-menu { right: var(--s2); top: calc(100% - 6px); }
   @media (hover: none) {
@@ -2447,6 +2449,22 @@
   /* the empty chat shows who you are talking to */
   .empty-avatar { width: 54px; height: 54px; margin-bottom: 18px; border-radius: 14px; }
 
+  /* whose screen, in a group --------------------------------------------- */
+  .pc-who { display: inline-flex; gap: 4px; margin: 0 auto 0 10px; align-items: center; }
+  .pc-who button { padding: 2px; border-radius: 50%; border: 2px solid transparent; background: none; line-height: 0; opacity: 0.55; }
+  .pc-who button.on { border-color: var(--accent, #8b7cf6); opacity: 1; }
+  .pc-who button:hover { opacity: 1; }
+  .pc-who .av { --av-size: 22px; }
+
+  /* @mention picker --------------------------------------------------- */
+  .composer { position: relative; }
+  .mention-pop { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; min-width: 220px; max-width: 320px; max-height: 260px; overflow: auto; }
+  .mention-pop .mp-item { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .mention-pop .mp-item.on { background: var(--panel-2); color: var(--text); }
+  .mention-pop .mp-item small { color: var(--dim); margin-left: auto; font-size: 11px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mention-pop .mp-item .av { --av-size: 22px; }
+  .mention-pop .mp-all { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--panel-2); font-size: 12px; }
+
   /* voice input ------------------------------------------------------ */
   .mic-btn {
     flex: none; align-self: flex-end; width: 34px; height: 34px; margin: 0 4px 2px 0;
@@ -2478,7 +2496,14 @@
   .att-x:hover { color: var(--text); background: var(--panel-2); }
   .att-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .bubble.only-att .att-list { margin-top: 0; }
-  .att-img img { display: block; max-width: 220px; max-height: 180px; border-radius: 10px; object-fit: cover; }
+  .att-img img { display: block; max-width: 220px; max-height: 180px; border-radius: 10px; object-fit: cover; cursor: zoom-in; }
+  .att-file { max-width: 260px; }
+  .att-file .att-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .bubble .att-list { margin-top: 10px; }
+  .lightbox { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: rgba(0, 0, 0, 0.82); cursor: zoom-out; }
+  .lightbox.show { display: flex; }
+  .lightbox img { max-width: 92vw; max-height: 84vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+  .lightbox-bar { display: flex; align-items: center; gap: 12px; color: #ddd; font-size: 13px; cursor: default; }
   .att-file {
     display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px;
     background: rgba(255, 255, 255, 0.06); color: inherit; text-decoration: none; max-width: 260px;
@@ -2601,6 +2626,7 @@
 
       <div class="composer">
         <div class="attach-strip" id="attach-strip" hidden></div>
+        <div class="menu mention-pop" id="mention-pop" role="listbox" hidden></div>
         <div class="composer-box">
           <button class="attach-btn" id="attach-btn" type="button" title="添加文件或图片" aria-label="添加文件或图片">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg>
@@ -2654,6 +2680,7 @@
         <div class="pane active" id="pane-computer" role="tabpanel">
           <div class="section-head">
             <span id="pc-title">屏幕</span>
+            <span class="pc-who" id="pc-who" hidden></span>
             <span class="pc-actions">
               <button class="btn tiny" id="pc-max" type="button">全屏</button>
               <button class="btn tiny" id="pc-desktop" type="button">接管桌面</button>
@@ -3829,6 +3856,8 @@ async function openGroup(id) {
   const group = groupById(id);
   if (!group) return;
   state.groupId = id;
+  state.pcPinned = null;
+  state.pcFollow = null;
   state.liveTurn = null;
   closeSidebar();
   closePanel();
@@ -3960,7 +3989,8 @@ function renderGroupItem(item) {
       note: item.note,
     }));
   }
-  const bubble = el('div', `bubble${item.system ? ' system' : ''}`, item.text || '');
+  const bubble = el('div', `bubble${item.system ? ' system' : ''}`);
+  fillBubble(bubble, item.text || '', item.system);
   return groupSenderRow(sender, bubble);
 }
 
@@ -4593,7 +4623,7 @@ function updateComposerMode() {
   } else if (isGroupMode()) {
     const group = groupById(state.groupId);
     const coordinator = groupCoordinator(group);
-    input.placeholder = `发到「${group ? group.name : '群组'}」${coordinator ? ` · 协调者 ${coordinator.name}` : ''}…`;
+    input.placeholder = `发到「${group ? group.name : '群组'}」· 输入 @ 指定谁来回答，不指定就由 ${coordinator ? coordinator.name : '协调者'} 先答…`;
   } else {
     const title = $('chat-title').textContent || '你的助手';
     const pad = padName(title);
@@ -5095,7 +5125,7 @@ function splitAttachments(text) {
   const at = raw.indexOf(ATTACH_MARK);
   if (at < 0) return { text: raw, files: [] };
   const files = raw.slice(at + ATTACH_MARK.length).split('\n')
-    .map((line) => /^- (\S+?)（(图片|文件)，([^）]+)）$/.exec(line.trim()))
+    .map((line) => /^- (.+?)（(图片|文件)，([^）]+)）$/.exec(line.trim()))
     .filter(Boolean)
     .map(([, p, kind, size]) => ({ path: p, image: kind === '图片', size, name: p.split('/').pop() }));
   const body = raw.slice(0, at);
@@ -5107,12 +5137,14 @@ function attachmentNode(file) {
   if (file.image) {
     const a = el('a', 'att-img');
     a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener';
+    a.title = file.name;
+    a.addEventListener('click', (event) => { event.preventDefault(); openLightbox(url, file.name); });
     const img = document.createElement('img');
     img.src = url;
     img.alt = file.name;
     img.loading = 'lazy';
+    // A path the bot mentioned may not exist (or not be an image we can serve).
+    img.addEventListener('error', () => a.remove());
     a.appendChild(img);
     return a;
   }
@@ -5287,14 +5319,44 @@ async function toggleVoice() {
     setTimeout(() => $('voice-set')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 200);
     return;
   }
+  const micError = (name, message = '') => toast(
+    name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许夜班使用麦克风'
+      : name === 'NotFoundError' ? '没找到麦克风' : `打不开麦克风：${message || name}`, true);
+  // Desktop app on a plain-http machine: the app records for the page.
+  if ((!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) && window.desk?.voiceStart) {
+    const started = await window.desk.voiceStart().catch((err) => ({ error: 'Error', message: err.message }));
+    if (!started?.ok) { micError(started?.error, started?.message); return; }
+    voice.chunks = [];
+    voice.cancelled = false;
+    voice.recorder = {
+      mimeType: 'audio/webm',
+      stop: async () => {
+        if (voice.cancelled) {
+          await window.desk.voiceCancel().catch(() => null);
+        } else {
+          const out = await window.desk.voiceStop().catch(() => null);
+          if (out?.bytes) {
+            voice.chunks = [out.bytes];
+            voice.recorder.mimeType = out.mime || 'audio/webm';
+          }
+        }
+        finishRecording();
+      },
+    };
+    voice.started = Date.now();
+    setMicUi('rec');
+    tickRecording();
+    voice.timer = setInterval(tickRecording, 500);
+    return;
+  }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-    toast(window.desk ? '这台机器刚加上，重开一次夜班后就能用麦克风' : '这个页面不能用麦克风（需要 https 或本机地址）', true);
+    toast('这个页面不能用麦克风（需要 https 或本机地址）', true);
     return;
   }
   try {
     voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   } catch (err) {
-    toast(err.name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许夜班使用麦克风' : err.name === 'NotFoundError' ? '没找到麦克风' : `打不开麦克风：${err.message}`, true);
+    micError(err.name, err.message);
     return;
   }
   const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
@@ -5354,6 +5416,86 @@ async function finishRecording() {
   }
 }
 
+/* --- @mention picker (groups) ---------------------------------------------
+   Type "@" in a group to pick who should answer; Enter/Tab picks, Esc closes.
+   The server routes the message to the members it names. */
+const mention = { open: false, items: [], index: 0, start: -1 };
+
+function mentionQuery() {
+  const input = $('composer');
+  const caret = input.selectionStart ?? input.value.length;
+  const m = /(^|[\s\u3000（(，,])@([^\s@]{0,20})$/.exec(input.value.slice(0, caret));
+  return m ? { query: m[2], start: caret - m[2].length - 1, caret } : null;
+}
+
+function closeMention() {
+  mention.open = false;
+  const pop = $('mention-pop');
+  if (pop) pop.hidden = true;
+}
+
+function updateMention() {
+  const pop = $('mention-pop');
+  const group = isGroupMode() ? groupById(state.groupId) : null;
+  const q = group ? mentionQuery() : null;
+  if (!pop || !q) { closeMention(); return; }
+  const needle = q.query.toLowerCase();
+  const members = groupMembers(group);
+  const items = [{ all: true, name: '所有人', role: '每个成员都回答' }]
+    .concat(members.map((b) => ({ bot: b, name: b.name, role: b.role || '' })))
+    .filter((it) => !needle || it.name.toLowerCase().includes(needle) || (it.all && /^(all|everyone|所有|全体)/i.test(needle)));
+  if (!items.length) { closeMention(); return; }
+  mention.items = items;
+  mention.start = q.start;
+  mention.index = Math.min(mention.index, items.length - 1);
+  pop.innerHTML = '';
+  items.forEach((it, i) => {
+    const row = el('button', `mp-item${i === mention.index ? ' on' : ''}`);
+    row.type = 'button';
+    row.setAttribute('role', 'option');
+    row.appendChild(it.all ? el('span', 'mp-all', '@') : avatarNode(it.bot, 22));
+    row.appendChild(el('span', '', it.name));
+    if (it.role) row.appendChild(el('small', '', it.role));
+    row.addEventListener('mousedown', (event) => { event.preventDefault(); pickMention(i); });
+    pop.appendChild(row);
+  });
+  pop.hidden = false;
+  mention.open = true;
+}
+
+function pickMention(i) {
+  const it = mention.items[i];
+  const input = $('composer');
+  const q = mentionQuery();
+  if (!it || !q) { closeMention(); return; }
+  const insert = `@${it.name} `;
+  input.value = input.value.slice(0, q.start) + insert + input.value.slice(q.caret);
+  const caret = q.start + insert.length;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  autoGrow(input);
+  closeMention();
+}
+
+function onMentionKey(event) {
+  if (!mention.open || event.isComposing) return;
+  const n = mention.items.length;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    mention.index = (mention.index + (event.key === 'ArrowDown' ? 1 : n - 1)) % n;
+    updateMention();
+  } else if (event.key === 'Enter' || event.key === 'Tab') {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    pickMention(mention.index);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    closeMention();
+  }
+}
+
 async function addFiles(fileList) {
   for (const file of [...fileList].slice(0, 10)) {
     if (state.pendingFiles.length >= 10) { toast('一条消息最多 10 个附件', true); break; }
@@ -5381,14 +5523,60 @@ async function addFiles(fileList) {
 function assistantRow(text, { system = false, streaming = false } = {}) {
   const row = el('div', 'row assistant');
   const wrap = el('div', `bubble${system ? ' system' : ''}${streaming ? ' streaming' : ''}`);
-  if (!system && looksMarkdown(text)) {
-    wrap.classList.add('md');
-    wrap.innerHTML = mdToHtml(text);
-  } else {
-    wrap.textContent = text;
-  }
+  fillBubble(wrap, text, system);
   row.appendChild(wrap);
   return row;
+}
+
+/** Workspace images a reply mentions ("截图保存为 artifacts/x.png"), in order, once each. */
+function mentionedImages(text) {
+  const seen = new Set();
+  const out = [];
+  const re = /(?:^|[\s`'"(（「：:，,])((?:[\w.\-]+\/)+[\w.\-]+\.(?:png|jpe?g|gif|webp))(?=$|[\s`'")）」（(，。,.;；:：、!！?？])/gi;
+  for (const m of String(text || '').matchAll(re)) {
+    const p = m[1].replace(/^\.\//, '').replace(/^workspace\//, '');
+    if (seen.has(p) || p.startsWith('/') || /:\/\//.test(p)) continue;
+    seen.add(p);
+    out.push({ path: p, image: true, name: p.split('/').pop(), size: '' });
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+/** Text (markdown when it looks like it) plus the images it points at. */
+function fillBubble(bubble, text, system = false) {
+  if (!system && looksMarkdown(text)) {
+    bubble.classList.add('md');
+    bubble.innerHTML = mdToHtml(text);
+  } else {
+    bubble.textContent = text;
+  }
+  if (system) return;
+  const images = mentionedImages(text);
+  if (!images.length) return;
+  const list = el('div', 'att-list');
+  for (const f of images) list.appendChild(attachmentNode(f));
+  bubble.appendChild(list);
+}
+
+/** Full-size image viewer inside the app; Esc or a click closes it. */
+function openLightbox(url, name) {
+  let box = $('lightbox');
+  if (!box) {
+    box = el('div', 'lightbox');
+    box.id = 'lightbox';
+    box.innerHTML = '<img alt=""><div class="lightbox-bar"><span class="lightbox-name"></span><a class="btn tiny" download>下载</a></div>';
+    box.addEventListener('click', (event) => { if (!event.target.closest('.lightbox-bar')) box.classList.remove('show'); });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') box.classList.remove('show'); });
+    document.body.appendChild(box);
+  }
+  box.querySelector('img').src = url;
+  box.querySelector('img').alt = name;
+  box.querySelector('.lightbox-name').textContent = name;
+  const dl = box.querySelector('a');
+  dl.href = url;
+  dl.setAttribute('download', name);
+  box.classList.add('show');
 }
 
 /* A pre block that collapses long tool output behind one "展开". */
@@ -5860,6 +6048,10 @@ function handleEvent(ev) {
 
   switch (ev.type) {
     case 'turn.start':
+      if (isGroupMode() && ev.botId && ev.botId !== state.pcFollow) {
+        state.pcFollow = ev.botId;
+        if (!state.pcPinned && $('pane-computer')?.classList.contains('active')) loadComputer();
+      }
       state.liveTurn = { turnId: ev.turnId, bubble: null, text: '', sender };
       showTyping(ev.botId || state.botId, '正在处理…');
       break;
@@ -5992,7 +6184,7 @@ function finalizeLiveMessage(text, system, sender) {
     messagesEl.appendChild(live.row);
   }
   state.liveTurn.text = text;
-  state.liveTurn.bubble.textContent = text;
+  fillBubble(state.liveTurn.bubble, text, system);
   state.liveTurn.bubble.classList.remove('streaming');
   if (system) state.liveTurn.bubble.classList.add('system');
   state.liveTurn.bubble = null;
@@ -7151,12 +7343,48 @@ function fmtUptime(sec) {
   return d > 0 ? `${d}天 ${h}小时` : h > 0 ? `${h}小时 ${m}分` : `${m}分`;
 }
 
+/**
+ * The bot whose desktop the panel shows. In a group every member has its own
+ * screen: follow whoever is working right now (or the coordinator), unless
+ * the human picked one.
+ */
+function pcTargetBotId() {
+  if (!isGroupMode()) return state.botId;
+  const group = groupById(state.groupId);
+  const ids = group ? groupMembers(group).map((b) => b.id) : [];
+  if (state.pcPinned && ids.includes(state.pcPinned)) return state.pcPinned;
+  if (state.pcFollow && ids.includes(state.pcFollow)) return state.pcFollow;
+  return (group && ids.includes(group.coordinatorId)) ? group.coordinatorId : ids[0] || state.botId;
+}
+
+function renderPcWho() {
+  const box = $('pc-who');
+  if (!box) return;
+  const group = isGroupMode() ? groupById(state.groupId) : null;
+  box.hidden = !group;
+  if (!group) return;
+  const current = pcTargetBotId();
+  box.innerHTML = '';
+  for (const bot of groupMembers(group)) {
+    const b = el('button', bot.id === current ? 'on' : '');
+    b.type = 'button';
+    b.title = `看 ${bot.name} 的屏幕`;
+    b.appendChild(avatarNode(bot, 22));
+    b.addEventListener('click', () => { state.pcPinned = bot.id; loadComputer(); });
+    box.appendChild(b);
+  }
+  const bot = botById(current);
+  if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;
+}
+
 async function loadComputer() {
   let data;
+  renderPcWho();
   try {
     // Ask for THIS bot's desktop: every bot has its own screen, so the viewer
     // must not fall back to whatever the machine happens to be showing.
-    const scope = state.botId ? `?botId=${encodeURIComponent(state.botId)}` : '';
+    const target = pcTargetBotId();
+    const scope = target ? `?botId=${encodeURIComponent(target)}` : '';
     data = await api(`/api/computer${scope}`);
   } catch (err) {
     $('pc-stats').innerHTML = `<div class="row-note">这台 Hub 还没有 /api/computer（${escapeHtml(err.message)}）。更新 Hub 端即可。</div>`;
@@ -8049,6 +8277,11 @@ function wireChrome() {
     if (event.dataTransfer?.files?.length) { event.preventDefault(); addFiles(event.dataTransfer.files); }
   });
   $('send-btn').addEventListener('click', send);
+  // capture phase: the picker sees Enter before "send" does
+  $('composer').addEventListener('keydown', onMentionKey, true);
+  $('composer').addEventListener('input', () => { mention.index = 0; updateMention(); });
+  $('composer').addEventListener('click', updateMention);
+  $('composer').addEventListener('blur', () => setTimeout(closeMention, 150));
   $('mic-btn').addEventListener('click', toggleVoice);
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
   $('voice-provider')?.addEventListener('change', () => applyVoiceProvider(true));

@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>recorder</title>
+<!--
+  Hidden helper window of the desktop app. A machine's hub is plain http on
+  the LAN, where browsers refuse the microphone; this page is loaded from a
+  file (a secure context), so it can record for any machine. The main process
+  drives it with executeJavaScript and passes the audio back to the page.
+-->
+<script>
+  let rec = null;
+  let stream = null;
+  let chunks = [];
+
+  window.__start = async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      return { error: err.name || 'Error', message: err.message || '' };
+    }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    chunks = [];
+    rec.ondataavailable = (event) => { if (event.data && event.data.size) chunks.push(event.data); };
+    rec.start(1000);
+    return { ok: true };
+  };
+
+  window.__stop = () => new Promise((resolve) => {
+    if (!rec) { resolve(null); return; }
+    const r = rec;
+    r.onstop = async () => {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      const type = (r.mimeType || 'audio/webm').split(';')[0];
+      const bytes = new Uint8Array(await new Blob(chunks, { type }).arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      rec = null;
+      stream = null;
+      chunks = [];
+      resolve({ mime: type, b64: btoa(bin) });
+    };
+    r.stop();
+  });
+
+  window.__cancel = () => {
+    try { if (rec) rec.stop(); } catch { /* already stopped */ }
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    rec = null;
+    stream = null;
+    chunks = [];
+    return true;
+  };
+</script>

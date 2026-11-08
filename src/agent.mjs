@@ -48,21 +48,57 @@ const RECOVERY_NOTE =
  */
 function renderGroupSection(bot, group, groupRole) {
   const coordinator = groupRole === 'coordinator';
+  const speaker = groupRole === 'speaker';
   const members = (group.members || [])
     .map((member) => `${member.name} (${member.id}) - ${member.role || 'no role set'}`)
     .join('; ');
-  return [
+  const others = (group.members || []).filter((m) => m.id !== bot.id).map((m) => `@${m.name}`).join(' ');
+  const lines = [
     '## Group chat',
-    `Group id: ${group.id} (you are ${coordinator ? 'the coordinator' : 'a member'}; your bot id is ${bot.id}).`,
+    `Group id: ${group.id} (you are ${coordinator ? 'the coordinator' : speaker ? 'a member asked to answer' : 'a member'}; your bot id is ${bot.id}).`,
     `You are in the group chat "${group.name}". Members: ${members}.`,
-    coordinator
-      ? "The human's message is posted to the whole group, not just to you. Every message you post there is visible to the human and to every member."
-      : `You were pulled into this group by its coordinator with a private bot_message. Your final answer goes back to the coordinator, not to the group.`,
-    `Speak in the group with group_post {group: "${group.id}", text: "..."}: one short, useful message at a time. Do not narrate internal reasoning there.`,
-    coordinator
-      ? 'Only you are running right now. Other members do not run unless you message them with bot_message; relay what matters into the group with group_post.'
-      : 'If a short status line would help the whole group, you may post one with group_post; otherwise just answer the coordinator.',
-  ].join('\n');
+  ];
+  if (coordinator || speaker) {
+    lines.push(
+      "The human's message went to the whole group. Your final answer is posted to the group automatically, under your name: just answer. Do not repeat it with group_post (use group_post only for a short update in the middle of long work).",
+      'Write in the language the human uses. Keep it short. Never start a message with your own name or a [tag].',
+    );
+  }
+  if (coordinator) {
+    lines.push(
+      `You speak first when nobody was @mentioned. If the request (or part of it) belongs to other members - including "how is everyone doing" / progress questions - answer only your own part in a line or two, then @mention each member who should answer, using the exact name (${others}). Every member you @mention answers right after you, in the group. Do not answer for them.`,
+    );
+  } else if (speaker) {
+    lines.push('You were @mentioned, so answer your own part only: what you own, where it stands, what you need. Other members answer for themselves.');
+  } else {
+    lines.push(
+      'You were pulled into this group by a teammate with a private bot_message. Your final answer goes back to that teammate, not to the group.',
+      `If a short status line would help the whole group, you may post one with group_post {group: "${group.id}", text: "..."}.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Members a message @mentions, in the order mentioned; "@所有人" / "@everyone" means all of them. */
+export function mentionedMembers(text, members) {
+  const raw = String(text || '');
+  if (/@(所有人|全体成员|全体|everyone|all)(?![\w\u4e00-\u9fff])/i.test(raw)) return [...members];
+  const hits = [];
+  for (const m of members) {
+    const name = String(m.name || '').trim();
+    if (!name) continue;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const at = raw.search(new RegExp(`@${esc}(?![\\w\\u4e00-\\u9fff])`, 'i'));
+    if (at >= 0) hits.push({ m, at });
+  }
+  return hits.sort((a, b) => a.at - b.at).map((h) => h.m);
+}
+
+/** Models sometimes sign a group message "[Writer] ..."; the UI already shows who spoke. */
+function stripOwnTag(text, name) {
+  const t = String(text || '');
+  const esc = String(name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return esc ? t.replace(new RegExp(`^\\s*[\\[【]\\s*${esc}\\s*[\\]】]\\s*[:：]?\\s*`, 'i'), '') : t;
 }
 
 /** The human's machines, as their desktop app reported them. */
@@ -255,12 +291,16 @@ export class AgentRuntime {
     // by bot_message from a group turn) only writes when it uses group_post.
     group = null,
     groupRole = 'coordinator',
+    // Later speakers in one group exchange must not post the human's message again.
+    recordUser = true,
   }) {
     const bot = await this.bots.getBot(botId);
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
 
     const groupContext = group?.id && this.groups ? group : null;
-    const coordinatorTurn = Boolean(groupContext && groupRole === 'coordinator');
+    // The coordinator and any member the human (or the coordinator) @mentioned
+    // speak in the group directly; a member reached by bot_message does not.
+    const coordinatorTurn = Boolean(groupContext && (groupRole === 'coordinator' || groupRole === 'speaker'));
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
     const turnId = providedTurnId || uid('turn');
@@ -336,7 +376,7 @@ export class AgentRuntime {
       ];
 
       await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });
-      if (coordinatorTurn) {
+      if (coordinatorTurn && recordUser) {
         await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId });
       }
 
@@ -535,7 +575,7 @@ export class AgentRuntime {
         if (status !== 'cancelled' && summary) {
           const spoke = await this.groups.hasAssistantMessage(group.id, turnId, bot.id).catch(() => false);
           if (!spoke) {
-            await this.recordGroupMessage(group.id, { kind: 'assistant', from: bot.id, text: summary, turnId });
+            await this.recordGroupMessage(group.id, { kind: 'assistant', from: bot.id, text: stripOwnTag(summary, bot.name), turnId });
           }
         }
         await this.recordGroupMessage(group.id, { kind: 'status', from: bot.id, status, turnId });
@@ -559,6 +599,78 @@ export class AgentRuntime {
         endedAt,
       });
     }
+  }
+
+  /**
+   * One human message in a group, the way people expect a group to work:
+   *   - members the human @mentions answer, in that order ("@所有人" = everyone)
+   *   - nobody mentioned: the coordinator answers, and any member it @mentions
+   *     answers right after it (progress questions reach every owner)
+   * Speakers run one after another so the transcript reads in order.
+   */
+  async runGroupMessage({ group, text, turnId = null, recordUser = true, kickoff = false }) {
+    const members = group.members || [];
+    const byId = new Map(members.map((m) => [m.id, m]));
+    const asked = mentionedMembers(text, members);
+    const first = asked.length ? asked : [byId.get(group.coordinatorId) || members[0]].filter(Boolean);
+    const queue = first.map((m) => ({ member: m, role: asked.length ? 'speaker' : 'coordinator' }));
+    const done = new Set();
+    let record = recordUser;
+    let id = turnId;
+    while (queue.length && done.size < 6) {
+      const { member, role, prompt } = queue.shift();
+      if (done.has(member.id)) continue;
+      done.add(member.id);
+      const result = await this.runTurn({
+        botId: member.id,
+        text: prompt || text,
+        source: 'group',
+        turnId: id || undefined,
+        group,
+        groupRole: role,
+        recordUser: record,
+      }).catch((err) => {
+        this.bus.emit({ type: 'error', groupId: group.id, turnId: id, message: err.message });
+        return null;
+      });
+      record = false;
+      id = null;
+      // The coordinator handed parts of the request to teammates by @name.
+      if (!kickoff && role === 'coordinator' && result?.turnId) {
+        const said = (await this.groups.readGroupMessages(group.id, { limit: 40 }).catch(() => []))
+          .filter((m) => m.turnId === result.turnId && m.from === member.id && (m.kind || 'assistant') === 'assistant')
+          .map((m) => m.text)
+          .join('\n');
+        for (const next of mentionedMembers(said, members.filter((m) => m.id !== member.id))) {
+          queue.push({
+            member: next,
+            role: 'speaker',
+            prompt: `${member.name} 在群里点名请你回答。用户原话：${text}`,
+          });
+        }
+      }
+    }
+  }
+
+  /** Kick off a just-created group by id (resolves member names; skipped in demo mode). */
+  async kickoffGroup(groupId) {
+    if (!this.groups || this.model?.provider === 'mock') return;
+    const group = await this.groups.getGroup(groupId).catch(() => null);
+    if (!group) return;
+    const members = [];
+    for (const id of group.members || []) {
+      const bot = await this.bots.getBot(id).catch(() => null);
+      if (bot) members.push({ id: bot.id, name: bot.name, role: bot.role });
+    }
+    if (members.length < 2) return;
+    await this.runGroupKickoff({ id: group.id, name: group.name, coordinatorId: group.coordinatorId, members });
+  }
+
+  /** A new group says hello: each member, in order, states its job and where it stands. */
+  async runGroupKickoff(group) {
+    const prompt = '（这个群刚建好）请用一两句话向大家介绍：你在这个群里负责什么、现在的进度、下一步要做什么。不要 @ 别人。';
+    const everyone = (group.members || []).map((m) => `@${m.name}`).join(' ');
+    await this.runGroupMessage({ group, text: `${everyone} ${prompt}`, recordUser: false, kickoff: true });
   }
 
   /**

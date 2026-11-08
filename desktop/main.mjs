@@ -374,7 +374,43 @@ function createWindowFor(url, bounds = null) {
     if (isMainFrame && code !== -3) bootLog(`load failed ${code} ${desc} ${failedUrl}`);
   });
   self.webContents.on('render-process-gone', (_e, details) => bootLog(`renderer gone: ${details.reason}`));
-  self.on('unresponsive', () => bootLog('window unresponsive'));
+  // A frozen page cannot draw its own close button or answer a quit. After a
+  // few seconds, ask like a browser does: wait, reload, or quit.
+  let hangTimer = null;
+  let hangDialog = false;
+  self.on('unresponsive', () => {
+    let page = '';
+    try { page = self.webContents.getURL(); } catch { /* gone */ }
+    bootLog(`window unresponsive on ${page}`);
+    if (hangTimer || hangDialog) return;
+    hangTimer = setTimeout(async () => {
+      hangTimer = null;
+      if (self.isDestroyed() || quitting) return;
+      hangDialog = true;
+      const { response } = await dialog.showMessageBox(self, {
+        type: 'warning',
+        title: L('夜班', 'Nightshift'),
+        message: L('页面没有响应', 'The page is not responding'),
+        detail: L('可以再等一会儿，或者重新加载这一页（聊天记录不会丢）。', 'Wait a little longer, or reload the page (your chats are kept).'),
+        buttons: [L('等待', 'Wait'), L('重新加载', 'Reload'), L('退出夜班', 'Quit Nightshift')],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true,
+      }).catch(() => ({ response: 0 }));
+      hangDialog = false;
+      if (self.isDestroyed()) return;
+      if (response === 1) {
+        bootLog('hang → reload');
+        try { self.webContents.forcefullyCrashRenderer(); } catch { /* already gone */ }
+        self.webContents.reload();
+      } else if (response === 2) {
+        quitNow();
+      }
+    }, 5000);
+  });
+  self.on('responsive', () => {
+    if (hangTimer) { clearTimeout(hangTimer); hangTimer = null; bootLog('window responsive again'); }
+  });
 
   // external links open in the real browser, never inside the app window
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -533,7 +569,7 @@ function refreshChrome() {
     ...machinesMenu(),
     { type: 'separator' },
     { label: L('打开数据目录', 'Open data folder'), click: () => shell.openPath(HOME) },
-    { label: L('退出', 'Quit'), click: () => { quitting = true; app.quit(); } },
+    { label: L('退出', 'Quit'), click: () => quitNow() },
   ]));
 }
 
@@ -544,7 +580,7 @@ function createTray() {
     // A headless hub has no window and no machine list, only its data folder.
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: L('打开数据目录', 'Open data folder'), click: () => shell.openPath(HOME) },
-      { label: L('退出', 'Quit'), click: () => { quitting = true; app.quit(); } },
+      { label: L('退出', 'Quit'), click: () => quitNow() },
     ]));
     return;
   }
@@ -564,7 +600,7 @@ function buildMenu() {
         { label: L('重新加载界面', 'Reload'), accelerator: 'CmdOrCtrl+R', click: () => win?.reload() },
         { label: L('开发者工具', 'Developer tools'), accelerator: 'F12', click: () => win?.webContents.toggleDevTools() },
         { type: 'separator' },
-        { label: L('退出', 'Quit'), accelerator: 'CmdOrCtrl+Q', click: () => { quitting = true; app.quit(); } },
+        { label: L('退出', 'Quit'), accelerator: 'CmdOrCtrl+Q', click: () => quitNow() },
       ],
     },
     { label: L('编辑', 'Edit'), role: 'editMenu' },
@@ -660,6 +696,42 @@ ipcMain.handle('desk:sync-model', async () => {
   return { ok: true, model: `${model.provider} · ${model.model}`, voice: Boolean(voice), results };
 });
 
+// --- microphone for every machine -----------------------------------------
+// A machine's page is plain http, where Chromium refuses the microphone. A
+// hidden window loaded from a file (a secure context) records instead, so voice
+// input works on a machine the moment it is added, with no restart.
+let recorderWin = null;
+async function recorderWindow() {
+  if (recorderWin && !recorderWin.isDestroyed()) return recorderWin;
+  recorderWin = new BrowserWindow({
+    show: false,
+    width: 200,
+    height: 120,
+    skipTaskbar: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  recorderWin.on('closed', () => { recorderWin = null; });
+  await recorderWin.loadFile(path.join(__dirname, 'recorder.html'));
+  return recorderWin;
+}
+ipcMain.handle('desk:voice-start', async () => {
+  try {
+    const w = await recorderWindow();
+    return await w.webContents.executeJavaScript('window.__start()');
+  } catch (err) {
+    return { error: 'Error', message: err.message };
+  }
+});
+ipcMain.handle('desk:voice-stop', async () => {
+  if (!recorderWin || recorderWin.isDestroyed()) return null;
+  const out = await recorderWin.webContents.executeJavaScript('window.__stop()').catch(() => null);
+  return out ? { mime: out.mime, bytes: Buffer.from(out.b64, 'base64') } : null;
+});
+ipcMain.handle('desk:voice-cancel', async () => {
+  if (recorderWin && !recorderWin.isDestroyed()) await recorderWin.webContents.executeJavaScript('window.__cancel()').catch(() => null);
+  return true;
+});
+
 /** PUT JSON to a hub with this app's pairing cookie. -> {ok, error} */
 async function putToMachine(url, apiPath, body) {
   try {
@@ -720,6 +792,23 @@ ipcMain.handle('desk:remove-machine', async (_event, url) => {
     .map((m) => { try { return new URL(m.url).origin; } catch { return null; } })
     .filter((o) => o && o.startsWith('http://'));
   if (origins.length) app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', origins.join(','));
+}
+
+/**
+ * Quit for real, even when a page is frozen: app.quit() waits for every page
+ * to agree to unload, and a hung page never answers.
+ */
+function quitNow() {
+  quitting = true;
+  bootLog('quit');
+  if (child && !child.killed) {
+    try { child.kill(); } catch { /* already gone */ }
+  }
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.destroy(); } catch { /* already gone */ }
+  }
+  app.quit();
+  setTimeout(() => app.exit(0), 1500).unref?.();
 }
 
 const gotLock = app.requestSingleInstanceLock();

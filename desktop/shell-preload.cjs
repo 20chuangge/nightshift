@@ -22,4 +22,7 @@ contextBridge.exposeInMainWorld('desk', {
   removeMachine: (url) => ipcRenderer.invoke('desk:remove-machine', url),
   syncModel: () => ipcRenderer.invoke('desk:sync-model'),
   syncVoice: (voice) => ipcRenderer.invoke('desk:sync-voice', voice),
+  voiceStart: () => ipcRenderer.invoke('desk:voice-start'),
+  voiceStop: () => ipcRenderer.invoke('desk:voice-stop'),
+  voiceCancel: () => ipcRenderer.invoke('desk:voice-cancel'),
 });

@@ -888,7 +888,7 @@ export function createRegistry(deps) {
   add({
     name: 'bot_create',
     description:
-      'Create a new teammate bot on this machine. It appears in the roster immediately with its own memory and its own transcript. Give it only the tools it needs; defaults to none.',
+      'Create a new teammate bot on this machine. It appears in the roster immediately with its own memory and its own transcript. Give it only the tools it needs; defaults to none. Name it in the language the human writes in (Chinese conversation -> a Chinese name such as 编剧 or 美术). When the human asks for a team, first list the bots you would create (name + job, keep it to the fewest that cover the work) and ask before creating more than one; create a group only if the human asks for one or agrees.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
@@ -1096,6 +1096,10 @@ export function createRegistry(deps) {
       }
 
       const group = await ctx.groups.createGroup({ name: args?.name, members, coordinatorId });
+      // Members introduce themselves in the new group once this turn has moved on.
+      setTimeout(() => {
+        try { deps.getRuntime()?.kickoffGroup?.(group.id)?.catch?.(() => {}); } catch { /* no runtime in unit tests */ }
+      }, 0);
       return {
         created: true,
         group: {

@@ -1054,6 +1054,8 @@ route('POST', /^\/api\/groups$/, async (_req, _res, { body, state }) => {
 
   const group = await groups.createGroup({ name: body?.name, members: memberIds, coordinatorId });
   state.bus.emit({ type: 'roster.changed', scope: 'groups', action: 'create', groupId: group.id });
+  // Members introduce themselves (job, progress, next step) right away.
+  state.runtime.kickoffGroup(group.id).catch((err) => console.error('[group] kickoff failed:', err.message));
   return { group: await publicGroup(group, bots) };
 });
 
@@ -1090,13 +1092,10 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   // transcript lands in data/groups/<id>.jsonl.
   const turnId = uid('turn');
   state.runtime
-    .runTurn({
-      botId: coordinator.id,
-      text,
-      source: 'group',
-      turnId,
+    .runGroupMessage({
       group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members },
-      groupRole: 'coordinator',
+      text,
+      turnId,
     })
     .catch((err) => {
       state.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });

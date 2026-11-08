@@ -490,8 +490,9 @@ export async function createBot(input = {}) {
   if (!name) {
     throw httpError(400, 'BOT_INVALID', 'a bot needs a name');
   }
-  const id = slugifyId(input.id || name);
-  if (!id) throw httpError(400, 'BOT_INVALID', 'could not derive an id from that name');
+  // A name in Chinese (or any non-Latin script) keeps its name; only the id,
+  // which goes into file names and URLs, is made up.
+  const id = slugifyId(input.id || name) || `bot-${Math.random().toString(36).slice(2, 8)}`;
 
   const existing = await readJson(botFile(id), null);
   if (existing) throw httpError(409, 'BOT_EXISTS', `a bot with id "${id}" already exists`);
