@@ -761,6 +761,8 @@ ipcMain.handle('desk:local-provision', async (_event, { method = 'GET', path: ap
 // and the machine swaps its code in and restarts (see src/selfupdate.mjs).
 const updating = new Set();
 const updateChecked = new Set();
+// A busy machine (a 1-core VM running Windows Update) can take a while to answer.
+const updateAttempts = new Map();
 
 function versionCmp(a, b) {
   const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
@@ -793,8 +795,15 @@ async function autoUpdateMachine(machine) {
   const name = machine.name || url.replace(/^https?:\/\//, '');
   const mine = app.getVersion();
   try {
-    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
-    if (!res || !res.ok) return; // off or unpaired: look again next time
+    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(15000) }).catch(() => null);
+    if (!res || !res.ok) {
+      // Off, unpaired or too busy to answer: try again in 2 minutes, a few times.
+      const n = (updateAttempts.get(url) || 0) + 1;
+      updateAttempts.set(url, n);
+      if (n < 5) setTimeout(() => autoUpdateMachine(machine), 2 * 60 * 1000);
+      return;
+    }
+    updateAttempts.delete(url);
     const health = await res.json();
     updateChecked.add(url);
     if (versionCmp(health.version, mine) >= 0) return;

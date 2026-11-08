@@ -750,7 +750,7 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
   if (!/^https?:\/\/[^/]+$/.test(url)) throw httpError(400, 'BAD_URL', 'url must be a machine address like http://host:4390');
   const headers = body?.cookie ? { cookie: String(body.cookie) } : {};
   const health = async () => {
-    const res = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
