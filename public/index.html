@@ -4095,7 +4095,7 @@ function groupSenderRow(sender, contentNode) {
 function renderGroupMessages() {
   messagesEl.innerHTML = '';
   const filtered = state.groupMessages.filter(
-    (m) => m && m.kind !== 'status' && (state.showProcess || m.kind !== 'tool'),
+    (m) => m && m.kind !== 'status' && (state.showProcess || m.kind !== 'tool' || isActionCard(m.name || m.tool)),
   );
   // Same reason as the 1:1 view: one voice should read as one bubble.
   const items = [];
@@ -5058,7 +5058,7 @@ function renderMessages() {
   // "像发消息一样" — the turn's tool calls are process, not conversation.
   // They live in the Activity panel; the transcript only shows what was said.
   const visible = state.messages.filter(
-    (m) => m.role !== 'status' && (state.showProcess || m.role !== 'tool'),
+    (m) => m.role !== 'status' && (state.showProcess || m.role !== 'tool' || isActionCard(m.name)),
   );
   const statuses = state.messages.filter((m) => m.role === 'status');
 
@@ -6160,6 +6160,11 @@ function bridgeClipboard(frame) {
   }, true);
 }
 
+/** Tool calls that put something in front of the human to act on. */
+function isActionCard(name) {
+  return name === 'request_takeover' || name === 'request_login';
+}
+
 function toolChip(item) {
   if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
   if (item.name === 'request_login' && !item.pending) return loginCard(item);
@@ -6448,7 +6453,7 @@ function handleEvent(ev) {
           ok: ev.ok, output: ev.result, reason: ev.denied ? '你拒绝了这次操作' : null,
         }));
       } else {
-        appendLiveChip({ name: ev.name, risk: ev.risk, ts: ev.ts, ok: ev.ok, output: ev.result, botId: ev.botId });
+        appendLiveChip({ name: ev.name, args: ev.args || {}, risk: ev.risk, ts: ev.ts, ok: ev.ok, output: ev.result, botId: ev.botId });
       }
       break;
     }
@@ -6511,7 +6516,11 @@ function appendLiveChip(chip) {
   // Same rule as renderMessages: the live stream must not leak tool chips into
   // the transcript when process display is off — but the turn must still look
   // alive, so keep the typing indicator updated with what is running.
-  if (!state.showProcess) {
+  // Cards the human has to act on (takeover, login form) are not "process":
+  // they always show, once the call has finished.
+  const card = chip && isActionCard(chip.name);
+  if (card && chip.pending) return;
+  if (!state.showProcess && !card) {
     if (chip && chip.name) showTyping(state.liveTurn?.botId || state.botId, `正在${toolNameLabel(chip.name)}…`);
     return;
   }

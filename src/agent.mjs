@@ -926,7 +926,7 @@ export class AgentRuntime {
     }
 
     this.pushToolResult(messages, call, result);
-    this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok, risk: verdict.risk, result });
+    this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, args: truncateJson(args, 2000), ok, risk: verdict.risk, result });
     await this.record(bot.id, {
       kind: 'tool',
       name,

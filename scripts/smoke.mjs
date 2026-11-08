@@ -2719,6 +2719,12 @@ function shanghaiWeekday(ts) {
     for (const id of ['set-add-machine', 'set-machines-list', 'machine-btn', 'machine-menu']) {
       check(`machine control ${id} is wired`, html.includes(`$('${id}')?.addEventListener`) || html.includes(`$('${id}').addEventListener`));
     }
+    // Takeover / login cards are things to click, not "process": hiding tool
+    // chips (the default) must not hide them, live or after a reload.
+    const filters = html.match(/state\.showProcess \|\| m\.(role|kind) !== 'tool'[^)]*\)/g) || [];
+    check('action cards: both transcripts keep takeover/login cards when tool chips are hidden', filters.length === 2 && filters.every((f) => f.includes('isActionCard(')));
+    const live = html.slice(html.indexOf('function appendLiveChip'), html.indexOf('function appendLiveChip') + 900);
+    check('action cards: the live stream shows them when tool chips are hidden', /isActionCard\(chip\.name\)/.test(live) && /!state\.showProcess && !card/.test(live));
   }
 
 main().catch(async (err) => {

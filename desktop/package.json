@@ -1,7 +1,7 @@
 {
   "name": "desk-desktop",
   "productName": "Nightshift",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "description": "Nightshift - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
