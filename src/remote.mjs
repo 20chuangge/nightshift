@@ -189,7 +189,7 @@ function execStream(client, command, { stdin = '', onLine = () => {}, timeoutMs 
     const timer = setTimeout(() => {
       if (done) return;
       done = true;
-      reject(remoteError('REMOTE_TIMEOUT', `那台机器上的安装超过 ${Math.round(timeoutMs / 60000)} 分钟还没结束（多半是下载太慢）。它可能还在后台继续装：过几分钟再点一次「连接并自动配置」，会等它装完再接着做。`));
+      reject(remoteError('REMOTE_TIMEOUT', `那台机器上的安装超过 ${Math.round(timeoutMs / 60000)} 分钟还没结束（多半是下载太慢），它会在后台继续装完。过几分钟再点一次「连接并自动配置」，会等它装完再接着做。`));
     }, timeoutMs);
 
     client.exec(command, (err, stream) => {

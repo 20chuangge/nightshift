@@ -824,4 +824,5 @@ window.DESK_I18N_EN = {
   "第 {0}/{1} 步 · 已用 {2} · 还要约 {3} 秒": "Step {0}/{1} · {2} elapsed · about {3} s left",
   "第 {0}/{1} 步 · 已用 {2} · 还要约 {3} 分钟": "Step {0}/{1} · {2} elapsed · about {3} min left",
   "完成 · 用时 {0}": "Done · took {0}",
+  "那台机器上的安装超过 {0} 分钟还没结束（多半是下载太慢），它会在后台继续装完。过几分钟再点一次「连接并自动配置」，会等它装完再接着做。": "Setup on that machine is still running after {0} minutes (most likely slow downloads); it will finish in the background. Press “Connect and set up” again in a few minutes and it will pick up from there.",
 };
