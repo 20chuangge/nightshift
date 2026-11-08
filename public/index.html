@@ -1286,6 +1286,20 @@
   .bot:hover .bot-more, .bot:focus-within .bot-more,
   .group:hover .bot-more, .group:focus-within .bot-more, .bot-more[aria-expanded="true"] { opacity: 1; }
   .group { position: relative; }
+  /* sidebar status: needs you > working > new result */
+  .att { flex: none; display: grid; place-items: center; min-width: 18px; height: 18px; }
+  .att i { display: block; width: 8px; height: 8px; border-radius: 50%; font-style: normal; }
+  .att.needs i { width: auto; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #f59e0b; color: #1a1205; font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center; }
+  .att.working i { background: var(--accent-2, #8b7bff); animation: att-pulse 1.2s ease-in-out infinite; }
+  .att.unread i { background: #3b82f6; }
+  @keyframes att-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
+  @media (prefers-reduced-motion: reduce) { .att.working i { animation: none; } }
+  .bot:hover .att, .group:hover .att, .bot:focus-within .att, .group:focus-within .att { display: none; }
+  @media (hover: none) { .bot:hover .att, .group:hover .att { display: grid; } }
+  .machine-badge { position: absolute; top: -2px; left: 16px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; color: #fff; background: #3b82f6; box-shadow: 0 0 0 2px var(--bg-2, #16171b); }
+  .machine-badge.needs { background: #f59e0b; color: #1a1205; }
+  #machine-menu .mm-att { font-size: 11px; font-weight: 600; color: #3b82f6; }
+  #machine-menu .mm-att.needs { color: #f59e0b; }
   .bot-more:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
   .bot-menu { right: var(--s2); top: calc(100% - 6px); }
   @media (hover: none) {
@@ -2603,6 +2617,7 @@
             <small id="machine-sub"><i class="machine-dot"></i>这台电脑</small>
           </div>
           <span class="machine-caret" aria-hidden="true">▾</span>
+          <span class="machine-badge" id="machine-badge" hidden></span>
         </button>
         <div class="menu" id="machine-menu" role="menu" hidden></div>
         <div class="new-bot">
@@ -3881,6 +3896,8 @@ function renderGroups() {
       || (members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : '还没有消息');
     text.appendChild(el('div', 'bot-preview', preview));
     row.appendChild(text);
+    const groupAtt = attentionBadge(`group:${group.id}`);
+    if (groupAtt) row.appendChild(groupAtt);
 
     // ⋯ / right-click: the same management a bot row has
     const more = el('button', 'bot-more', '⋯');
@@ -4020,6 +4037,7 @@ async function openGroup(id) {
   updateComposerMode();
   await loadGroupMessages();
   connectStream();
+  markSeen();
 }
 
 function openBotDm(id) {
@@ -4756,6 +4774,12 @@ async function boot() {
   await Promise.allSettled([loadSkills(), loadRoutines(), loadActivity()]);
   state.ready = true;
   connectStream();
+  loadAttention();
+  setInterval(loadAttention, 60000);
+  pollOtherMachines();
+  setInterval(pollOtherMachines, 20000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markSeen(); });
+  window.addEventListener('focus', () => markSeen());
   pollHealth();
   setInterval(pollHealth, 15000);
   // Keep the server's copy fresh enough for the primary bot to answer
@@ -4962,6 +4986,8 @@ function renderBots() {
 
     row.appendChild(av);
     row.appendChild(text);
+    const botAtt = attentionBadge(`bot:${bot.id}`);
+    if (botAtt) row.appendChild(botAtt);
     row.appendChild(more);
     row.appendChild(menu);
     row.addEventListener('click', () => selectBot(bot.id));
@@ -5008,6 +5034,7 @@ async function selectBot(id) {
   await Promise.allSettled([loadMessages(), loadMemory()]);
   loadSkills();
   refreshPendingApprovals();
+  markSeen();
 }
 
 /* ---------------------------------------------------------------------
@@ -6372,6 +6399,10 @@ function handleEvent(ev) {
     refreshRoster();
     return;
   }
+  if (ev.type === 'attention.changed') {
+    loadAttention();
+    return;
+  }
 
   const key = `${ev.type}|${ev.turnId || ''}|${ev.callId || ev.approvalId || ''}|${ev.ts || ''}`;
   if (!state.seenEvents.has(key)) {
@@ -7483,6 +7514,94 @@ function closeSettings() {
 }
 
 /* Autonomy switch: does this installation ask before high-risk actions? */
+/* --- sidebar status: needs you / working / new result ------------------------ */
+state.attention = { items: {} };
+state.otherMachines = [];
+let attentionTimer = null;
+
+function currentChatKey() {
+  if (isGroupMode()) return state.groupId ? `group:${state.groupId}` : null;
+  return state.botId ? `bot:${state.botId}` : null;
+}
+
+/** The status mark for one sidebar row, or null when there is nothing to say. */
+function attentionBadge(key) {
+  const item = state.attention?.items?.[key];
+  if (!item) return null;
+  // The chat on screen has no "new result": the human is looking at it.
+  const unread = item.unread && key !== currentChatKey();
+  let kind = '';
+  let label = '';
+  if (item.needsYou) {
+    kind = 'needs';
+    label = item.waiting?.kind === 'login' ? '需要你填写登录信息'
+      : item.waiting?.kind === 'takeover' ? '需要你接管屏幕'
+        : '需要你处理：有操作等你批准';
+  } else if (item.working) {
+    kind = 'working';
+    label = '正在工作';
+  } else if (unread) {
+    kind = 'unread';
+    label = '有新结果';
+  } else {
+    return null;
+  }
+  const node = el('span', `att ${kind}`);
+  node.title = label;
+  node.setAttribute('role', 'img');
+  node.setAttribute('aria-label', label);
+  const dot = document.createElement('i');
+  if (kind === 'needs') dot.textContent = '!';
+  node.appendChild(dot);
+  return node;
+}
+
+function loadAttention() {
+  clearTimeout(attentionTimer);
+  attentionTimer = setTimeout(async () => {
+    try { state.attention = await api('/api/attention'); } catch { return; /* older hub */ }
+    const key = currentChatKey();
+    if (key && state.attention.items?.[key]?.unread && document.visibilityState === 'visible') markSeen();
+    renderBots();
+    renderGroups();
+  }, 120);
+}
+
+/** The human is looking at the chat on screen. */
+function markSeen() {
+  const key = currentChatKey();
+  if (!key || document.visibilityState !== 'visible') return;
+  const item = state.attention?.items?.[key];
+  if (item) item.unread = false;
+  api('/api/attention/seen', { method: 'POST', body: { key } }).catch(() => {});
+}
+
+/** Other machines' status, from the desktop shell (the page cannot reach them itself). */
+async function pollOtherMachines() {
+  if (!window.desk?.machinesAttention) return;
+  try { state.otherMachines = (await window.desk.machinesAttention()) || []; } catch { return; }
+  const needs = state.otherMachines.reduce((n, m) => n + (m.needsYou || 0), 0);
+  const unread = state.otherMachines.reduce((n, m) => n + (m.unread || 0), 0);
+  const badge = $('machine-badge');
+  if (badge) {
+    badge.hidden = !(needs || unread);
+    badge.className = `machine-badge${needs ? ' needs' : ''}`;
+    badge.textContent = String(needs || unread || '');
+    const who = state.otherMachines.filter((m) => m.needsYou || m.unread).map((m) => m.name).join('、');
+    badge.title = needs ? `其他机器上有 ${needs} 处需要你处理（${who}）` : `其他机器上有 ${unread} 个新结果（${who}）`;
+  }
+  renderMachineMenu();
+}
+
+function machineAttLabel(url) {
+  const m = state.otherMachines?.find((x) => x.url === (url || 'local'));
+  if (!m) return '';
+  if (m.needsYou) return `<span class="mm-att needs">${escapeHtml(`${m.needsYou} 处等你`)}</span>`;
+  if (m.unread) return `<span class="mm-att">${escapeHtml(`${m.unread} 个新结果`)}</span>`;
+  if (m.working) return `<span class="mm-att">${escapeHtml('工作中')}</span>`;
+  return '';
+}
+
 /* --- vault (Settings > 保险箱, and the login card in chat) --------------------- */
 state.vault = null;
 
@@ -8226,7 +8345,7 @@ function renderMachineMenu() {
     })));
   menu.innerHTML = rows.map((m) => `
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" data-machine="${escapeHtml(m.url)}">
-      <b>${escapeHtml(m.name)}</b><small>${escapeHtml(m.sub)}</small>
+      <b>${escapeHtml(m.name)}</b>${machineAttLabel(m.url)}<small>${escapeHtml(m.sub)}</small>
     </button>`).join('')
     + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加机器…</button>';
 }

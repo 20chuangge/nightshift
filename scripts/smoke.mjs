@@ -2767,6 +2767,48 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const after = await api('/api/vault');
     check('vault: delete removes it', gone.status === 200 && !(after.json?.entries || []).length);
   }
+  // Sidebar status: working / needs you / new result, per bot and per group.
+  {
+    const os = await import('node:os');
+    const fsx = await import('node:fs');
+    const { EventBus } = await import('../src/store.mjs');
+    const { createAttention } = await import('../src/attention.mjs');
+    const dir = fsx.mkdtempSync(path.join(os.tmpdir(), 'att-'));
+    const file = path.join(dir, 'attention.json');
+    const bus = new EventBus();
+    const att = createAttention({ file, bus });
+    await att.load();
+    let notices = 0;
+    bus.subscribe((e) => { if (e.type === 'attention.changed') notices += 1; });
+    const tick = () => new Promise((r) => setTimeout(r, 400));
+    bus.emit({ type: 'turn.start', botId: 'a', turnId: 't1' });
+    bus.emit({ type: 'turn.start', botId: 'b', groupId: 'g1', turnId: 't2' });
+    let s = att.snapshot();
+    check('status: a running turn shows as working, a group member turn counts for the group', s.items['bot:a']?.working && s.items['group:g1']?.working && !s.items['bot:b'] && s.working === 2);
+    bus.emit({ type: 'approval.request', botId: 'a', turnId: 't1', approvalId: 'ap1' });
+    s = att.snapshot();
+    check('status: an open approval card means "needs you"', s.items['bot:a'].needsYou && s.items['bot:a'].approvals === 1 && s.needsYou === 1);
+    bus.emit({ type: 'approval.resolved', botId: 'a', turnId: 't1', approvalId: 'ap1' });
+    bus.emit({ type: 'turn.end', botId: 'a', turnId: 't1', summary: 'done' });
+    bus.emit({ type: 'turn.end', botId: 'b', groupId: 'g1', turnId: 't2', summary: '等你填写「测试」的登录信息', waitingFor: 'login' });
+    s = att.snapshot();
+    check('status: a finished turn is a new result; waiting for a login still needs you', !s.items['bot:a'].working && s.items['bot:a'].unread && !s.items['bot:a'].needsYou && s.items['group:g1'].needsYou && s.items['group:g1'].waiting?.kind === 'login');
+    att.seen('bot:a');
+    s = att.snapshot();
+    check('status: looking at the chat clears "new result"; bad keys are refused', !s.items['bot:a'] && att.seen('../x') === false);
+    await tick();
+    const again = createAttention({ file, bus: new EventBus() });
+    await again.load();
+    const s2 = again.snapshot();
+    check('status: a wait for the human and what was seen survive a restart; working does not', s2.items['group:g1']?.needsYou && !s2.items['group:g1'].working && !s2.items['bot:a']);
+    bus.emit({ type: 'turn.start', botId: 'b', groupId: 'g1', turnId: 't3' });
+    check('status: the next turn in that chat ends the wait', !att.snapshot().items['group:g1'].needsYou);
+    check('status: changes are announced (batched) for the sidebar', notices >= 1 && notices < 8);
+    const r = await api('/api/attention');
+    const bad = await api('/api/attention/seen', { method: 'POST', body: { key: 'nope' } });
+    const ok = await api('/api/attention/seen', { method: 'POST', body: { key: 'bot:chief' } });
+    check('status: routes answer and check their input', r.status === 200 && typeof r.json?.needsYou === 'number' && bad.status === 400 && ok.status === 200);
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

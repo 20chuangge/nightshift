@@ -67,6 +67,7 @@ import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
+import { createAttention } from './attention.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
@@ -130,6 +131,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const security = await loadOrCreateSecurity();
 
   const bus = new EventBus();
+  const attention = createAttention({ file: path.join(P.dataDir, 'attention.json'), bus });
+  await attention.load();
   const approvals = new ApprovalQueue({
     timeoutMs: Number(config.policy.approvalTimeoutMs) || 10 * 60 * 1000,
     onAudit: (record) => audit(record),
@@ -240,6 +243,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     config,
     bus,
     approvals,
+    attention,
     routines,
     registry,
     runtime,
@@ -627,6 +631,17 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- attention (sidebar status) ----------------------------------------------
+//   GET  /api/attention        -> {items:{"bot:<id>"|"group:<id>": {working, needsYou, unread}}, needsYou, unread, working}
+//   POST /api/attention/seen   {key}   the human is looking at that chat
+
+route('GET', /^\/api\/attention$/, async (_req, _res, { state }) => state.attention.snapshot());
+
+route('POST', /^\/api\/attention\/seen$/, async (_req, _res, { body, state }) => {
+  if (!state.attention.seen(body?.key)) throw httpError(400, 'BAD_KEY', 'key must be bot:<id> or group:<id>');
+  return { ok: true };
+});
 
 // --- vault -------------------------------------------------------------------
 //   GET    /api/vault            -> {entries:[{id,name,site,fields:[labels]}]}   never values
@@ -1734,7 +1749,7 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   let closed = false;
   // Roster edits are global: every window needs them regardless of which bot
   // or group it happens to be looking at.
-  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed']);
+  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed']);
   const send = (event) => {
     if (closed) return;
     if (!GLOBAL_EVENTS.has(event.type)) {

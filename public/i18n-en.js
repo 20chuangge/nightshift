@@ -959,4 +959,13 @@ window.DESK_I18N_EN = {
   "填的内容加密存在这台机器上，不会出现在聊天里，也不会发给 AI 模型。": "What you type is encrypted on this machine; it never appears in the chat and is never sent to the AI model.",
   "保险箱存了「{0}」（{1}）": "vault saved “{0}” ({1})",
   "保险箱删了一条": "vault entry deleted",
+  "需要你填写登录信息": "Needs your login details",
+  "需要你处理：有操作等你批准": "Needs you: an action is waiting for approval",
+  "正在工作": "Working",
+  "有新结果": "New result",
+  "其他机器上有 {0} 处需要你处理（{1}）": "{0} item(s) need you on other machines ({1})",
+  "其他机器上有 {0} 个新结果（{1}）": "{0} new result(s) on other machines ({1})",
+  "{0} 处等你": "{0} waiting",
+  "{0} 个新结果": "{0} new",
+  "工作中": "working",
 };

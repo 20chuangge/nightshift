@@ -378,6 +378,7 @@ export class AgentRuntime {
     let summary = '';
     let steps = 0;
     let finished = false;
+    let waitingFor = null;
 
     try {
       const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole });
@@ -537,6 +538,7 @@ export class AgentRuntime {
           if (call.name === 'request_login' && outcome?.ok !== false) {
             const what = String((call.arguments || call.args || {}).name || '').trim() || '这个网站';
             summary = `等你填写「${what}」的登录信息`;
+            waitingFor = 'login';
             await this.streamText(baseEvent, bot, turnId, `需要「${what}」的登录信息。\n\n在下面的表单里填写，内容会加密存进这台机器的保险箱，我看不到；填好后点「保存并继续」。`);
             finished = true;
             break;
@@ -544,6 +546,7 @@ export class AgentRuntime {
           if (call.name === 'request_takeover' && outcome?.ok !== false) {
             const what = String((call.arguments || call.args || {}).reason || '').trim() || '完成这一步';
             summary = `等你接管屏幕：${what}`;
+            waitingFor = 'takeover';
             await this.streamText(baseEvent, bot, turnId, `需要你接管一下屏幕：${what}\n\n点下面的「接管屏幕」，弄好后点「我弄好了，继续」。`);
             finished = true;
             break;
@@ -646,6 +649,7 @@ export class AgentRuntime {
         steps,
         startedAt,
         endedAt,
+        ...(waitingFor ? { waitingFor } : {}),
       });
     }
   }

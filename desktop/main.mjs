@@ -639,6 +639,24 @@ ipcMain.handle('desk:list-machines', () => ({
   machines: readMachines(),
 }));
 
+// Sidebar badge: what is waiting on the machines this window is NOT showing.
+// The page cannot reach them (other origins); this process has their cookies.
+ipcMain.handle('desk:machines-attention', async () => {
+  const others = [{ name: L('本机', 'This computer'), url: 'local', target: localUrl() }]
+    .concat(readMachines().map((m) => ({ name: m.name, url: m.url, target: m.url })))
+    .filter((m) => (m.url === 'local' ? Boolean(remoteHub) : m.url !== remoteHub));
+  return Promise.all(others.map(async (m) => {
+    try {
+      const res = await net.fetch(`${String(m.target).replace(/\/+$/, '')}/api/attention`, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) return { name: m.name, url: m.url, reachable: false };
+      const a = await res.json();
+      return { name: m.name, url: m.url, reachable: true, needsYou: a.needsYou || 0, unread: a.unread || 0, working: a.working || 0 };
+    } catch {
+      return { name: m.name, url: m.url, reachable: false };
+    }
+  }));
+});
+
 ipcMain.handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
 ipcMain.handle('desk:use-local', (_event, message) => switchTo('', message));
 // Handed over once, and only to the machine it was meant for.
