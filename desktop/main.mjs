@@ -661,6 +661,12 @@ ipcMain.handle('desk:machines-attention', async () => {
 // brings the window back and tells the page what it was about.
 const liveNotes = new Set();
 ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
+  // The taskbar button flashes until the window is used: this works even when
+  // Windows notifications are turned off (they often are).
+  if (win && !win.isDestroyed() && !win.isFocused()) {
+    win.flashFrame(true);
+    win.once('focus', () => { if (!win.isDestroyed()) win.flashFrame(false); });
+  }
   if (!Notification.isSupported()) return false;
   const note = new Notification({ title: String(title).slice(0, 120), body: String(body).slice(0, 240) });
   liveNotes.add(note);

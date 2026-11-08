@@ -2733,7 +2733,7 @@ function shanghaiWeekday(ts) {
     check('takeover: a request in the open chat pops the full-window takeover, elsewhere it notifies', /if \(takeover\) popupTakeover\(\)/.test(html) && /notifyHuman\(\{/.test(html) && /onActionRequest\(ev\)/.test(html));
     const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
     const preload = await fsp.readFile(new URL('../desktop/shell-preload.cjs', import.meta.url), 'utf8');
-    check('notifications: the shell shows them and a click comes back to the page', /ipcMain\.handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
+    check('notifications: the shell shows them and a click comes back to the page', /ipcMain\.handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /flashFrame\(true\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
   }
 
 main().catch(async (err) => {
