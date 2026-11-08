@@ -66,6 +66,7 @@ import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
+import * as mediaModule from './media.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -129,6 +130,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const apiKey = await settingsModule.loadSecret();
   const voice = await voiceModule.loadVoice();
   const vision = await visionModule.loadVision();
+  const media = await mediaModule.loadMedia();
   const security = await loadOrCreateSecurity();
 
   const bus = new EventBus();
@@ -184,6 +186,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     },
     // Resolved at call time: settings, voice and vision keys can change live.
     getVision: () => (refs.getVision ? refs.getVision() : null),
+    getMedia: (kind) => (refs.getMedia ? refs.getMedia(kind) : null),
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -256,6 +259,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     apiKey, // never projected into a response; only `hasKey` leaves this module
     voice, // speech-to-text config; its key is write-only too
     vision, // image-understanding config; same rules
+    media, // image / video generation config; same rules
     security,
     workspaceDir,
     startedAt: Date.now(),
@@ -278,6 +282,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     },
   };
   refs.getVision = () => visionModule.resolveVision(state.vision, { settings: state.settings, chatKey: state.apiKey, voice: state.voice });
+  refs.getMedia = (kind) => mediaModule.resolveMedia(state.media, kind, { voice: state.voice });
 
   // -------------------------------------------------------------------------
   // product-state callbacks used by the primary bot's settings/ui tools
@@ -736,6 +741,20 @@ route('PUT', /^\/api\/vision$/, async (_req, _res, { body, state }) => {
   return visionModule.publicVision(state.vision, visionCtx(state));
 });
 
+// --- image / video generation ------------------------------------------------
+//   GET /api/media                -> {image:{available, source, service, baseUrl, model, hasKey, services}, video:{...}}
+//   PUT /api/media/(image|video)  {service?, baseUrl?, model?, apiKey?}
+
+route('GET', /^\/api\/media$/, async (_req, _res, { state }) => mediaModule.publicMedia(state.media, { voice: state.voice }));
+
+route('PUT', /^\/api\/media\/(?<kind>image|video)$/, async (_req, _res, { params, body, state }) => {
+  const patch = {};
+  for (const k of ['service', 'baseUrl', 'model', 'apiKey']) if (body?.[k] !== undefined) patch[k] = body[k];
+  if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {service?, baseUrl?, model?, apiKey?}');
+  state.media = await mediaModule.saveMedia(state.media, params.kind, patch);
+  return mediaModule.publicMedia(state.media, { voice: state.voice });
+});
+
 route('GET', /^\/api\/voice$/, async (_req, _res, { state }) => voiceModule.publicVoice(state.voice, state.settings, state.apiKey));
 
 route('PUT', /^\/api\/voice$/, async (_req, _res, { body, state }) => {
@@ -1003,6 +1022,7 @@ const MIME_BY_EXT = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
   '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8', '.json': 'application/json', '.zip': 'application/zip',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
 };
 const mimeOf = (name) => MIME_BY_EXT[path.extname(String(name)).toLowerCase()] || 'application/octet-stream';
 

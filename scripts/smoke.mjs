@@ -2764,6 +2764,50 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
   }
+  // Image / video generation against a stand-in provider (no network, no cost).
+  {
+    const os = await import('node:os');
+    const fsx = await import('node:fs');
+    const MD = await import('../src/media.mjs');
+    const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'media-'));
+    const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
+    const calls = [];
+    let polls = 0;
+    const fakeFetch = async (url, init = {}) => {
+      calls.push([init.method || 'GET', url, init.body ? JSON.parse(init.body) : null]);
+      const json = (o) => ({ ok: true, status: 200, headers: new Map(), text: async () => JSON.stringify(o) });
+      if (url.endsWith('/images/generations')) {
+        return calls.at(-1)[2].image_size ? json({ images: [{ url: 'https://cdn.test/a.png' }] }) : json({ data: [{ b64_json: PNG.toString('base64') }] });
+      }
+      if (url.endsWith('/video/submit')) return json({ requestId: 'r1' });
+      if (url.endsWith('/video/status')) { polls += 1; return json(polls < 2 ? { status: 'InProgress' } : { status: 'Succeed', results: { videos: [{ url: 'https://cdn.test/v.mp4' }] } }); }
+      if (url.endsWith('/contents/generations/tasks')) return json({ id: 't1' });
+      if (url.includes('/contents/generations/tasks/t1')) return json({ status: 'succeeded', content: { video_url: 'https://cdn.test/w.mp4' } });
+      if (url.startsWith('https://cdn.test/')) return { ok: true, status: 200, headers: new Map([['content-type', url.endsWith('.png') ? 'image/png' : 'video/mp4']]), arrayBuffer: async () => PNG };
+      return { ok: false, status: 404, headers: new Map(), text: async () => 'nope' };
+    };
+    const sf = MD.resolveMedia({ image: { service: '', apiKey: '' }, video: { service: '', apiKey: '' } }, 'image', { voice: { baseUrl: 'https://api.siliconflow.cn/v1', apiKey: 'sk-voice' } });
+    check('generation: a SiliconFlow voice key works for pictures too', sf?.source === 'voice' && sf.kind === 'siliconflow' && sf.model === 'Kwai-Kolors/Kolors');
+    const img = await MD.generateImages(sf, { prompt: '一只橘猫', size: '720x1280' }, { workspaceDir: ws, fetchImpl: fakeFetch });
+    const sent = calls.find((c) => c[1].endsWith('/images/generations'))[2];
+    check('generation: SiliconFlow image request and the picture lands in the workspace', sent.image_size === '720x1280' && sent.model === 'Kwai-Kolors/Kolors' && img.paths.length === 1 && /^generated\/\d{4}-\d{2}-\d{2}\/image-.+\.png$/.test(img.paths[0]) && fsx.existsSync(path.join(ws, img.paths[0])));
+    const oa = MD.resolveMedia({ image: { service: 'openai', apiKey: 'sk-own', baseUrl: '', model: '' } }, 'image', {});
+    const img2 = await MD.generateImages(oa, { prompt: 'a cat', count: 2 }, { workspaceDir: ws, fetchImpl: fakeFetch });
+    check('generation: OpenAI-shaped (base64) images, one call each', oa.source === 'own' && img2.paths.length === 2);
+    const vid = await MD.generateVideo(MD.resolveMedia({}, 'video', { voice: { apiKey: 'sk-voice' } }), { prompt: '海浪' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5 });
+    check('generation: SiliconFlow video is submitted, polled until done, saved as mp4', polls === 2 && /^generated\/.+\/video-.+\.mp4$/.test(vid.path) && fsx.existsSync(path.join(ws, vid.path)));
+    const ark = await MD.generateVideo(MD.resolveMedia({ video: { service: 'ark', apiKey: 'ark-key' } }, 'video', {}), { prompt: '海浪', imageDataUrl: 'data:image/png;base64,AA' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5 });
+    const arkBody = calls.find((c) => c[1].endsWith('/contents/generations/tasks'))[2];
+    check('generation: Ark Seedance task with a first frame', /\.mp4$/.test(ark.path) && arkBody.content.some((c) => c.type === 'image_url'));
+    let none = '';
+    try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }
+    check('generation: not configured says where to set it up', none === 'IMAGE_NOT_CONFIGURED');
+    const put = await api('/api/media/image', { method: 'PUT', body: { service: 'siliconflow', apiKey: 'sk-gen-secret-1' } });
+    const got = await api('/api/media');
+    const bad = await api('/api/media/image', { method: 'PUT', body: { service: 'nope' } });
+    check('generation: settings save, the key never comes back, bad service refused', put.status === 200 && got.json?.image?.hasKey && got.json.image.source === 'own' && !JSON.stringify(got.json).includes('sk-gen-secret-1') && bad.status === 400);
+    await api('/api/media/image', { method: 'PUT', body: { apiKey: '' } });
+  }
   // A model per bot: extra models with their own keys; a bot without one (or
   // whose model was deleted) uses the machine's default.
   {

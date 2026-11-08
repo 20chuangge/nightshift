@@ -930,7 +930,7 @@ async function putToMachine(url, apiPath, body) {
  */
 /** The same, for other write-only per-machine settings (vision). */
 ipcMain.handle('desk:sync-config', async (_event, { path: apiPath = '', body = {} } = {}) => {
-  if (!['/api/vision', '/api/voice'].includes(apiPath)) return { ok: false, error: 'bad path' };
+  if (!['/api/vision', '/api/voice', '/api/media/image', '/api/media/video'].includes(apiPath)) return { ok: false, error: 'bad path' };
   if (!body.apiKey) return { ok: false, error: L('没有密钥可同步', 'no key to sync') };
   const targets = [{ name: L('本机', 'This computer'), url: localUrl() }, ...readMachines()];
   const results = [];

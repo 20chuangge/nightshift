@@ -19,6 +19,7 @@ import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
 import { describeImage, imageMime } from './vision.mjs';
+import { generateImages, generateVideo } from './media.mjs';
 import { listVault, revealVault } from './vault.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -407,6 +408,66 @@ export function createRegistry(deps) {
         return { path: r.rel, model: seen.model, description: seen.text };
       } catch (err) {
         throw toolError(err.code || 'VISION_FAILED', err.message);
+      }
+    },
+  });
+
+  add({
+    name: 'image_generate',
+    description:
+      'Make pictures from a description (posters, illustrations, product shots, avatars, storyboard frames). The images are saved in the workspace under generated/ and shown in the chat when you mention their paths in your reply. Write the prompt in detail (subject, style, composition, lighting, colours); Chinese is fine. Costs a little money per image.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'What to draw, in detail.' },
+        size: { type: 'string', enum: ['1024x1024', '960x1280', '768x1024', '720x1280', '1280x720', '1024x768'], description: 'Width x height (default 1024x1024; 720x1280 for phone-screen portrait, 1280x720 for landscape).' },
+        count: { type: 'number', description: 'How many (1-4, default 1).' },
+        negativePrompt: { type: 'string', description: 'What to avoid (optional).' },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const service = typeof deps.getMedia === 'function' ? deps.getMedia('image') : null;
+      try {
+        const out = await generateImages(service, args || {}, { workspaceDir: ctx.workspaceDir });
+        return { paths: out.paths, model: out.model, seconds: Math.round(out.latencyMs / 1000), note: 'Mention each path in your reply so the human sees the images.' };
+      } catch (err) {
+        throw toolError(err.code || 'IMAGE_FAILED', err.message);
+      }
+    },
+  });
+
+  add({
+    name: 'video_generate',
+    description:
+      'Make a short video clip (about 5 seconds) from a description, optionally starting from a workspace image as the first frame. Takes 1-10 minutes; the mp4 is saved under generated/ and plays in the chat when you mention its path. Costs noticeably more than an image: make one clip unless asked for more.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'What happens in the clip: subject, action, camera movement, style.' },
+        image: { type: 'string', description: 'Optional workspace image to animate (first frame), e.g. generated/2026-11-08/image-x.png.' },
+        size: { type: 'string', enum: ['1280x720', '720x1280', '960x960'], description: 'Default 1280x720 (landscape).' },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const service = typeof deps.getMedia === 'function' ? deps.getMedia('video') : null;
+      let imageDataUrl = '';
+      if (args?.image) {
+        const r = resolvePath(ctx.workspaceDir, args.image);
+        const mime = imageMime(r.abs);
+        if (!mime) throw toolError('IMAGE_BAD_TYPE', `${r.rel} is not an image`);
+        try { imageDataUrl = `data:${mime};base64,${(await fsp.readFile(r.abs)).toString('base64')}`; } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+      }
+      try {
+        const out = await generateVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl }, { workspaceDir: ctx.workspaceDir, signal: ctx.signal });
+        return { path: out.path, model: out.model, seconds: Math.round(out.latencyMs / 1000), note: 'Mention the path in your reply so the human can play it.' };
+      } catch (err) {
+        throw toolError(err.code || 'VIDEO_FAILED', err.message);
       }
     },
   });
@@ -1590,7 +1651,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'image_view' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      if (name === 'task_finish' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;

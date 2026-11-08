@@ -39,7 +39,7 @@ export const PROVIDER_PRESETS = {
     label: 'DeepSeek 深度求索',
     kind: 'openai',
     baseUrl: 'https://api.deepseek.com/v1',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
+    models: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro', 'deepseek-flash'],
     keyUrl: 'https://platform.deepseek.com/api_keys',
   },
   moonshot: {

@@ -2492,6 +2492,11 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* generated videos in chat */
+  .att-video { display: flex; flex-direction: column; gap: 4px; max-width: min(520px, 100%); }
+  .att-video video { width: 100%; border-radius: 10px; background: #000; }
+  .att-video-dl { font-size: 11.5px; color: var(--dim); align-self: flex-end; }
+
   /* other models ------------------------------------------------------ */
   .models-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 
@@ -2931,6 +2936,44 @@
           <div class="btn-row">
             <button class="btn" id="vision-save" type="button">保存看图设置</button>
             <button class="btn tiny danger" id="vision-clear" type="button" hidden>清除看图密钥</button>
+          </div>
+        </div>
+        <div class="voice-set media-set" id="media-image-set" data-kind="image">
+          <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">生图</div>
+          <div class="row-note">让助手画图：海报、插画、头像、分镜。硅基流动的密钥就能用（和语音、看图同一个）。</div>
+          <div class="row-note" id="media-image-state">正在读取…</div>
+          <label class="lbl" for="media-image-service">服务</label>
+          <select class="field" id="media-image-service"></select>
+          <label class="lbl" for="media-image-model">模型</label>
+          <input class="field" id="media-image-model" autocomplete="off" spellcheck="false" list="media-image-models" />
+          <datalist id="media-image-models"></datalist>
+          <label class="lbl" for="media-image-baseurl">接口地址</label>
+          <input class="field" id="media-image-baseurl" autocomplete="off" spellcheck="false" inputmode="url" />
+          <label class="lbl" for="media-image-apikey">API 密钥</label>
+          <input class="field" id="media-image-apikey" type="password" placeholder="sk-…" autocomplete="new-password" spellcheck="false" />
+          <a class="row-note key-link" id="media-image-keyurl" href="#" target="_blank" rel="noreferrer">获取密钥</a>
+          <div class="btn-row">
+            <button class="btn" id="media-image-save" type="button">保存</button>
+            <button class="btn tiny danger" id="media-image-clear" type="button" hidden>清除密钥</button>
+          </div>
+        </div>
+        <div class="voice-set media-set" id="media-video-set" data-kind="video">
+          <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">生视频</div>
+          <div class="row-note">让助手生成 5 秒左右的短视频，可以从一张图开始动起来。比生图贵，一条要几分钟。</div>
+          <div class="row-note" id="media-video-state">正在读取…</div>
+          <label class="lbl" for="media-video-service">服务</label>
+          <select class="field" id="media-video-service"></select>
+          <label class="lbl" for="media-video-model">模型</label>
+          <input class="field" id="media-video-model" autocomplete="off" spellcheck="false" list="media-video-models" />
+          <datalist id="media-video-models"></datalist>
+          <label class="lbl" for="media-video-baseurl">接口地址</label>
+          <input class="field" id="media-video-baseurl" autocomplete="off" spellcheck="false" inputmode="url" />
+          <label class="lbl" for="media-video-apikey">API 密钥</label>
+          <input class="field" id="media-video-apikey" type="password" placeholder="sk-…" autocomplete="new-password" spellcheck="false" />
+          <a class="row-note key-link" id="media-video-keyurl" href="#" target="_blank" rel="noreferrer">获取密钥</a>
+          <div class="btn-row">
+            <button class="btn" id="media-video-save" type="button">保存</button>
+            <button class="btn tiny danger" id="media-video-clear" type="button" hidden>清除密钥</button>
           </div>
         </div>
       </section>
@@ -5427,6 +5470,21 @@ function splitAttachments(text) {
 
 function attachmentNode(file) {
   const url = `/api/workspace/file?path=${encodeURIComponent(file.path)}`;
+  if (file.video) {
+    const box = el('div', 'att-video');
+    const v = document.createElement('video');
+    v.src = url;
+    v.controls = true;
+    v.preload = 'metadata';
+    v.playsInline = true;
+    v.addEventListener('error', () => box.remove());
+    box.appendChild(v);
+    const dl = el('a', 'att-video-dl', '下载');
+    dl.href = url;
+    dl.setAttribute('download', file.name);
+    box.appendChild(dl);
+    return box;
+  }
   if (file.image) {
     const a = el('a', 'att-img');
     a.href = url;
@@ -5619,6 +5677,78 @@ function applyVisionProvider(fill = true) {
   const link = $('vision-keyurl');
   link.hidden = !p.keyUrl;
   if (p.keyUrl) link.href = p.keyUrl;
+}
+
+/* --- image / video generation settings (Settings > 模型 > 生图 / 生视频) -------- */
+const media = { status: null };
+
+async function loadMedia() {
+  const m = await api('/api/media');
+  media.status = m;
+  for (const kind of ['image', 'video']) {
+    const v = m[kind];
+    const note = $(`media-${kind}-state`);
+    if (!note || !v) continue;
+    note.textContent = !v.available
+      ? '还不能用：选一个服务并填密钥（硅基流动的密钥就行）。'
+      : v.source === 'voice' ? `已可用：沿用语音输入的硅基流动密钥，模型 ${v.model}。` : `已可用：${v.model}。`;
+    const select = $(`media-${kind}-service`);
+    select.innerHTML = (v.services || []).map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label)}</option>`).join('');
+    select.value = v.service;
+    applyMediaService(kind, false);
+    if (v.model) $(`media-${kind}-model`).value = v.model;
+    if (v.baseUrl) $(`media-${kind}-baseurl`).value = v.baseUrl;
+    $(`media-${kind}-apikey`).value = '';
+    $(`media-${kind}-apikey`).placeholder = v.hasKey ? '已保存（留空不改）' : 'sk-…';
+    $(`media-${kind}-clear`).hidden = !v.hasKey;
+  }
+  return m;
+}
+
+function applyMediaService(kind, fill = true) {
+  const services = media.status?.[kind]?.services || [];
+  const s = services.find((x) => x.id === $(`media-${kind}-service`).value);
+  if (!s) return;
+  $(`media-${kind}-models`).innerHTML = (s.models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+  $(`media-${kind}-model`).placeholder = s.model;
+  $(`media-${kind}-baseurl`).placeholder = s.baseUrl;
+  if (fill) {
+    $(`media-${kind}-model`).value = s.model;
+    $(`media-${kind}-baseurl`).value = s.baseUrl;
+  }
+  const link = $(`media-${kind}-keyurl`);
+  link.hidden = !s.keyUrl;
+  if (s.keyUrl) link.href = s.keyUrl;
+}
+
+async function saveMediaKind(kind, clear = false) {
+  const path = `/api/media/${kind}`;
+  const body = clear ? { apiKey: '' } : {
+    service: $(`media-${kind}-service`).value,
+    model: $(`media-${kind}-model`).value.trim(),
+    baseUrl: $(`media-${kind}-baseurl`).value.trim(),
+  };
+  const key = $(`media-${kind}-apikey`).value.trim();
+  if (!clear && key) body.apiKey = key;
+  const what = kind === 'image' ? '生图' : '生视频';
+  try {
+    await api(path, { method: 'PUT', body });
+    await loadMedia();
+    if (!clear && body.apiKey && window.desk?.syncConfig) {
+      const res = await window.desk.syncConfig({ path, body }).catch(() => null);
+      const failed = (res?.results || []).filter((r) => !r.ok);
+      toast(
+        !res?.ok ? `${what}设置已保存（没同步到其他机器）`
+          : failed.length ? `${what}设置已保存；没同步上：${failed.map((r) => `${r.name}（${r.error}）`).join('、')}`
+            : `${what}设置已保存，并同步到所有机器`,
+        Boolean(failed.length || !res?.ok),
+      );
+      return;
+    }
+    toast(clear ? `${what}密钥已清除` : `${what}设置已保存`);
+  } catch (err) {
+    toast(`保存失败：${err.message}`, true);
+  }
 }
 
 async function saveVision(clear = false) {
@@ -5893,12 +6023,13 @@ function assistantRow(text, { system = false, streaming = false } = {}) {
 function mentionedImages(text) {
   const seen = new Set();
   const out = [];
-  const re = /(?:^|[\s`'"(（「：:，,])((?:[\w.\-]+\/)+[\w.\-]+\.(?:png|jpe?g|gif|webp))(?=$|[\s`'")）」（(，。,.;；:：、!！?？])/gi;
+  const re = /(?:^|[\s`'"(（「：:，,])((?:[\w.\-]+\/)+[\w.\-]+\.(?:png|jpe?g|gif|webp|mp4|webm))(?=$|[\s`'")）」（(，。,.;；:：、!！?？])/gi;
   for (const m of String(text || '').matchAll(re)) {
     const p = m[1].replace(/^\.\//, '').replace(/^workspace\//, '');
     if (seen.has(p) || p.startsWith('/') || /:\/\//.test(p)) continue;
     seen.add(p);
-    out.push({ path: p, image: true, name: p.split('/').pop(), size: '' });
+    const video = /\.(mp4|webm)$/i.test(p);
+    out.push({ path: p, image: !video, video, name: p.split('/').pop(), size: '' });
     if (out.length >= 6) break;
   }
   return out;
@@ -7555,6 +7686,7 @@ function openSettings(section) {
   loadSettings().catch(() => { /* keep whatever we have */ });
   loadVoice().catch(() => { /* older server: no voice */ });
   loadVision().catch(() => { /* older server: no vision */ });
+  loadMedia().catch(() => { /* older server: no generation */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
   loadVault().catch(() => {});
@@ -9395,6 +9527,11 @@ function wireChrome() {
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
   $('voice-provider')?.addEventListener('change', () => applyVoiceProvider(true));
   $('vision-save')?.addEventListener('click', () => saveVision(false));
+  for (const kind of ['image', 'video']) {
+    $(`media-${kind}-save`)?.addEventListener('click', () => saveMediaKind(kind, false));
+    $(`media-${kind}-clear`)?.addEventListener('click', () => saveMediaKind(kind, true));
+    $(`media-${kind}-service`)?.addEventListener('change', () => applyMediaService(kind, true));
+  }
   $('vision-clear')?.addEventListener('click', () => saveVision(true));
   $('vision-provider')?.addEventListener('change', () => applyVisionProvider(true));
   $('voice-clear')?.addEventListener('click', () => saveVoice(true));
