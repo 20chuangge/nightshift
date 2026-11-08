@@ -766,6 +766,22 @@
     position: absolute; inset: 0; width: auto; height: auto; aspect-ratio: auto;
   }
   body.panel-max #pc-exit { display: inline-flex; }
+  .pc-done {
+    display: none;
+    position: fixed; right: 150px; bottom: 16px; z-index: 95;
+    border-radius: 10px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+    background: var(--accent); color: #fff; border: 1px solid transparent;
+  }
+  body.panel-max .pc-done.show { display: inline-flex; }
+  .conn-banner {
+    display: flex; align-items: center; gap: 10px; margin: 8px 16px 0; padding: 8px 12px;
+    border-radius: 10px; font-size: 12.5px; color: #fde68a;
+    background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);
+  }
+  .conn-banner[hidden] { display: none; }
+  .conn-banner span { flex: 1; min-width: 0; }
+  .machine-dot.off { background: var(--red, #ef4444); }
+  #machine-menu .mm-att.off { color: var(--dim); font-weight: 500; }
   .pc-exit {
     display: none;
     position: fixed; right: 16px; bottom: 16px; z-index: 95;
@@ -2670,6 +2686,7 @@
 
     <!-- center -->
     <section class="chat">
+      <div class="conn-banner" id="conn-banner" role="status" hidden><span id="conn-text"></span><button class="btn tiny" id="conn-retry" type="button">重试</button><button class="btn tiny" id="conn-local" type="button" hidden>切换到本机</button></div>
       <div class="chat-head">
         <button class="icon-btn" id="nav-toggle" type="button" aria-label="打开助手列表" aria-expanded="false" title="助手列表">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -2773,6 +2790,7 @@
               <button class="btn primary" id="pc-preview-take" type="button">接管桌面</button>
             </div>
             <button class="pc-exit" id="pc-exit" type="button">退出全屏 (Esc)</button>
+            <button class="pc-done" id="pc-done" type="button">我弄好了，继续</button>
           </div>
           <div class="pc-stats" id="pc-stats"></div>
           <div class="section-head" id="pc-procs-head" style="margin-top:14px"><span>进程</span></div>
@@ -4883,6 +4901,7 @@ async function pollHealth() {
   try {
     state.health = await api('/api/health');
     $('health-dot').className = `dot ${state.health.ok ? 'ok' : 'bad'}`;
+    setConnected(true);
     const m = state.health.model || {};
     if ((state.settings && state.settings.model && state.settings.model.provider) === undefined && $('settings-btn')) {
       $('settings-btn').title = `设置 · ${m.provider === 'mock' ? '演示模式' : `${m.model || m.provider}`.slice(0, 44)}`;
@@ -4890,6 +4909,8 @@ async function pollHealth() {
   } catch (err) {
     $('health-dot').className = 'dot bad';
     if (err.status === 401) return;
+    // A 4xx/5xx means the machine answered: only silence counts as offline.
+    if (!err.status) setConnected(false);
   }
 }
 
@@ -6105,10 +6126,7 @@ function takeoverCard(item) {
   const row = el('div', 'btn-row');
   const go = el('button', 'btn primary', '接管屏幕');
   go.type = 'button';
-  go.addEventListener('click', async () => {
-    openPanel('computer');
-    await openDesktopViewer();
-  });
+  go.addEventListener('click', () => popupTakeover());
   const done = el('button', 'btn', '我弄好了，继续');
   done.type = 'button';
   done.addEventListener('click', async () => {
@@ -6297,6 +6315,9 @@ function connectStream() {
   es.onopen = () => { $('health-dot').className = 'dot ok'; };
   es.onerror = () => {
     $('health-dot').className = 'dot warn';
+    // Check now instead of waiting for the next 15-second health poll.
+    clearTimeout(state.connCheck);
+    state.connCheck = setTimeout(pollHealth, 2500);
     // EventSource reconnects on its own.
   };
   es.onmessage = (event) => {
@@ -6408,6 +6429,8 @@ function handleEvent(ev) {
     loadAttention();
     return;
   }
+  if (ev.type === 'tool.result' && isActionCard(ev.name) && ev.ok !== false) onActionRequest(ev);
+  if (ev.type === 'approval.request') onApprovalRequest(ev);
 
   const key = `${ev.type}|${ev.turnId || ''}|${ev.callId || ev.approvalId || ''}|${ev.ts || ''}`;
   if (!state.seenEvents.has(key)) {
@@ -7573,6 +7596,7 @@ function loadAttention() {
     if (key && state.attention.items?.[key]?.unread && document.visibilityState === 'visible') markSeen();
     renderBots();
     renderGroups();
+    syncDoneButton();
   }, 120);
 }
 
@@ -7588,7 +7612,13 @@ function markSeen() {
 /** Other machines' status, from the desktop shell (the page cannot reach them itself). */
 async function pollOtherMachines() {
   if (!window.desk?.machinesAttention) return;
+  const before = new Map((state.otherMachines || []).map((m) => [m.url, m.needsYou || 0]));
   try { state.otherMachines = (await window.desk.machinesAttention()) || []; } catch { return; }
+  for (const m of state.otherMachines) {
+    if (before.has(m.url) && (m.needsYou || 0) > before.get(m.url)) {
+      notifyHuman({ title: `「${m.name}」上有事等你`, body: '点这里切换到那台机器', tag: `machine|${m.url}` });
+    }
+  }
   const needs = state.otherMachines.reduce((n, m) => n + (m.needsYou || 0), 0);
   const unread = state.otherMachines.reduce((n, m) => n + (m.unread || 0), 0);
   const badge = $('machine-badge');
@@ -7605,10 +7635,133 @@ async function pollOtherMachines() {
 function machineAttLabel(url) {
   const m = state.otherMachines?.find((x) => x.url === (url || 'local'));
   if (!m) return '';
+  if (m.reachable === false) return `<span class="mm-att off">${escapeHtml('离线')}</span>`;
   if (m.needsYou) return `<span class="mm-att needs">${escapeHtml(`${m.needsYou} 处等你`)}</span>`;
   if (m.unread) return `<span class="mm-att">${escapeHtml(`${m.unread} 个新结果`)}</span>`;
   if (m.working) return `<span class="mm-att">${escapeHtml('工作中')}</span>`;
   return '';
+}
+
+/* --- connection, takeover popup, notifications --------------------------------- */
+state.conn = { fails: 0, offline: false };
+
+/** Health answered (or not): after two misses in a row, say so above the chat. */
+function setConnected(ok) {
+  const banner = $('conn-banner');
+  if (ok) {
+    const was = state.conn.offline;
+    state.conn = { fails: 0, offline: false };
+    if (banner) banner.hidden = true;
+    document.querySelector('#machine-sub .machine-dot')?.classList.remove('off');
+    if (was) {
+      toast(`已重新连上「${machineDisplayName()}」`);
+      clearInterval(state.connRetry);
+      state.connRetry = null;
+      loadAttention();
+      if (isGroupMode()) loadGroupMessages(); else loadMessages();
+    }
+    return;
+  }
+  state.conn.fails += 1;
+  if (state.conn.fails < 2 || state.conn.offline) return;
+  state.conn.offline = true;
+  if (banner) {
+    $('conn-text').textContent = onLocalMachine()
+      ? '连不上本机的夜班服务，正在重连…'
+      : `连不上「${machineDisplayName()}」，正在重连…（那台机器可能关机、断网或在重启）`;
+    $('conn-local').hidden = onLocalMachine() || !window.desk?.useLocal;
+    banner.hidden = false;
+  }
+  document.querySelector('#machine-sub .machine-dot')?.classList.add('off');
+  // Try more often while it is down.
+  if (!state.connRetry) state.connRetry = setInterval(pollHealth, 5000);
+}
+
+function chatKeyOf(ev) {
+  return ev.groupId ? `group:${ev.groupId}` : ev.botId ? `bot:${ev.botId}` : null;
+}
+
+function chatName(key) {
+  const [kind, id] = String(key).split(/:(.*)/);
+  if (kind === 'group') return groupById(id)?.name || '群组';
+  return botById(id)?.name || id;
+}
+
+/** System notification, only when the window is not what the human is looking at. */
+async function notifyHuman({ title, body = '', tag = '' }) {
+  if (document.hasFocus()) return;
+  // Notifications are outside the page, where the UI translation never reaches.
+  const tr = (x) => (window.deskI18n?.t ? window.deskI18n.t(x) : x);
+  title = tr(title);
+  body = tr(body);
+  try {
+    if (window.desk?.notify) { await window.desk.notify({ title, body, tag }); return; }
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') await Notification.requestPermission();
+    if (Notification.permission !== 'granted') return;
+    const n = new Notification(title, { body, tag });
+    n.onclick = () => { window.focus(); window.deskNotificationClick(tag); };
+  } catch { /* notifications are a convenience */ }
+}
+
+/** A notification was clicked: go to what it was about. */
+window.deskNotificationClick = async (tag) => {
+  const [what, key, kind] = String(tag || '').split('|');
+  if (what === 'machine') { if (key && key !== location.origin) switchMachine(key === 'local' ? '' : key); return; }
+  if (what !== 'chat' || !key) return;
+  const [type, id] = key.split(/:(.*)/);
+  if (type === 'group' && state.groupId !== id) await openGroup(id);
+  if (type === 'bot' && (isGroupMode() || state.botId !== id)) await selectBot(id);
+  if (kind === 'takeover') popupTakeover();
+};
+
+/** Take over full-window right away, with "done" one click away. */
+async function popupTakeover() {
+  openPanel('computer');
+  await togglePanelMax(true);
+  await openDesktopViewer();
+  syncDoneButton();
+}
+
+/** The bot asked for a takeover or a login. */
+function onActionRequest(ev) {
+  const key = chatKeyOf(ev);
+  if (!key) return;
+  const takeover = ev.name === 'request_takeover';
+  const args = safeArgs(ev.args) || {};
+  const looking = key === currentChatKey() && document.hasFocus();
+  if (looking) {
+    if (takeover) popupTakeover();
+    return;
+  }
+  notifyHuman({
+    title: takeover ? `${chatName(key)} 需要你接管屏幕` : `${chatName(key)} 需要你填写登录信息`,
+    body: takeover ? String(args.reason || '点这里接管') : String(args.name || args.site || '点这里填写'),
+    tag: `chat|${key}|${takeover ? 'takeover' : 'login'}`,
+  });
+}
+
+function onApprovalRequest(ev) {
+  const key = chatKeyOf(ev);
+  if (!key || (key === currentChatKey() && document.hasFocus())) return;
+  notifyHuman({ title: `${chatName(key)} 有个操作等你批准`, body: toolNameLabel(ev.tool || ''), tag: `chat|${key}|approval` });
+}
+
+/** "我弄好了，继续" inside the full-window view, while this chat waits for a takeover. */
+function syncDoneButton() {
+  const btn = $('pc-done');
+  if (!btn) return;
+  const item = state.attention?.items?.[currentChatKey()];
+  btn.classList.toggle('show', item?.waiting?.kind === 'takeover');
+}
+
+async function finishTakeover() {
+  $('pc-done')?.classList.remove('show');
+  if (desktopTakeover()) closeDesktopViewer();
+  togglePanelMax(false);
+  const input = $('composer');
+  input.value = '我弄好了，继续';
+  await send();
 }
 
 /* --- vault (Settings > 保险箱, and the login card in chat) --------------------- */
@@ -7734,7 +7887,7 @@ function loginCard(item) {
   });
   const self = el('button', 'btn', '我自己接管屏幕登录');
   self.type = 'button';
-  self.addEventListener('click', async () => { openPanel('computer'); await openDesktopViewer(); });
+  self.addEventListener('click', () => popupTakeover());
   row.appendChild(save);
   row.appendChild(self);
   card.appendChild(row);
@@ -8943,6 +9096,9 @@ function wireChrome() {
   $('pc-preview-take').addEventListener('click', () => openDesktopViewer());
   $('pc-max').addEventListener('click', () => togglePanelMax());
   $('pc-exit').addEventListener('click', () => togglePanelMax(false));
+  $('pc-done')?.addEventListener('click', finishTakeover);
+  $('conn-retry')?.addEventListener('click', () => pollHealth());
+  $('conn-local')?.addEventListener('click', () => switchMachine(''));
   // machines: sidebar switcher + Settings → 机器
   $('machine-btn').addEventListener('click', (event) => {
     event.stopPropagation();

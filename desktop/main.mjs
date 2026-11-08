@@ -11,7 +11,7 @@
  *   resources/server/config/*   <- seed config, copied to userData on first run
  *   %APPDATA%/Desk/             <- ASSIST_HOME: config, skills, public, workspace, data
  */
-import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net } from 'electron';
+import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -657,6 +657,26 @@ ipcMain.handle('desk:machines-attention', async () => {
   }));
 });
 
+// System notification from the page (a bot needs the human); clicking it
+// brings the window back and tells the page what it was about.
+const liveNotes = new Set();
+ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
+  if (!Notification.isSupported()) return false;
+  const note = new Notification({ title: String(title).slice(0, 120), body: String(body).slice(0, 240) });
+  liveNotes.add(note);
+  const forget = () => liveNotes.delete(note);
+  note.on('click', () => {
+    forget();
+    showWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.executeJavaScript(`window.deskNotificationClick && window.deskNotificationClick(${JSON.stringify(String(tag))})`).catch(() => {});
+    }
+  });
+  note.on('close', forget);
+  note.show();
+  return true;
+});
+
 ipcMain.handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
 ipcMain.handle('desk:use-local', (_event, message) => switchTo('', message));
 // Handed over once, and only to the machine it was meant for.
@@ -980,6 +1000,8 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', showWindow);
+  // Windows only shows toasts for an app with an AppUserModelID (the installer's shortcut uses this one).
+  if (process.platform === 'win32') app.setAppUserModelId('com.desk.assistant');
 
   app.whenReady().then(async () => {
     try {
