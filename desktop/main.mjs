@@ -804,7 +804,7 @@ async function autoUpdateMachine(machine) {
   const name = machine.name || url.replace(/^https?:\/\//, '');
   const mine = app.getVersion();
   try {
-    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(15000) }).catch(() => null);
+    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
     if (!res || !res.ok) {
       // Off, unpaired or too busy to answer: try again in 2 minutes, a few times.
       const n = (updateAttempts.get(url) || 0) + 1;
@@ -812,10 +812,9 @@ async function autoUpdateMachine(machine) {
       if (n < 5) setTimeout(() => autoUpdateMachine(machine), 2 * 60 * 1000);
       return;
     }
-    updateAttempts.delete(url);
     const health = await res.json();
     updateChecked.add(url);
-    if (versionCmp(health.version, mine) >= 0) return;
+    if (versionCmp(health.version, mine) >= 0) { updateAttempts.delete(url); return; }
     if (!health.selfUpdate) {
       notifyPage(L(`「${name}」还是 ${health.version}：重新添加一次这台机器就能更新到 ${mine}，之后会自动更新`, `"${name}" is still on ${health.version}: add it again once to update it to ${mine}; after that it updates on its own`), true);
       return;
@@ -829,6 +828,7 @@ async function autoUpdateMachine(machine) {
     });
     const out = await r.json().catch(() => ({}));
     if (out.ok && out.updated) {
+      updateAttempts.delete(url);
       bootLog(`update ${url}: now ${out.to}`);
       if (remoteHub === url && win && !win.isDestroyed()) {
         win.webContents.reload();
@@ -843,7 +843,16 @@ async function autoUpdateMachine(machine) {
     } else {
       const why = out.message || out.error?.message || L('未知原因', 'unknown reason');
       bootLog(`update ${url} failed: ${why}`);
-      notifyPage(L(`「${name}」没能自动更新：${why}`, `Could not update "${name}": ${why}`), true);
+      // A slow or briefly unreachable machine gets another go: every 2 minutes,
+      // up to 5 times. "Add it again" is the one failure a retry cannot fix.
+      const n = (updateAttempts.get(url) || 0) + 1;
+      updateAttempts.set(url, n);
+      if (!out.needsSetup && n < 5) {
+        updateChecked.delete(url);
+        setTimeout(() => autoUpdateMachine(machine), 2 * 60 * 1000);
+      } else {
+        notifyPage(L(`「${name}」没能自动更新：${why}`, `Could not update "${name}": ${why}`), true);
+      }
     }
   } catch (err) {
     bootLog(`update ${url} failed: ${err.message}`);
