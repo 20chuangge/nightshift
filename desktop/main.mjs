@@ -732,6 +732,28 @@ ipcMain.handle('desk:voice-cancel', async () => {
   return true;
 });
 
+/**
+ * Setting up a machine always runs on THIS computer's hub, whichever machine
+ * the window shows: a remote hub would install its own (possibly older) copy,
+ * and re-adding a machine from its own page restarts the hub mid-install.
+ */
+ipcMain.handle('desk:local-provision', async (_event, { method = 'GET', path: apiPath = '', body } = {}) => {
+  if (!/^\/api\/remote\/provision(\/[\w-]+)?$/.test(apiPath)) return { status: 400, json: { error: { message: 'bad path' } } };
+  try {
+    const res = await net.fetch(`${localUrl().replace(/\/$/, '')}${apiPath}`, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not json */ }
+    return { status: res.status, json };
+  } catch (err) {
+    return { status: 0, json: { error: { message: err.message } } };
+  }
+});
+
 /** PUT JSON to a hub with this app's pairing cookie. -> {ok, error} */
 async function putToMachine(url, apiPath, body) {
   try {

@@ -7835,6 +7835,20 @@ function saveMachineFromModal() {
  * password lives in this job only. When it finishes the desktop shell pairs
  * with the new hub and adds it to the machine list.
  */
+/**
+ * In the desktop app, machine setup always runs on this computer (the page may
+ * belong to a remote machine, which would install its own older copy and
+ * restart itself mid-way when it is the target).
+ */
+async function provisionApi(path, options = {}) {
+  if (!window.desk?.localProvision || machineBridge?.local) return api(path, options);
+  const res = await window.desk.localProvision({ method: options.method || 'GET', path, body: options.body });
+  if (res.status >= 200 && res.status < 300) return res.json;
+  const err = new Error(res.json?.error?.message || (res.status ? `HTTP ${res.status}` : '连不上本机的夜班服务'));
+  err.status = res.status;
+  throw err;
+}
+
 async function startRemoteProvision(options) {
   const progress = $('vnc-progress');
   const save = $('vnc-save');
@@ -7892,7 +7906,7 @@ async function startRemoteProvision(options) {
   show('正在连接那台机器…');
   if (save) save.disabled = true;
   try {
-    const started = await api('/api/remote/provision', { method: 'POST', body: options });
+    const started = await provisionApi('/api/remote/provision', { method: 'POST', body: options });
     const jobId = started?.job?.id;
     if (!jobId) throw new Error('服务没有返回配置任务');
     let job = started.job;
@@ -7900,7 +7914,7 @@ async function startRemoteProvision(options) {
     while (job && job.state === 'running') {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       const before = job.message;
-      job = await api(`/api/remote/provision/${encodeURIComponent(jobId)}`);
+      job = await provisionApi(`/api/remote/provision/${encodeURIComponent(jobId)}`);
       show(job.message || '正在配置…');
       setBar(job);
       quietTicks = job.message === before ? quietTicks + 1 : 0;
