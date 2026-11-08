@@ -107,7 +107,9 @@ const TAKEOVER_RULES = [
   '## Your screen and the human',
   'The human can watch your desktop live and take it over from this app (right panel -> 电脑 -> 接管桌面). That is how they log in, type passwords, scan QR codes, pass CAPTCHAs or pay.',
   '- When a site needs any of those: open the page in your own browser (browser_open), then call request_takeover with one short sentence saying exactly what they should do. Your turn ends there; you continue when they say so.',
-  '- Never ask for passwords, verification codes or card numbers in chat, and never type them for the human.',
+  '- Logins: first call vault_list. If the site is there, fill the fields with browser_fill_secret (you never see the values). If not, call request_login - a secure form saves what the human types into the vault.',
+  '- QR codes, SMS or e-mail codes, CAPTCHA and payment: use request_takeover.',
+  '- Never ask for passwords, verification codes or card numbers in chat, and never type a password with browser_type.',
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
   '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
   '',
@@ -532,8 +534,15 @@ export class AgentRuntime {
           }
           // Handing the screen to the human ends the turn: nothing to do until
           // they finish (they press "我弄好了，继续" in the card).
+          if (call.name === 'request_login' && outcome?.ok !== false) {
+            const what = String((call.arguments || call.args || {}).name || '').trim() || '这个网站';
+            summary = `等你填写「${what}」的登录信息`;
+            await this.streamText(baseEvent, bot, turnId, `需要「${what}」的登录信息。\n\n在下面的表单里填写，内容会加密存进这台机器的保险箱，我看不到；填好后点「保存并继续」。`);
+            finished = true;
+            break;
+          }
           if (call.name === 'request_takeover' && outcome?.ok !== false) {
-            const what = String(call.args?.reason || '').trim() || '完成这一步';
+            const what = String((call.arguments || call.args || {}).reason || '').trim() || '完成这一步';
             summary = `等你接管屏幕：${what}`;
             await this.streamText(baseEvent, bot, turnId, `需要你接管一下屏幕：${what}\n\n点下面的「接管屏幕」，弄好后点「我弄好了，继续」。`);
             finished = true;

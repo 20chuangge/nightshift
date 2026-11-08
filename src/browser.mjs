@@ -1316,6 +1316,13 @@ class BrowserManager {
     return { ok: true, closed: true, pid };
   }
 
+  /** Where the page really is now (clicks and redirects move it). */
+  async currentUrl() {
+    await this.ensureSession();
+    const r = await this.evaluateRaw('location.href');
+    return r?.ok && r.value ? String(r.value) : (this.session?.pageUrl || '');
+  }
+
   async status() {
     const executable = detectBrowserExecutable();
     const session = this.session;

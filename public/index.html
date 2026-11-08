@@ -2462,6 +2462,19 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* vault ------------------------------------------------------------- */
+  .vault-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+  .vault-row { border: 1px solid var(--border-soft); border-radius: 12px; padding: 9px 11px; }
+  .vault-head { display: flex; align-items: center; gap: 8px; }
+  .vault-title { flex: 1; min-width: 0; }
+  .vault-title b { display: block; }
+  .vault-title small { color: var(--dim); font-size: 11px; }
+  .vault-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .vault-edit .field { margin: 0; }
+  .vault-add summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+  .login-card .field { margin: 6px 0; }
+  .login-saved { color: #50c878; margin: 6px 0; }
+
   /* activity log -------------------------------------------------------- */
   .audit-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
   .chip-btn { border: 1px solid var(--border-soft); background: transparent; color: var(--muted); border-radius: 999px; padding: 4px 11px; font-size: 12px; }
@@ -2774,6 +2787,7 @@
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
+      <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
       <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
       <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
       <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
@@ -2899,6 +2913,25 @@
         </div>
         <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
+      </section>
+
+      <section class="dsec" id="sec-vault">
+        <div class="dsec-head">保险箱</div>
+        <div class="row-note">网站的账号密码存在这里，机器人登录时直接从这里填，聊天里不出现，机器人自己也看不到。每台机器有自己的保险箱。</div>
+        <div class="row-note">内容加密保存在这台机器上：单独拷走文件也打不开；但能完全控制这台机器的人仍然能取出来。</div>
+        <div class="vault-list" id="vault-list"></div>
+        <details class="vault-add">
+          <summary>添加一条</summary>
+          <label class="lbl" for="vault-new-name">名字</label>
+          <input class="field" id="vault-new-name" placeholder="比如：京东" maxlength="60" autocomplete="off" />
+          <label class="lbl" for="vault-new-site">登录网址</label>
+          <input class="field" id="vault-new-site" placeholder="https://passport.jd.com" autocomplete="off" spellcheck="false" inputmode="url" />
+          <label class="lbl" for="vault-new-user">账号</label>
+          <input class="field" id="vault-new-user" autocomplete="off" spellcheck="false" />
+          <label class="lbl" for="vault-new-pass">密码</label>
+          <input class="field" id="vault-new-pass" type="password" autocomplete="new-password" />
+          <div class="btn-row"><button class="btn primary" id="vault-new-save" type="button">保存</button></div>
+        </details>
       </section>
 
       <section class="dsec" id="sec-audit">
@@ -6102,6 +6135,7 @@ function bridgeClipboard(frame) {
 
 function toolChip(item) {
   if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
+  if (item.name === 'request_login' && !item.pending) return loginCard(item);
   const info = describeTool(item.name, item.args);
   const details = el('details', 'chip');
   const summary = el('summary');
@@ -7426,6 +7460,7 @@ function openSettings(section) {
   loadVision().catch(() => { /* older server: no vision */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
+  loadVault().catch(() => {});
   closeSidebar();
   closePanel();
   state.settingsOpen = true;
@@ -7448,6 +7483,140 @@ function closeSettings() {
 }
 
 /* Autonomy switch: does this installation ask before high-risk actions? */
+/* --- vault (Settings > 保险箱, and the login card in chat) --------------------- */
+state.vault = null;
+
+async function loadVault() {
+  try { state.vault = (await api('/api/vault')).entries || []; } catch { state.vault = state.vault || []; }
+  renderVault();
+  return state.vault;
+}
+
+const isSecretLabel = (label) => /密码|password|口令|pin|passcode/i.test(String(label));
+
+function renderVault() {
+  const list = $('vault-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const entries = state.vault || [];
+  if (!entries.length) { list.appendChild(el('div', 'row-note', '保险箱是空的。机器人需要登录时会请你填，也可以在下面先添加。')); return; }
+  for (const entry of entries) {
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', entry.name));
+    title.appendChild(el('small', '', [entry.site ? hostOfUrl(entry.site) : '', (entry.fields || []).join('、')].filter(Boolean).join(' · ')));
+    head.appendChild(title);
+    const edit = el('button', 'btn tiny', '更新');
+    edit.type = 'button';
+    const del = el('button', 'btn tiny danger', '删除');
+    del.type = 'button';
+    head.appendChild(edit);
+    head.appendChild(del);
+    row.appendChild(head);
+    const form = el('div', 'vault-edit');
+    form.hidden = true;
+    for (const label of entry.fields || []) {
+      const input = document.createElement('input');
+      input.className = 'field';
+      input.dataset.label = label;
+      input.placeholder = `${label}（留空不改）`;
+      if (isSecretLabel(label)) { input.type = 'password'; input.autocomplete = 'new-password'; }
+      form.appendChild(input);
+    }
+    const save = el('button', 'btn primary tiny', '保存');
+    save.type = 'button';
+    save.addEventListener('click', async () => {
+      const values = {};
+      form.querySelectorAll('input[data-label]').forEach((i) => { if (i.value) values[i.dataset.label] = i.value; });
+      if (!Object.keys(values).length) { toast('没有要改的内容'); return; }
+      try { await api(`/api/vault/${encodeURIComponent(entry.id)}`, { method: 'PUT', body: { values } }); toast(`已更新「${entry.name}」`); loadVault(); } catch (err) { toast(`保存失败：${err.message}`, true); }
+    });
+    form.appendChild(save);
+    row.appendChild(form);
+    edit.addEventListener('click', () => { form.hidden = !form.hidden; });
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次删除'; return; }
+      try { await api(`/api/vault/${encodeURIComponent(entry.id)}`, { method: 'DELETE' }); toast(`已删除「${entry.name}」`); loadVault(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+    });
+    list.appendChild(row);
+  }
+}
+
+function hostOfUrl(u) {
+  try { return new URL(u).hostname; } catch { return String(u || ''); }
+}
+
+async function saveNewVaultEntry() {
+  const name = $('vault-new-name').value.trim();
+  const values = {};
+  if ($('vault-new-user').value) values['账号'] = $('vault-new-user').value;
+  if ($('vault-new-pass').value) values['密码'] = $('vault-new-pass').value;
+  if (!name || !Object.keys(values).length) { toast('填上名字和至少一项', true); return; }
+  try {
+    await api('/api/vault', { method: 'POST', body: { name, site: $('vault-new-site').value.trim(), values } });
+    ['vault-new-name', 'vault-new-site', 'vault-new-user', 'vault-new-pass'].forEach((id) => { $(id).value = ''; });
+    toast(`已存进保险箱：${name}`);
+    loadVault();
+  } catch (err) { toast(`保存失败：${err.message}`, true); }
+}
+
+/** The bot asked for a login: a form whose values go to the vault, never the chat. */
+function loginCard(item) {
+  const args = safeArgs(item.args) || {};
+  const name = String(args.name || '这个网站');
+  const fields = (Array.isArray(args.fields) && args.fields.length ? args.fields : ['账号', '密码']).map(String);
+  const card = el('div', 'takeover-card login-card');
+  card.appendChild(el('div', 'takeover-title', `登录「${name}」`));
+  if (args.site) card.appendChild(el('div', 'row-note', hostOfUrl(args.site)));
+  const done = () => {
+    card.querySelectorAll('input, .btn-row').forEach((n) => n.remove());
+    card.appendChild(el('div', 'login-saved', '✓ 已存进保险箱，机器人会用它登录'));
+  };
+  const inputs = fields.map((label) => {
+    const input = document.createElement('input');
+    input.className = 'field';
+    input.placeholder = label;
+    input.dataset.label = label;
+    input.autocomplete = 'off';
+    if (isSecretLabel(label)) { input.type = 'password'; input.autocomplete = 'new-password'; }
+    card.appendChild(input);
+    return input;
+  });
+  const row = el('div', 'btn-row');
+  const save = el('button', 'btn primary', '保存并继续');
+  save.type = 'button';
+  save.addEventListener('click', async () => {
+    const values = {};
+    for (const i of inputs) if (i.value) values[i.dataset.label] = i.value;
+    if (!Object.keys(values).length) { toast('先填写', true); return; }
+    save.disabled = true;
+    try {
+      await api('/api/vault', { method: 'POST', body: { name, site: args.site || '', values } });
+      inputs.forEach((i) => { i.value = ''; });
+      done();
+      loadVault().catch(() => {});
+      const input = $('composer');
+      input.value = `已把「${name}」的登录信息存进保险箱，继续`;
+      await send();
+    } catch (err) {
+      save.disabled = false;
+      toast(`保存失败：${err.message}`, true);
+    }
+  });
+  const self = el('button', 'btn', '我自己接管屏幕登录');
+  self.type = 'button';
+  self.addEventListener('click', async () => { openPanel('computer'); await openDesktopViewer(); });
+  row.appendChild(save);
+  row.appendChild(self);
+  card.appendChild(row);
+  card.appendChild(el('div', 'row-note', '填的内容加密存在这台机器上，不会出现在聊天里，也不会发给 AI 模型。'));
+  // Already saved (after a reload, or saved in settings): show that instead of the form.
+  const check = (entries) => { if ((entries || []).some((e) => e.name === name)) done(); };
+  if (state.vault) check(state.vault); else loadVault().then(check).catch(() => {});
+  return card;
+}
+
 /* --- activity log (Settings > 操作记录) -------------------------------------- */
 let auditView = 'important';
 
@@ -7474,6 +7643,10 @@ function auditLine(r) {
       return { icon: '✕', text: `${who} ${what(r.tool, r.args)}`, tag: '被拒绝', risk, bad: true };
     case 'tool.denied':
       return { icon: '⛔', text: `${who} 想 ${what(r.tool, r.args)}`, tag: '被拦下', bad: true, note: r.reason };
+    case 'vault.saved':
+      return { icon: '🔐', text: `保险箱存了「${r.name}」（${(r.fields || []).join('、')}）`, tag: '保险箱' };
+    case 'vault.deleted':
+      return { icon: '🔐', text: '保险箱删了一条', tag: '保险箱' };
     case 'desktop.takeover':
       return { icon: '🖥', text: who ? `接管了 ${who} 的桌面` : '接管了桌面', tag: r.mode === 'view' ? '只能看' : '能看能控', note: r.from ? `来自 ${r.from}` : '' };
     case 'policy.changed': {
@@ -8678,6 +8851,7 @@ function wireChrome() {
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
+  $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
   document.querySelectorAll('#audit-filters .chip-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       auditView = btn.dataset.view;

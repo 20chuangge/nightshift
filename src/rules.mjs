@@ -16,7 +16,7 @@ const CACHE_MAX = 300;
 const cache = new Map();
 
 /** Tools that are the bot talking to the human or to itself, never an action. */
-export const RULE_EXEMPT = new Set(['task_finish', 'request_takeover', 'image_view']);
+export const RULE_EXEMPT = new Set(['task_finish', 'request_takeover', 'request_login', 'vault_list', 'image_view']);
 
 export function normalizeRule(input) {
   const text = String(input?.text || '').trim().slice(0, 120);

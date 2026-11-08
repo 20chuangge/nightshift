@@ -19,6 +19,21 @@ import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
 import { describeImage, imageMime } from './vision.mjs';
+import { listVault, revealVault } from './vault.mjs';
+
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+/** Same site: equal hosts, or one is a subdomain of the other's registrable part (passport.jd.com ~ www.jd.com). */
+function sameSite(a, b) {
+  const x = hostOf(a);
+  const y = hostOf(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // IP addresses and single-label hosts must match exactly.
+  const isIp = (h) => /^[\d.]+$/.test(h) || h.includes(':');
+  if (isIp(x) || isIp(y) || !x.includes('.') || !y.includes('.')) return false;
+  const base = (h) => h.split('.').slice(-2).join('.');
+  return base(x) === base(y);
+}
 import { getBrowserManager } from './browser.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
@@ -262,6 +277,83 @@ export function createRegistry(deps) {
       }
       entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
       return { path: r.rel, count: entries.length, entries };
+    },
+  });
+
+  add({
+    name: 'vault_list',
+    description: 'List the logins the human saved in this machine\'s vault: names, websites and which fields each has (never the values). Check it before asking the human to log in.',
+    risk: RISK.LOW,
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async run() {
+      return { entries: await listVault() };
+    },
+  });
+
+  add({
+    name: 'request_login',
+    description:
+      'Ask the human for a login you do not have yet. The chat shows a secure form; what they type goes straight into this machine\'s vault - you never see it. Use it when a site needs a username and password and vault_list has no entry for it. Your turn ends; when they reply, use browser_fill_secret with the entry name. For QR codes, SMS codes, CAPTCHA or payment use request_takeover instead.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short name for the vault entry, e.g. "京东".' },
+        site: { type: 'string', description: 'The login page URL.' },
+        fields: { type: 'array', items: { type: 'string' }, description: 'Field labels to ask for (default ["账号", "密码"]).' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const fields = (Array.isArray(args?.fields) && args.fields.length ? args.fields : ['账号', '密码']).map(String).slice(0, 6);
+      return { waiting: true, name: String(args?.name || '').slice(0, 60), site: String(args?.site || '').slice(0, 300), fields };
+    },
+  });
+
+  add({
+    name: 'browser_fill_secret',
+    description:
+      'Type a value from the vault (a password, an account name) into a field on the current page, without the value ever reaching you. Give the vault entry name and the field ("账号"/"username", "密码"/"password"), plus the field ref from browser_snapshot or a CSS selector. It only works on the website the entry was saved for. The result says it was filled, never what was filled.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        entry: { type: 'string', description: 'Vault entry name, e.g. "京东".' },
+        field: { type: 'string', description: 'Which value: "账号"/"username" or "密码"/"password" (or the label used when it was saved).' },
+        ref: { type: 'string', description: 'Element ref from browser_snapshot, e.g. "@e3".' },
+        selector: { type: 'string', description: 'CSS selector, when you have no ref.' },
+        submit: { type: 'boolean', description: 'Press Enter afterwards.' },
+      },
+      required: ['entry', 'field'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      let secret;
+      try {
+        secret = await revealVault(args.entry, args.field);
+      } catch (err) {
+        throw toolError(err.code || 'VAULT_ERROR', err.message);
+      }
+      const mgr = browserManager(ctx);
+      // Never type a saved password into a different site (phishing, a page
+      // that talked the bot into it): the page must be on the entry's domain.
+      if (secret.entry.site) {
+        let here = '';
+        try { here = String(await mgr.currentUrl()); } catch { /* checked below */ }
+        if (!sameSite(here, secret.entry.site)) {
+          throw toolError('VAULT_WRONG_SITE', `「${secret.entry.name}」是给 ${hostOf(secret.entry.site)} 的，当前页面是 ${hostOf(here) || '未知'}，不填。`);
+        }
+      }
+      const result = await mgr.type({ ref: args.ref, selector: args.selector, text: secret.value, submit: Boolean(args.submit) });
+      // The result must not carry the value back: keep only what is safe.
+      const scrub = (v) => (typeof v === 'string' ? v.split(secret.value).join('•••') : v);
+      const safe = {};
+      for (const [k, v] of Object.entries(result || {})) {
+        if (/^(value|actual|text|typed)$/i.test(k)) continue;
+        safe[k] = typeof v === 'object' && v !== null ? JSON.parse(scrub(JSON.stringify(v))) : scrub(v);
+      }
+      return { ...safe, filled: !result?.error, entry: secret.entry.name, field: secret.field, length: secret.value.length };
     },
   });
 
@@ -1498,7 +1590,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'image_view' || name === 'request_takeover') return true;
+      if (name === 'task_finish' || name === 'image_view' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;

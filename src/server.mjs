@@ -66,6 +66,7 @@ import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
+import { listVault, putVault, deleteVault } from './vault.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
@@ -626,6 +627,36 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- vault -------------------------------------------------------------------
+//   GET    /api/vault            -> {entries:[{id,name,site,fields:[labels]}]}   never values
+//   POST   /api/vault            {name, site?, values:{label: value}}  create or update by name
+//   PUT    /api/vault/:id        {name?, site?, values?}                empty value = keep
+//   DELETE /api/vault/:id
+// Values go in and never come out through any route.
+
+route('GET', /^\/api\/vault$/, async () => ({ entries: await listVault() }));
+
+route('POST', /^\/api\/vault$/, async (_req, _res, { body, state }) => {
+  const entry = await putVault({ name: body?.name, site: body?.site, values: body?.values });
+  await audit({ kind: 'vault.saved', name: entry.name, fields: entry.fields });
+  state.bus.emit({ type: 'vault.changed' });
+  return { entry };
+});
+
+route('PUT', /^\/api\/vault\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {
+  const entry = await putVault({ id: params.id, name: body?.name, site: body?.site, values: body?.values });
+  await audit({ kind: 'vault.saved', name: entry.name, fields: entry.fields });
+  state.bus.emit({ type: 'vault.changed' });
+  return { entry };
+});
+
+route('DELETE', /^\/api\/vault\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
+  const result = await deleteVault(params.id);
+  await audit({ kind: 'vault.deleted', id: params.id });
+  state.bus.emit({ type: 'vault.changed' });
+  return result;
+});
 
 // --- vision (image_view) --------------------------------------------------
 //   GET /api/vision -> {available, source:'own'|'voice'|'model'|null, baseUrl, model, hasKey, providers}

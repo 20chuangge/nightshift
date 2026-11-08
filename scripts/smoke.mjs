@@ -2749,6 +2749,24 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
   }
+  // Vault: values go in, never come out of any route; encrypted on disk.
+  {
+    const fsx = await import('node:fs');
+    const SECRET = 'Zp4!vault-77';
+    const made = await api('/api/vault', { method: 'POST', body: { name: '测试站', site: 'https://login.example.com', values: { 账号: 'alice', 密码: SECRET } } });
+    const listed = await api('/api/vault');
+    const onDisk = fsx.readFileSync(path.join(home, 'data', 'vault.json'), 'utf8');
+    check('vault: saved, listed by name and field only, encrypted on disk', made.status === 200 && JSON.stringify(listed.json).includes('测试站') && !JSON.stringify(listed.json).includes(SECRET) && !JSON.stringify(made.json).includes(SECRET) && !onDisk.includes(SECRET) && !onDisk.includes('alice'));
+    const v = await import('../src/vault.mjs');
+    const viaAlias = await v.revealVault('测试站', 'password');
+    await api(`/api/vault/${made.json.entry.id}`, { method: 'PUT', body: { values: { 账号: 'bob', 密码: '' } } });
+    const kept = await v.revealVault('测试站', '密码');
+    const user = await v.revealVault('测试站', 'username');
+    check('vault: field names are forgiving; an empty value on update keeps the old one', viaAlias.value === SECRET && kept.value === SECRET && user.value === 'bob');
+    const gone = await api(`/api/vault/${made.json.entry.id}`, { method: 'DELETE' });
+    const after = await api('/api/vault');
+    check('vault: delete removes it', gone.status === 200 && !(after.json?.entries || []).length);
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');
