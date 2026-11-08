@@ -322,6 +322,12 @@ function normalizeBot(raw, index) {
     // file explicitly omits the key; an explicit [] means the bot can do nothing.
     tools: Array.isArray(raw.tools) ? raw.tools.map(String) : [],
     skills: Array.isArray(raw.skills) ? raw.skills.map(String) : [],
+    // Tools the human took away: a later release's grant migration must not
+    // hand them back.
+    revokedTools: Array.isArray(raw.revokedTools) ? raw.revokedTools.map(String) : [],
+    // Kept through edits: without it, renaming a built-in bot re-ran the
+    // grant migration on the next start.
+    ...(raw.seedGrantsVersion ? { seedGrantsVersion: Number(raw.seedGrantsVersion) } : {}),
     policy: {
       autoApproveMedium: policy.autoApproveMedium ?? false,
       denyPatterns: Array.isArray(policy.denyPatterns) ? policy.denyPatterns.map(String) : [],
@@ -440,7 +446,8 @@ export async function migrateSeedGrants() {
     if (Number(bot.seedGrantsVersion || 0) >= spec.version) continue;
     const tools = new Set(Array.isArray(bot.tools) ? bot.tools : []);
     const before = tools.size;
-    for (const tool of spec.tools) tools.add(tool);
+    const revoked = new Set(Array.isArray(bot.revokedTools) ? bot.revokedTools : []);
+    for (const tool of spec.tools) if (!revoked.has(tool)) tools.add(tool);
     bot.tools = [...tools];
     if (spec.policy && typeof spec.policy === 'object') {
       bot.policy = { ...(bot.policy || {}), ...spec.policy };
@@ -530,10 +537,20 @@ export async function updateBot(id, patch = {}) {
   const avatarPatch = parseAvatarInput(patch);
   const currentAvatar = normalizeAvatar(current.avatar, current.avatarColor);
 
+  // Abilities switched off in the UI are remembered as revoked; switching one
+  // back on clears it.
+  let revokedTools = Array.isArray(current.revokedTools) ? current.revokedTools : [];
+  if (Array.isArray(patch.tools)) {
+    const next = new Set(patch.tools.map(String));
+    const removed = (current.tools || []).filter((t) => !next.has(t));
+    revokedTools = [...new Set([...revokedTools, ...removed])].filter((t) => !next.has(t));
+  }
+
   const merged = normalizeBot(
     {
       ...current,
       ...patch,
+      revokedTools,
       id, // ids are immutable
       avatarColor: avatarPatch?.color || current.avatarColor,
       avatar: { ...currentAvatar, ...(avatarPatch || {}) },

@@ -2749,6 +2749,26 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
   }
+  // Per-bot abilities: switching one off is remembered through edits and migrations.
+  {
+    const fsx = await import('node:fs');
+    const botFileOf = (id) => path.join(home, 'config', 'bots', `${id}.json`);
+    const chief = (await api('/api/bots/chief')).json?.bot || JSON.parse(fsx.readFileSync(botFileOf('chief'), 'utf8'));
+    const without = (chief.tools || []).filter((t) => t !== 'shell');
+    await api('/api/bots/chief', { method: 'PATCH', body: { tools: without } });
+    await api('/api/bots/chief', { method: 'PATCH', body: { role: '改个职责' } });
+    const stored = JSON.parse(fsx.readFileSync(botFileOf('chief'), 'utf8'));
+    check('abilities: a removed ability is remembered, edits keep the migration marker', !stored.tools.includes('shell') && stored.revokedTools?.includes('shell') && Number(stored.seedGrantsVersion) > 0, JSON.stringify({ rv: stored.revokedTools, v: stored.seedGrantsVersion }));
+    const { migrateSeedGrants } = await import('../src/bots.mjs');
+    stored.seedGrantsVersion = 0; // pretend a newer release ships grants
+    fsx.writeFileSync(botFileOf('chief'), JSON.stringify(stored, null, 2));
+    await migrateSeedGrants();
+    const after = JSON.parse(fsx.readFileSync(botFileOf('chief'), 'utf8'));
+    check('abilities: a later grant migration does not hand a removed ability back', !after.tools.includes('shell') && after.tools.includes('browser_open'));
+    await api('/api/bots/chief', { method: 'PATCH', body: { tools: [...after.tools, 'shell'], role: chief.role } });
+    const back = JSON.parse(fsx.readFileSync(botFileOf('chief'), 'utf8'));
+    check('abilities: switching it back on clears the record', back.tools.includes('shell') && !(back.revokedTools || []).includes('shell'));
+  }
   {
     const get = await api('/api/policy');
     const set = await api('/api/policy', { method: 'PUT', body: { level: 'careful' } });

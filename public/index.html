@@ -2462,6 +2462,15 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* bot abilities ------------------------------------------------------- */
+  .ability-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 10px; }
+  .ability { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; font-size: 13px; }
+  .ability:has(input:checked) { border-color: var(--accent, #8b7cf6); }
+  .ability input { margin-top: 2px; }
+  .ability b { display: block; font-weight: 600; }
+  .ability small { display: block; color: var(--muted); font-size: 11px; }
+  .ability-trust { margin-bottom: 8px; font-size: 13px; }
+
   /* permissions --------------------------------------------------------- */
   .level-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
   .level-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 12px; cursor: pointer; }
@@ -3053,6 +3062,12 @@
     <input class="field" id="botedit-name-input" autocomplete="off" maxlength="40" />
     <label class="form-label" for="botedit-role-input" style="margin-top:12px">职责</label>
     <input class="field" id="botedit-role-input" autocomplete="off" maxlength="160" placeholder="这个 Bot 负责什么" />
+    <label class="lbl">它能做什么</label>
+    <div class="ability-list" id="botedit-abilities"></div>
+    <label class="switch-row ability-trust" for="botedit-trust">
+      <input type="checkbox" id="botedit-trust" />
+      <span>常规操作直接做，不用每次问我（「标准」级别下）</span>
+    </label>
     <div class="modal-note" id="botedit-note" hidden></div>
     <div class="btn-row">
       <button class="btn primary" id="botedit-save" type="button">保存</button>
@@ -4196,6 +4211,58 @@ function showGroupNote(text) {
 /* ---------------------------------------------------------------------
    bot management: rename / role / avatar / delete
    --------------------------------------------------------------------- */
+/** What a bot may do, in plain words; each ability is a group of tools. */
+const ABILITIES = [
+  { id: 'shell', label: '执行命令', note: '运行命令、装软件', tools: ['shell'] },
+  { id: 'files', label: '读写文件', note: '在工作区读、写、建文件夹', tools: ['fs_list', 'fs_read', 'fs_write', 'fs_mkdir'] },
+  { id: 'delete', label: '删除文件', note: '', tools: ['fs_delete'] },
+  { id: 'web', label: '上网和浏览器', note: '打开网页、抓取内容', tools: ['browser_open', 'http_fetch'] },
+  { id: 'memory', label: '记忆和技能', note: '记住你的习惯、保存做法', tools: ['memory_write', 'memory_read', 'skill_list', 'skill_read', 'skill_save'] },
+  { id: 'routines', label: '定时任务', note: '', tools: ['routine_create', 'routine_list', 'routine_run'] },
+  { id: 'team', label: '建机器人和群、派活', note: '', tools: ['bot_list', 'bot_message', 'bot_create', 'bot_update', 'bot_delete', 'group_create', 'group_post', 'group_list', 'group_update', 'group_delete'] },
+  { id: 'settings', label: '改设置', note: '模型、主题等', tools: ['settings_get', 'settings_update', 'ui_get', 'ui_set'] },
+  { id: 'machines', label: '切换机器', note: '把任务交给另一台机器', tools: ['machine_list', 'machine_switch'] },
+];
+
+function renderAbilities(bot) {
+  const box = $('botedit-abilities');
+  if (!box) return;
+  const have = new Set(bot.tools || []);
+  box.innerHTML = '';
+  for (const ab of ABILITIES) {
+    const count = ab.tools.filter((t) => have.has(t)).length;
+    const row = el('label', 'ability');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.dataset.ability = ab.id;
+    input.checked = count > 0;
+    input.indeterminate = count > 0 && count < ab.tools.length;
+    row.appendChild(input);
+    const text = el('span', '');
+    text.appendChild(el('b', '', ab.label));
+    if (ab.note) text.appendChild(el('small', '', ab.note));
+    row.appendChild(text);
+    box.appendChild(row);
+  }
+  $('botedit-trust').checked = Boolean(bot.policy?.autoApproveMedium);
+}
+
+/** The bot's tool list after the checkboxes: groups on/off, other tools kept. */
+function toolsFromAbilities(bot) {
+  const next = new Set(bot.tools || []);
+  for (const input of document.querySelectorAll('#botedit-abilities input[data-ability]')) {
+    const ab = ABILITIES.find((a) => a.id === input.dataset.ability);
+    if (!ab) continue;
+    // Untouched half-on groups stay as they were.
+    if (input.indeterminate) continue;
+    for (const t of ab.tools) {
+      if (input.checked) next.add(t);
+      else next.delete(t);
+    }
+  }
+  return [...next];
+}
+
 function openBotEdit(botId, options = {}) {
   const bot = botById(botId);
   if (!bot) return;
@@ -4206,6 +4273,7 @@ function openBotEdit(botId, options = {}) {
   $('botedit-title').textContent = `管理助手 · ${bot.name}`;
   $('botedit-name-input').value = bot.name || '';
   $('botedit-role-input').value = bot.role || '';
+  renderAbilities(bot);
   $('botedit-note').hidden = true;
   const preview = $('botedit-preview');
   preview.className = `av av-s-${avatarOf(bot).shape}`;
@@ -4246,8 +4314,10 @@ async function saveBotEdit() {
   const button = $('botedit-save');
   button.disabled = true;
   try {
-    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role } });
-    const updated = (res && res.bot) || { ...bot, name, role };
+    const tools = toolsFromAbilities(bot);
+    const policy = { autoApproveMedium: $('botedit-trust').checked };
+    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy } });
+    const updated = (res && res.bot) || { ...bot, name, role, tools, policy: { ...(bot.policy || {}), ...policy } };
     const index = state.bots.findIndex((b) => b.id === bot.id);
     if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
     renderBots();
