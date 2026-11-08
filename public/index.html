@@ -7889,6 +7889,9 @@ async function fillModelPreset(changed = false) {
   if (!select.options.length) {
     select.innerHTML = (state.providers || []).filter((p) => p.name !== 'mock')
       .map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.label)}</option>`).join('');
+    // Start on the default model's provider: there the key can stay empty.
+    const def = state.models?.default?.provider || state.settings?.model?.provider;
+    if (def && [...select.options].some((o) => o.value === def)) select.value = def;
   }
   const preset = (state.providers || []).find((p) => p.name === select.value);
   if (!preset) return;
