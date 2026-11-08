@@ -1015,4 +1015,10 @@ window.DESK_I18N_EN = {
   "{0}设置已保存，并同步到所有机器": "{0} settings saved and copied to all machines",
   "{0}密钥已清除": "{0} key cleared",
   "{0}设置已保存": "{0} settings saved",
+  "生成图片": "Generate images",
+  "想生成图片": "Wants to generate images",
+  "会调用生图服务，按张计费（通常几分钱）；图片存进工作区。": "Calls the image service, billed per image (usually a few cents); images go into the workspace.",
+  "生成视频": "Generate a video",
+  "想生成一段视频": "Wants to generate a video",
+  "会调用生视频服务，按条计费，比图片贵；要等几分钟。": "Calls the video service, billed per clip (more than images); takes a few minutes.",
 };
