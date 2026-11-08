@@ -57,17 +57,26 @@ export const DEFAULT_DENY_PATTERNS = [
  * wipe it still waits for a human: losing the box is not something a bot can
  * undo by itself.
  */
+// A word only counts as the command when it is in command position: at the
+// start, after ; & | ` ( or after sudo. "x11vnc -storepasswd ... /vnc/passwd"
+// or "cat /etc/passwd" is not the passwd command (the old pattern blocked both).
+const CMD = '(?:^|[;&|`(]\\s*|\\bsudo\\s+(?:-\\S+\\s+)*)';
+
 export const REMOTE_DENY_PATTERNS = [
   '\\brm\\s+(-\\S+\\s+)*(/|/\\*|~|/home|/etc|/usr|/var|/boot|/opt/desk-hub)(\\s|$)', // rm of / or a system root
-  '\\bmkfs',
+  `${CMD}mkfs`,
   '\\bdd\\b[^|;&]*\\bof=/dev/',
   '>\\s*/dev/(sd|nvme|vd|hd)[a-z]',
-  '\\b(shutdown|poweroff|halt)\\b',
-  '\\binit\\s+0\\b',
+  `${CMD}(shutdown|poweroff|halt)\\b`,
+  `${CMD}init\\s+0\\b`,
   '\\bsystemctl\\s+(stop|disable|mask|kill)\\s+(ssh|sshd|desk-hub)(\\.service)?\\b',
   '\\bufw\\s+(enable|default\\s+deny)\\b',
   '\\biptables\\b.*-P\\s+INPUT\\s+DROP',
-  '\\b(passwd|userdel|deluser)\\b',
+  `${CMD}(passwd|userdel|deluser)\\b`,
+  // The desktop is reached only through the paired hub: never open it to the network.
+  '\\bx11vnc\\b.*\\s-listen\\s+(?!127\\.|localhost\\b)',
+  '\\bwebsockify\\b.*\\b0\\.0\\.0\\.0:',
+  'LoopbackOnly\\b.*\\b0\\b',
   '\\b:\\(\\)\\s*\\{',
   // Windows hubs
   '\\bformat(\\.com)?\\s+[a-z]:',

@@ -101,6 +101,17 @@ function stripOwnTag(text, name) {
   return esc ? t.replace(new RegExp(`^\\s*[\\[【]\\s*${esc}\\s*[\\]】]\\s*[:：]?\\s*`, 'i'), '') : t;
 }
 
+/** How the human and the bot share the screen (Grok-Bot style hand-over). */
+const TAKEOVER_RULES = [
+  '## Your screen and the human',
+  'The human can watch your desktop live and take it over from this app (right panel -> 电脑 -> 接管桌面). That is how they log in, type passwords, scan QR codes, pass CAPTCHAs or pay.',
+  '- When a site needs any of those: open the page in your own browser (browser_open), then call request_takeover with one short sentence saying exactly what they should do. Your turn ends there; you continue when they say so.',
+  '- Never ask for passwords, verification codes or card numbers in chat, and never type them for the human.',
+  '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
+  '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
+  '',
+];
+
 /** The human's machines, as their desktop app reported them. */
 function machinesSection(ui) {
   const machines = ui?.machines || [];
@@ -206,6 +217,7 @@ export class AgentRuntime {
       toolDigest,
       '',
       ...machinesSection(this.getApp()?.uiState),
+      ...TAKEOVER_RULES,
       ...(effectivePolicy(this.config.policy).mode === 'remote'
         ? ['## This machine', 'This is a remote machine dedicated to you. You may use sudo (it needs no password) and install what you need. Act without asking; only commands that could cut the machine off or wipe it wait for a human.', '']
         : ['## This machine', "This is the human's own computer. Anything that changes it beyond the workspace waits for their approval.", '']),
@@ -311,8 +323,12 @@ export class AgentRuntime {
     }
     this.active.set(turnId, { controller, botId: bot.id });
 
-    const maxSteps = Math.min(Math.max(Number(bot.policy?.maxSteps) || 24, 1), 60);
-    const maxTurnMs = Number(bot.policy?.maxTurnMs) || 5 * 60 * 1000;
+    // Work until done, like comparable agents: a step is one tool call, and
+    // real work (search, open, read, fix, check) easily takes dozens. The old
+    // per-bot 12 / 5 min were floors, not ceilings; what stops a runaway turn
+    // now is the loop check below and the time budget.
+    const maxSteps = Math.min(Math.max(Number(bot.policy?.maxSteps) || 0, 80), 200);
+    const maxTurnMs = Math.max(Number(bot.policy?.maxTurnMs) || 0, 30 * 60 * 1000);
     const deadline = Date.now() + maxTurnMs;
     const startedAt = nowIso();
 
@@ -399,6 +415,9 @@ export class AgentRuntime {
       };
 
       const trail = [];
+      // Exact repeats of the same call (name + arguments) mean it is stuck.
+      const recentCalls = [];
+      let stuck = null;
       while (steps < maxSteps) {
         if (controller.signal.aborted) {
           status = 'cancelled';
@@ -495,6 +514,9 @@ export class AgentRuntime {
           const outcome = await this.executeToolCall({ call, ctx, bot, turnId, baseEvent, messages });
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
           if (trail.length > 12) trail.shift();
+          recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
+          if (recentCalls.length > 3) recentCalls.shift();
+          if (!stuck && recentCalls.length === 3 && recentCalls.every((c) => c === recentCalls[0])) stuck = call.name;
           // Roster edits made by a tool are invisible to every other window
           // (and to the sidebar of the very window that ran it), so announce
           // them. The UI re-reads /api/bots instead of guessing the diff.
@@ -506,6 +528,15 @@ export class AgentRuntime {
               by: bot.id,
               turnId,
             });
+          }
+          // Handing the screen to the human ends the turn: nothing to do until
+          // they finish (they press "我弄好了，继续" in the card).
+          if (call.name === 'request_takeover' && outcome?.ok !== false) {
+            const what = String(call.args?.reason || '').trim() || '完成这一步';
+            summary = `等你接管屏幕：${what}`;
+            await this.streamText(baseEvent, bot, turnId, `需要你接管一下屏幕：${what}\n\n点下面的「接管屏幕」，弄好后点「我弄好了，继续」。`);
+            finished = true;
+            break;
           }
           if (outcome.termination) {
             status = outcome.termination;
@@ -523,16 +554,24 @@ export class AgentRuntime {
         steps += 1;
         if (finished) break;
         if (status === 'needs_approval') break;
+        if (stuck) {
+          status = 'max_steps';
+          summary = `Stopped: repeated ${stuck} three times.`;
+          const note = `同一个操作（${stuck}）原样重复了 3 次，看起来卡住了，我先停下。\n\n告诉我换个思路，或者回一句「继续」让我再试。`;
+          await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
+          this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
+          break;
+        }
       }
 
-      if (!finished && status === 'success' && steps >= maxSteps) {
+      if (!finished && !stuck && status === 'success' && steps >= maxSteps) {
         status = 'max_steps';
         const last = trail.slice(-4).join(' → ') || '（没有工具调用）';
-        summary = `Stopped after ${maxSteps} steps without a task_finish.`;
+        summary = `Stopped after ${maxSteps} steps.`;
         // Say it in the chat, not only in the status row: a silent stop looks
         // like a crash.
         const note =
-          `我连着做了 ${steps} 步还没收尾，先停在这里，避免空转烧额度。\n\n`
+          `这件事已经做了 ${steps} 步还没完成，我先停一下，免得白白消耗额度。\n\n`
           + `最后几步：${last}\n\n`
           + '如果还要继续，回一句「继续」我就接着做；如果方向不对，告诉我该改哪里。';
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });

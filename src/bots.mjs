@@ -325,8 +325,8 @@ function normalizeBot(raw, index) {
     policy: {
       autoApproveMedium: policy.autoApproveMedium ?? false,
       denyPatterns: Array.isArray(policy.denyPatterns) ? policy.denyPatterns.map(String) : [],
-      maxSteps: Number(policy.maxSteps || 12),
-      maxTurnMs: Number(policy.maxTurnMs || 5 * 60 * 1000),
+      maxSteps: Number(policy.maxSteps || 80),
+      maxTurnMs: Number(policy.maxTurnMs || 30 * 60 * 1000),
     },
     createdAt: raw.createdAt || nowIso(),
   };

@@ -266,6 +266,24 @@ export function createRegistry(deps) {
   });
 
   add({
+    name: 'request_takeover',
+    description:
+      'Hand your screen to the human for a step only they should do: logging in, typing a password or verification code, scanning a QR code, a CAPTCHA, or paying. First open the page in your browser; then call this with one short sentence of what they should do (e.g. "在打开的京东页面登录你的账号"). The chat shows a card with a 接管屏幕 button; your turn ends, and you continue when they reply.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: 'What the human should do, one short sentence in their language.' },
+      },
+      required: ['reason'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      return { waiting: true, reason: String(args?.reason || '').slice(0, 300) };
+    },
+  });
+
+  add({
     name: 'image_view',
     description:
       'Look at an image in the workspace (an attachment the human sent, a screenshot you took) and get a description of it, including any text in it. Ask a specific question when you need something specific (e.g. "这个报错弹窗写了什么？", "表格第三列的数字"). Use it whenever the human sends an image or you need to know what a screenshot shows - you cannot see images otherwise.',
@@ -1480,7 +1498,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'image_view') return true;
+      if (name === 'task_finish' || name === 'image_view' || name === 'request_takeover') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;

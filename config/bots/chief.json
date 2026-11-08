@@ -53,8 +53,8 @@
   "policy": {
     "autoApproveMedium": true,
     "denyPatterns": [],
-    "maxSteps": 12,
-    "maxTurnMs": 300000
+    "maxSteps": 80,
+    "maxTurnMs": 1800000
   },
   "createdAt": "2026-11-05T10:57:21.668Z",
   "seedGrantsVersion": 4

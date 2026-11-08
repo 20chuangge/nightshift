@@ -1825,4 +1825,7 @@ const UI = {
  */
 };
 
+// Nightshift: the app page bridges the clipboard through UI.rfb (same origin).
+window.UI = UI;
+
 export default UI;

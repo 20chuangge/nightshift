@@ -2449,6 +2449,12 @@
   /* the empty chat shows who you are talking to */
   .empty-avatar { width: 54px; height: 54px; margin-bottom: 18px; border-radius: 14px; }
 
+  /* takeover card ----------------------------------------------------- */
+  .takeover-card { border: 1px solid var(--accent, #8b7cf6); border-radius: 14px; padding: 14px 16px; margin: 8px 0; background: var(--panel); max-width: 560px; }
+  .takeover-title { font-weight: 600; margin-bottom: 4px; }
+  .takeover-reason { color: var(--text); margin-bottom: 10px; }
+  .takeover-card .btn-row { margin: 0 0 6px; }
+
   /* whose screen, in a group --------------------------------------------- */
   .pc-who { display: inline-flex; gap: 4px; margin: 0 auto 0 10px; align-items: center; }
   .pc-who button { padding: 2px; border-radius: 50%; border: 2px solid transparent; background: none; line-height: 0; opacity: 0.55; }
@@ -5879,7 +5885,70 @@ function describeTool(name, rawArgs) {
   return out;
 }
 
+/** A bot handing its screen to the human: what to do, and two buttons. */
+function takeoverCard(item) {
+  const args = safeArgs(item.args) || {};
+  const card = el('div', 'takeover-card');
+  card.appendChild(el('div', 'takeover-title', '需要你接管屏幕'));
+  card.appendChild(el('div', 'takeover-reason', String(args.reason || '完成这一步')));
+  const row = el('div', 'btn-row');
+  const go = el('button', 'btn primary', '接管屏幕');
+  go.type = 'button';
+  go.addEventListener('click', async () => {
+    openPanel('computer');
+    await openDesktopViewer();
+  });
+  const done = el('button', 'btn', '我弄好了，继续');
+  done.type = 'button';
+  done.addEventListener('click', async () => {
+    if (desktopTakeover()) closeDesktopViewer();
+    const input = $('composer');
+    input.value = '我弄好了，继续';
+    await send();
+  });
+  row.appendChild(go);
+  row.appendChild(done);
+  card.appendChild(row);
+  card.appendChild(el('div', 'row-note', '密码、验证码只在屏幕上输入，不要发在聊天里。'));
+  return card;
+}
+
+/**
+ * Copy and paste between this computer and the remote desktop. noVNC only
+ * offers a hidden side panel for it; here text copied over there lands in
+ * this clipboard, and Ctrl/Cmd+V in the viewer pastes this clipboard there.
+ */
+function bridgeClipboard(frame) {
+  const win = frame.contentWindow;
+  if (!win || win.__nsClipboard) return;
+  win.__nsClipboard = true;
+  const clip = win.navigator.clipboard || navigator.clipboard;
+  const tick = setInterval(() => {
+    if (!frame.isConnected) { clearInterval(tick); return; }
+    const rfb = win.UI && win.UI.rfb;
+    if (!rfb || rfb.__nsBridged) return; // noVNC makes a new one on reconnect
+    rfb.__nsBridged = true;
+    rfb.addEventListener('clipboard', (event) => {
+      const text = event.detail && event.detail.text;
+      if (text && clip) clip.writeText(text).catch(() => {});
+    });
+  }, 1000);
+  win.document.addEventListener('keydown', async (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || String(event.key).toLowerCase() !== 'v') return;
+    const rfb = win.UI && win.UI.rfb;
+    if (!rfb || rfb.viewOnly) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    let text = '';
+    try { text = clip ? await clip.readText() : ''; } catch { /* no permission: paste what is already there */ }
+    if (text) rfb.clipboardPasteFrom(text);
+    // Ctrl is already down over there; send the V once the clipboard arrived.
+    setTimeout(() => { rfb.sendKey(0x76, 'KeyV', true); rfb.sendKey(0x76, 'KeyV', false); }, 80);
+  }, true);
+}
+
 function toolChip(item) {
+  if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
   const info = describeTool(item.name, item.args);
   const details = el('details', 'chip');
   const summary = el('summary');
@@ -7837,6 +7906,7 @@ function syncViewer() {
     frame.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen');
     frame.setAttribute('allowfullscreen', '');
     frame.referrerPolicy = 'no-referrer';
+    frame.addEventListener('load', () => bridgeClipboard(frame));
     wrap.appendChild(frame);
     viewerUrl = url;
   }

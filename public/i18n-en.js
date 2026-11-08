@@ -846,4 +846,9 @@ window.DESK_I18N_EN = {
   "看图设置已保存，并同步到所有机器": "Vision settings saved and copied to every machine",
   "看图密钥已清除": "Vision key cleared",
   "看图设置已保存": "Vision settings saved",
+  "需要你接管屏幕": "Your turn on the screen",
+  "完成这一步": "finish this step",
+  "接管屏幕": "Take over the screen",
+  "我弄好了，继续": "Done, continue",
+  "密码、验证码只在屏幕上输入，不要发在聊天里。": "Type passwords and codes only on the screen, never in the chat.",
 };
