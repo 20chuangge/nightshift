@@ -468,7 +468,7 @@ export function createRegistry(deps) {
         if (jobs) {
           // Background: a video can sit in the provider's queue for a long time.
           const task = await submitVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl });
-          const job = await jobs.add({ botId: ctx.bot?.id, prompt: args?.prompt, task });
+          const job = await jobs.add({ botId: ctx.bot?.id, groupId: ctx.group?.id || null, prompt: args?.prompt, task });
           return {
             submitted: true,
             job: job.id,

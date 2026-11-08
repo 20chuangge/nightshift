@@ -109,6 +109,7 @@ const TAKEOVER_RULES = [
   '- When a site needs any of those: open the page in your own browser (browser_open), then call request_takeover with one short sentence saying exactly what they should do. Your turn ends there; you continue when they say so.',
   '- Logins: first call vault_list. If the site is there, fill the fields with browser_fill_secret (you never see the values). If not, call request_login - a secure form saves what the human types into the vault.',
   '- QR codes, SMS or e-mail codes, CAPTCHA and payment: use request_takeover.',
+  '- Only request_takeover puts the 接管屏幕 button in the chat: always call it, never just write "点下面的「接管屏幕」" yourself.',
   '- Never ask for passwords, verification codes or card numbers in chat, and never type a password with browser_type.',
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
   '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
@@ -473,6 +474,9 @@ export class AgentRuntime {
           break;
         }
 
+        // What the model said in this very step: a task_finish in the same
+        // step must not repeat it as a second message.
+        ctx.spokeThisStep = Boolean(response.content && response.content.trim());
         if (response.content && response.content.trim()) {
           if (deltaOffset === 0) {
             // This provider did not stream (or answered in one piece). Keep the
@@ -499,6 +503,16 @@ export class AgentRuntime {
             ...(response.reasoningContent ? { reasoning_content: response.reasoningContent } : {}),
           });
           summary = response.content?.trim() || '(no answer)';
+          // The model sometimes copies an earlier "需要你接管一下屏幕…点「接管屏幕」"
+          // reply instead of calling request_takeover, which leaves no button.
+          // That sentence only ever comes from our own template, so honour it.
+          if (/「接管屏幕」/.test(summary) && /我弄好了，继续/.test(summary)) {
+            const reason = (summary.match(/接管一下屏幕[：:]\s*([^\n]+)/) || [])[1]?.trim() || '完成这一步';
+            const callId = `auto_takeover_${turnId}`;
+            this.bus.emit({ type: 'tool.result', ...baseEvent, callId, name: 'request_takeover', args: JSON.stringify({ reason }), ok: true, risk: 'LOW', result: { waiting: true, reason } });
+            await this.record(bot.id, { kind: 'tool', name: 'request_takeover', args: { reason }, ok: true, risk: 'LOW', output: { waiting: true, reason }, turnId });
+            waitingFor = 'takeover';
+          }
           break;
         }
 
@@ -965,7 +979,9 @@ export class AgentRuntime {
       const finalSummary = String(result?.summary || 'Done.');
       // The closing summary is ordinary assistant text: stream it like any other
       // answer so the UI does not have a special case for "task finished".
-      await this.streamText(baseEvent, bot, turnId, finalSummary);
+      // When the model already answered in the same step, that answer is the
+      // reply; the summary only names the turn (no second, repeated bubble).
+      if (!ctx?.spokeThisStep) await this.streamText(baseEvent, bot, turnId, finalSummary);
       return { finalSummary };
     }
 

@@ -12,6 +12,7 @@
  * negotiation, no client-side masking negotiation.
  */
 import net from 'node:net';
+import tls from 'node:tls';
 import crypto from 'node:crypto';
 
 const OP_CONT = 0x0;
@@ -37,25 +38,31 @@ export class MiniWebSocket {
     this._closed = false;
 
     const u = new URL(url);
-    if (u.protocol !== 'ws:') {
-      throw new Error(`MiniWebSocket only speaks ws:// (got ${u.protocol})`);
+    // wss:// too (Feishu long connection); still no compression or subprotocols.
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') {
+      throw new Error(`MiniWebSocket only speaks ws:// and wss:// (got ${u.protocol})`);
     }
+    const secure = u.protocol === 'wss:';
     const host = u.hostname;
-    const port = Number(u.port || 80);
+    const port = Number(u.port || (secure ? 443 : 80));
     const key = crypto.randomBytes(16).toString('base64');
     const pathWithQuery = `${u.pathname}${u.search || ''}`;
+    const hostHeader = u.port ? `${host}:${port}` : host;
 
-    this._socket = net.connect({ host, port }, () => {
+    const onConnect = () => {
       this._socket.write(
         `GET ${pathWithQuery} HTTP/1.1\r\n` +
-          `Host: ${host}:${port}\r\n` +
+          `Host: ${hostHeader}\r\n` +
           'Upgrade: websocket\r\n' +
           'Connection: Upgrade\r\n' +
           `Sec-WebSocket-Key: ${key}\r\n` +
           'Sec-WebSocket-Version: 13\r\n' +
           '\r\n',
       );
-    });
+    };
+    this._socket = secure
+      ? tls.connect({ host, port, servername: host }, onConnect)
+      : net.connect({ host, port }, onConnect);
     this._socket.setNoDelay(true);
     this._socket.setTimeout(timeoutMs, () => {
       this._fail(new Error(`websocket handshake timed out after ${timeoutMs}ms`));
@@ -249,7 +256,9 @@ export class MiniWebSocket {
     if (this.readyState !== MiniWebSocket.OPEN) {
       throw new Error('websocket is not open');
     }
-    this._sendFrame(OP_TEXT, Buffer.from(String(data), 'utf8'));
+    // A Buffer / Uint8Array goes out as a binary frame (protobuf), the rest as text.
+    if (data instanceof Uint8Array) this._sendFrame(OP_BINARY, Buffer.from(data));
+    else this._sendFrame(OP_TEXT, Buffer.from(String(data), 'utf8'));
   }
 
   close(code = 1000) {

@@ -14,6 +14,7 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import fsp from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -68,6 +69,7 @@ import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
+import { createFeishu } from './feishu.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -287,9 +289,19 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.getMedia = (kind) => mediaModule.resolveMedia(state.media, kind, { voice: state.voice });
 
   // Videos finish in the background; the bot that asked gets a turn to show it.
-  const tellBot = (job, text) => {
+  const tellBot = async (job, text) => {
     if (!job.botId) return;
-    runtime.runTurn({ botId: job.botId, text, source: 'media' }).catch((err) => console.error('[video] could not report:', err.message));
+    // A video asked for in a group is shown in that group, by the bot that made it.
+    let group = null;
+    if (job.groupId) {
+      const g = await groups.getGroup(job.groupId).catch(() => null);
+      if (g && g.members.includes(job.botId)) {
+        const byId = new Map((await listBots()).map((b) => [b.id, b]));
+        group = { id: g.id, name: g.name, coordinatorId: g.coordinatorId, members: g.members.filter((id) => byId.has(id)).map((id) => ({ id, name: byId.get(id).name, role: byId.get(id).role })) };
+      }
+    }
+    runtime.runTurn({ botId: job.botId, text, source: 'media', ...(group ? { group, groupRole: 'speaker', recordUser: false } : {}) })
+      .catch((err) => console.error('[video] could not report:', err.message));
   };
   refs.videoJobs = createVideoJobs({
     file: path.join(P.dataDir, 'video-jobs.json'),
@@ -299,6 +311,28 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     onFail: (job) => tellBot(job, `[后台任务] 你之前提交的视频没有生成成功：${job.error}（内容：${job.prompt}）。告诉用户原因，问要不要重试。`),
   });
   await refs.videoJobs.load();
+
+  // Feishu: the assistant in the phone's chat app, over a connection this
+  // machine opens (no public address needed). Off until set up in Settings.
+  state.feishu = createFeishu({
+    file: path.join(P.dataDir, 'feishu.json'),
+    bus,
+    runtime,
+    approvals: {
+      resolve: (id, decision) => {
+        const record = approvals.decide(id, decision, '飞书', 'feishu');
+        if (!record) throw new Error('找不到这个审批');
+        if (record.error) throw new Error(record.error);
+        bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: Boolean(record.late) });
+      },
+    },
+    getBots: () => state.botsCache || [],
+    workspaceDir,
+    machineName: () => state.uiState?.machine?.name || os.hostname(),
+  });
+  listBots().then((b) => { state.botsCache = b; }).catch(() => {});
+  bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
+  await state.feishu.load();
 
   // -------------------------------------------------------------------------
   // product-state callbacks used by the primary bot's settings/ui tools
@@ -656,6 +690,25 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- Feishu --------------------------------------------------------------------
+//   GET  /api/feishu          -> {enabled, appId, hasSecret, botId, pairCode, users, connected, error}
+//   PUT  /api/feishu          {enabled?, appId?, appSecret?, botId?, newPairCode?, clearSecret?}
+//   POST /api/feishu/unpair   {openId}
+
+route('GET', /^\/api\/feishu$/, async (_req, _res, { state }) => state.feishu.view());
+
+route('PUT', /^\/api\/feishu$/, async (_req, _res, { body, state }) => {
+  const view = await state.feishu.update(body || {});
+  await audit({ kind: 'feishu.changed', enabled: view.enabled, appId: view.appId });
+  return view;
+});
+
+route('POST', /^\/api\/feishu\/unpair$/, async (_req, _res, { body, state }) => {
+  const view = await state.feishu.unpair(String(body?.openId || ''));
+  await audit({ kind: 'feishu.unpaired' });
+  return view;
+});
 
 // --- extra models (a bot can use its own) -------------------------------------
 //   GET    /api/models           -> {default:{provider,model,...}, models:[{id,label,provider,baseUrl,model,hasKey}]}
@@ -1832,7 +1885,7 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   let closed = false;
   // Roster edits are global: every window needs them regardless of which bot
   // or group it happens to be looking at.
-  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed']);
+  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed']);
   const send = (event) => {
     if (closed) return;
     if (!GLOBAL_EVENTS.has(event.type)) {

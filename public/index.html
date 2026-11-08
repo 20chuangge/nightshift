@@ -2497,6 +2497,14 @@
   .att-video video { width: 100%; border-radius: 10px; background: #000; }
   .att-video-dl { font-size: 11.5px; color: var(--dim); align-self: flex-end; }
 
+  /* feishu ------------------------------------------------------------ */
+  .feishu-status { margin: 8px 0; font-size: 13px; }
+  .feishu-status.ok { color: #50c878; }
+  .feishu-status.bad { color: var(--red); }
+  .feishu-steps { margin: 6px 0 4px 18px; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+  .feishu-code { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .feishu-code b { font-size: 22px; letter-spacing: 4px; font-variant-numeric: tabular-nums; }
+
   /* other models ------------------------------------------------------ */
   .models-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 
@@ -2828,6 +2836,7 @@
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
+      <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
       <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
       <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
       <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
@@ -3017,6 +3026,35 @@
         </div>
         <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
+      </section>
+
+      <section class="dsec" id="sec-feishu">
+        <div class="dsec-head">飞书</div>
+        <div class="row-note">在手机飞书里直接给这台机器的助理发消息、收结果（文字、图片、视频），出门在外也能用。这台机器自己连飞书，不用公网地址。每台机器接一个飞书应用。</div>
+        <div class="feishu-status" id="feishu-status">正在读取…</div>
+        <details class="vault-add" id="feishu-guide">
+          <summary>第一次用：怎么创建飞书应用（约 5 分钟）</summary>
+          <ol class="feishu-steps">
+            <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台</a>，点「创建企业自建应用」，起个名字（比如「夜班」）。</li>
+            <li>左边「添加应用能力」→ 添加「机器人」。</li>
+            <li>「权限管理」里开通：获取与发送单聊、群组消息（im:message）、以应用的身份发消息（im:message:send_as_bot）、读取用户发给机器人的单聊消息、接收群聊中@机器人消息、获取与上传图片或文件资源（im:resource）。</li>
+            <li>「凭证与基础信息」里复制 App ID 和 App Secret，填到下面，打开「启用」并保存，等状态变成「已连接」。</li>
+            <li>回到开放平台「事件与回调」→ 订阅方式选「使用长连接接收事件」→ 添加事件「接收消息」（im.message.receive_v1）。</li>
+            <li>「版本管理与发布」→ 创建版本并发布。然后在飞书里搜索这个应用，把下面的配对码发给它。</li>
+          </ol>
+        </details>
+        <label class="lbl" for="feishu-appid">App ID</label>
+        <input class="field" id="feishu-appid" autocomplete="off" spellcheck="false" placeholder="cli_xxxxxxxx" />
+        <label class="lbl" for="feishu-secret">App Secret</label>
+        <input class="field" id="feishu-secret" type="password" autocomplete="new-password" spellcheck="false" />
+        <label class="lbl" for="feishu-bot">由哪个助手回复</label>
+        <select class="field" id="feishu-bot"></select>
+        <label class="switch-row" for="feishu-enabled"><input type="checkbox" id="feishu-enabled" /> 启用</label>
+        <div class="btn-row"><button class="btn primary" id="feishu-save" type="button">保存</button></div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">配对</div>
+        <div class="row-note">没配对的人发消息，助理不会做任何事。把这个配对码发给飞书里的应用，就配好了（每个码只能用一次）。</div>
+        <div class="feishu-code"><b id="feishu-code">——</b><button class="btn tiny" id="feishu-newcode" type="button">换一个</button></div>
+        <div class="vault-list" id="feishu-users"></div>
       </section>
 
       <section class="dsec" id="sec-vault">
@@ -6593,6 +6631,10 @@ function handleEvent(ev) {
     refreshRoster();
     return;
   }
+  if (ev.type === 'feishu.changed') {
+    if ($('settings-drawer')?.classList.contains('open')) loadFeishu().catch(() => {});
+    return;
+  }
   if (ev.type === 'attention.changed') {
     loadAttention();
     return;
@@ -7699,6 +7741,7 @@ function openSettings(section) {
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
   loadVault().catch(() => {});
+  loadFeishu().catch(() => {});
   loadModels().catch(() => {});
   closeSidebar();
   closePanel();
@@ -8079,6 +8122,66 @@ async function saveNewModel() {
   } catch (err) { modelNote(`保存失败：${err.message}`, true); }
 }
 
+/* --- Feishu (Settings > 飞书) ------------------------------------------------- */
+async function loadFeishu() {
+  const v = await api('/api/feishu');
+  renderFeishu(v);
+  return v;
+}
+
+function renderFeishu(v) {
+  const status = $('feishu-status');
+  if (!status || !v) return;
+  status.className = `feishu-status${v.connected ? ' ok' : v.error ? ' bad' : ''}`;
+  status.textContent = v.connected ? `已连接飞书 · 配对了 ${v.users.length} 人`
+    : !v.enabled ? '没有启用。'
+      : v.error ? `没连上：${v.error}` : '正在连接…';
+  if (document.activeElement !== $('feishu-appid')) $('feishu-appid').value = v.appId || '';
+  $('feishu-secret').value = '';
+  $('feishu-secret').placeholder = v.hasSecret ? '已保存（留空不改）' : '';
+  $('feishu-enabled').checked = Boolean(v.enabled);
+  const select = $('feishu-bot');
+  select.innerHTML = '<option value="">主助手</option>' + state.bots.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`).join('');
+  select.value = v.botId || '';
+  $('feishu-code').textContent = v.pairCode || '——';
+  if (!v.appId) $('feishu-guide').open = true;
+  const list = $('feishu-users');
+  list.innerHTML = '';
+  for (const u of v.users || []) {
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', '飞书用户'));
+    title.appendChild(el('small', '', `${u.openId.slice(0, 10)}… · ${u.since ? new Date(u.since).toLocaleDateString() : ''}`));
+    head.appendChild(title);
+    const del = el('button', 'btn tiny danger', '解除');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次解除'; return; }
+      try { renderFeishu(await api('/api/feishu/unpair', { method: 'POST', body: { openId: u.openId } })); } catch (err) { toast(err.message, true); }
+    });
+    head.appendChild(del);
+    row.appendChild(head);
+    list.appendChild(row);
+  }
+}
+
+async function saveFeishu() {
+  const body = {
+    appId: $('feishu-appid').value.trim(),
+    botId: $('feishu-bot').value,
+    enabled: $('feishu-enabled').checked,
+  };
+  const secret = $('feishu-secret').value.trim();
+  if (secret) body.appSecret = secret;
+  if (body.enabled && (!body.appId || (!secret && !($('feishu-secret').placeholder || '').includes('已保存')))) { toast('先填 App ID 和 App Secret', true); return; }
+  try {
+    renderFeishu(await api('/api/feishu', { method: 'PUT', body }));
+    toast(body.enabled ? '已保存，正在连接飞书…' : '已保存');
+    setTimeout(() => loadFeishu().catch(() => {}), 3000);
+  } catch (err) { toast(`保存失败：${err.message}`, true); }
+}
+
 /* --- vault (Settings > 保险箱, and the login card in chat) --------------------- */
 state.vault = null;
 
@@ -8239,6 +8342,10 @@ function auditLine(r) {
       return { icon: '✕', text: `${who} ${what(r.tool, r.args)}`, tag: '被拒绝', risk, bad: true };
     case 'tool.denied':
       return { icon: '⛔', text: `${who} 想 ${what(r.tool, r.args)}`, tag: '被拦下', bad: true, note: r.reason };
+    case 'feishu.changed':
+      return { icon: '💬', text: r.enabled ? `飞书已启用（${r.appId}）` : '飞书已关闭', tag: '飞书' };
+    case 'feishu.unpaired':
+      return { icon: '💬', text: '飞书解除了一个配对', tag: '飞书' };
     case 'vault.saved':
       return { icon: '🔐', text: `保险箱存了「${r.name}」（${(r.fields || []).join('、')}）`, tag: '保险箱' };
     case 'vault.deleted':
@@ -9451,6 +9558,8 @@ function wireChrome() {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
+  $('feishu-save')?.addEventListener('click', saveFeishu);
+  $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);
   $('mp-test')?.addEventListener('click', testNewModel);
   $('mp-provider')?.addEventListener('change', () => fillModelPreset(true));

@@ -1158,7 +1158,9 @@ async function scenarioGroups({ botsMod, groupsMod, toolsMod }) {
   }
   const turnEvents = stream.events.filter((event) => event.turnId === posted.json.turnId);
   check('the group turn streamed events', turnEvents.length > 1, `${turnEvents.length} events`);
-  check('every event on a ?groupId stream carries that groupId', stream.events.length > 0 && stream.events.every((e) => e.groupId === groupId));
+  // App-wide notices (roster, settings, sidebar status, Feishu) reach every window by design.
+  const APP_WIDE = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed']);
+  check('every event on a ?groupId stream carries that groupId', stream.events.length > 0 && stream.events.filter((e) => !APP_WIDE.has(e.type)).every((e) => e.groupId === groupId));
   const postedEvent = stream.events.find((event) => event.type === 'group.message' && event.message?.from === 'steward');
   check('SSE carries a group.message posted by the coordinator', Boolean(postedEvent), JSON.stringify(stream.events.map((e) => e.type)));
 
@@ -2824,6 +2826,17 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       await third.add({ botId: 'chief', prompt: 'x', task });
       await third.tick();
       check('video jobs: a failed video is reported with the reason', failed.length === 1 && /内容不合规/.test(failed[0].error));
+      const g = await third.add({ botId: 'chief', groupId: 'g1', prompt: 'y', task });
+      check('video jobs: one asked for in a group remembers the group', g.groupId === 'g1' && third.list().some((j) => j.groupId === 'g1'));
+    }
+    // Small fixes carried into this step.
+    {
+      const { buildLaunchArgs } = await import('../src/browser.mjs');
+      const args = buildLaunchArgs({ port: 1, profileDir: 'x' });
+      check('bot browser: no Edge auto sign-in, no sync', args.includes('--disable-sync') && args.some((a) => /msImplicitSignin/.test(a)));
+      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      check('task end: a summary is not repeated when the model already answered in that step', /if \(!ctx\?\.spokeThisStep\) await this\.streamText/.test(agentSrc));
+      check('takeover: a copied "点「接管屏幕」" reply still gets the takeover card', /auto_takeover_/.test(agentSrc) && /waitingFor = 'takeover';/.test(agentSrc));
     }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }
@@ -2833,6 +2846,65 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const bad = await api('/api/media/image', { method: 'PUT', body: { service: 'nope' } });
     check('generation: settings save, the key never comes back, bad service refused', put.status === 200 && got.json?.image?.hasKey && got.json.image.source === 'own' && !JSON.stringify(got.json).includes('sk-gen-secret-1') && bad.status === 400);
     await api('/api/media/image', { method: 'PUT', body: { apiKey: '' } });
+  }
+  // Feishu: frames, pairing, a message runs a turn, the answer goes back, approve by reply.
+  {
+    const os = await import('node:os');
+    const fsx = await import('node:fs');
+    const FS = await import('../src/feishu.mjs');
+    const { EventBus } = await import('../src/store.mjs');
+    const frame = { SeqID: 7n, LogID: 9n, service: 3, method: 1, headers: [{ key: 'type', value: 'event' }, { key: 'message_id', value: 'm1' }], payload: Buffer.from('{"a":1}') };
+    const back = FS.decodeFrame(FS.encodeFrame(frame));
+    check('feishu: protobuf frames round-trip', back.SeqID === 7n && back.service === 3 && back.method === 1 && back.headers[1].value === 'm1' && back.payload.toString() === '{"a":1}');
+    const dir = fsx.mkdtempSync(path.join(os.tmpdir(), 'feishu-'));
+    const sent = [];
+    const fakeFetch = async (url, init = {}) => {
+      const body = init.body && typeof init.body === 'string' ? JSON.parse(init.body) : null;
+      const ok = (data) => ({ ok: true, status: 200, json: async () => ({ code: 0, ...data }) });
+      if (url.includes('tenant_access_token')) return ok({ tenant_access_token: 't-1', expire: 7200 });
+      if (url.includes('/im/v1/messages')) { const c = JSON.parse(body.content); sent.push(c.zh_cn?.content?.[0]?.[0]?.text || JSON.stringify(c)); return ok({ data: {} }); }
+      return ok({ data: {} });
+    };
+    const bus = new EventBus();
+    const turns = [];
+    const decided = [];
+    const fs1 = FS.createFeishu({
+      file: path.join(dir, 'feishu.json'), bus, workspaceDir: dir, fetchImpl: fakeFetch,
+      runtime: { runTurn: async (t) => { turns.push(t); return t; } },
+      approvals: { resolve: (id, d) => decided.push([id, d]) },
+      getBots: () => [{ id: 'chief', primary: true }],
+      machineName: () => '测试机',
+    });
+    await fs1.load();
+    await fs1.update({ appId: 'cli_x', appSecret: 'sec-1' });
+    const code = fs1.view().pairCode;
+    let n = 0;
+    const say = async (text, type = 'text') => {
+      n += 1;
+      fs1._handleFrame(FS.encodeFrame({ method: 1, headers: [{ key: 'type', value: 'event' }, { key: 'message_id', value: `f${n}` }], payload: Buffer.from(JSON.stringify({ header: { event_id: `e${n}`, event_type: 'im.message.receive_v1' }, event: { sender: { sender_id: { open_id: 'ou_1' }, sender_type: 'user' }, message: { message_id: `om_${n}`, chat_id: 'oc_1', chat_type: 'p2p', message_type: type, content: JSON.stringify({ text }) } } })) }));
+      await new Promise((r) => setTimeout(r, 30));
+    };
+    await say('帮我看看磁盘');
+    check('feishu: someone not paired is told how, and nothing runs', turns.length === 0 && /配对码/.test(sent.at(-1) || ''));
+    await say(`配对 ${code}`);
+    check('feishu: the pairing code pairs that person, once', fs1.view().users.length === 1 && fs1.view().pairCode !== code && /已连接到「测试机」/.test(sent.at(-1) || ''));
+    await say('帮我看看磁盘');
+    const turn = turns.at(-1);
+    check('feishu: a paired message runs a turn for the primary bot', turns.length === 1 && turn.botId === 'chief' && turn.source === 'feishu' && /帮我看看磁盘/.test(turn.text));
+    bus.emit({ type: 'approval.request', turnId: turn.turnId, botId: 'chief', botName: '助理', approvalId: 'ap9', tool: 'shell', args: { command: 'df -h' } });
+    await new Promise((r) => setTimeout(r, 30));
+    const asked = /回复「批准」或「拒绝」/.test(sent.at(-1) || '');
+    await say('批准');
+    check('feishu: an approval is asked in Feishu and a reply of 批准 approves it', asked && decided.length === 1 && decided[0][0] === 'ap9' && decided[0][1] === 'approved' && turns.length === 1);
+    bus.emit({ type: 'message', turnId: turn.turnId, botId: 'chief', text: '磁盘还剩 120 GB。' });
+    bus.emit({ type: 'turn.end', turnId: turn.turnId, botId: 'chief', summary: '磁盘还剩 120 GB。' });
+    await new Promise((r) => setTimeout(r, 50));
+    check('feishu: the answer goes back to Feishu', sent.some((t) => /磁盘还剩 120 GB/.test(t)));
+    const before = turns.length;
+    fs1._handleFrame(FS.encodeFrame({ method: 1, headers: [{ key: 'type', value: 'event' }], payload: Buffer.from(JSON.stringify({ header: { event_id: `e${n}`, event_type: 'im.message.receive_v1' }, event: { sender: { sender_id: { open_id: 'ou_1' } }, message: { message_id: 'dup', chat_id: 'oc_1', message_type: 'text', content: '{"text":"again"}' } } })) }));
+    await new Promise((r) => setTimeout(r, 30));
+    check('feishu: a redelivered event runs once; the secret never shows', turns.length === before && !JSON.stringify(fs1.view()).includes('sec-1') && fs1.view().hasSecret);
+    fs1.stop();
   }
   // A model per bot: extra models with their own keys; a bot without one (or
   // whose model was deleted) uses the machine's default.

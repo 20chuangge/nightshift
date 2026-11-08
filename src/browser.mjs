@@ -252,7 +252,10 @@ export function buildLaunchArgs({ port, profileDir: profile, headless = false, e
     // Containers have a tiny /dev/shm; harmless elsewhere.
     '--disable-dev-shm-usage',
     '--no-service-autorun',
-    '--disable-features=Translate,MediaRouter',
+    // The bot's browser must not sign itself in with the Windows account (Edge
+    // does that by default) or sync that account's passwords and history.
+    '--disable-sync',
+    '--disable-features=Translate,MediaRouter,msImplicitSignin,msEdgeImplicitSignin,msSyncConsent',
   ];
   if (headless) args.push('--headless=new', '--disable-gpu', '--hide-scrollbars');
   args.push(...extraArgs, 'about:blank');
