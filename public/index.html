@@ -2462,6 +2462,21 @@
   .pc-who button:hover { opacity: 1; }
   .pc-who .av { --av-size: 22px; }
 
+  /* activity log -------------------------------------------------------- */
+  .audit-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .chip-btn { border: 1px solid var(--border-soft); background: transparent; color: var(--muted); border-radius: 999px; padding: 4px 11px; font-size: 12px; }
+  .chip-btn.on { border-color: var(--accent, #8b7cf6); color: var(--text); background: var(--panel-2); }
+  .audit-list { display: flex; flex-direction: column; }
+  .audit-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 2px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+  .audit-time { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; padding-top: 1px; }
+  .audit-icon { width: 18px; text-align: center; }
+  .audit-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .audit-text small { display: block; color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .audit-tag, .audit-risk { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+  .audit-risk.r-HIGH { color: #f07060; }
+  .audit-risk.r-MEDIUM { color: #f0a03c; }
+  .audit-row.bad .audit-tag { color: #f07060; }
+
   /* bot abilities ------------------------------------------------------- */
   .ability-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 10px; }
   .ability { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; font-size: 13px; }
@@ -2759,6 +2774,7 @@
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
+      <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
       <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
       <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
       <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
@@ -2883,6 +2899,20 @@
         </div>
         <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
+      </section>
+
+      <section class="dsec" id="sec-audit">
+        <div class="dsec-head">操作记录</div>
+        <div class="row-note">这台机器上，机器人做过哪些有影响的事、谁批准的、谁接管过桌面、权限怎么改过。</div>
+        <div class="audit-filters" id="audit-filters">
+          <button class="chip-btn on" type="button" data-view="important">重要的</button>
+          <button class="chip-btn" type="button" data-view="approvals">审批</button>
+          <button class="chip-btn" type="button" data-view="blocked">被拦下的</button>
+          <button class="chip-btn" type="button" data-view="takeover">接管桌面</button>
+          <button class="chip-btn" type="button" data-view="changes">权限改动</button>
+          <button class="chip-btn" type="button" data-view="all">全部</button>
+        </div>
+        <div class="audit-list" id="audit-list"></div>
       </section>
 
       <section class="dsec" id="sec-machines">
@@ -7395,6 +7425,7 @@ function openSettings(section) {
   loadVoice().catch(() => { /* older server: no voice */ });
   loadVision().catch(() => { /* older server: no vision */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
+  loadAudit().catch(() => {});
   closeSidebar();
   closePanel();
   state.settingsOpen = true;
@@ -7417,6 +7448,83 @@ function closeSettings() {
 }
 
 /* Autonomy switch: does this installation ask before high-risk actions? */
+/* --- activity log (Settings > 操作记录) -------------------------------------- */
+let auditView = 'important';
+
+function auditTime(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function auditLine(r) {
+  const who = botById(r.botId)?.name || r.botId || '';
+  const what = (tool, args) => {
+    const info = describeTool(tool, args);
+    return info.detail ? `${info.label}：${truncate(info.detail, 60)}` : info.label;
+  };
+  const risk = { LOW: '低', MEDIUM: '中', HIGH: '高' }[r.risk] || '';
+  switch (r.kind) {
+    case 'tool.run':
+      return { icon: '•', text: `${who} ${what(r.tool, r.args)}`, tag: r.decision === 'auto' ? '自动' : '已批准', risk, bad: r.ok === false };
+    case 'approval.resolved':
+      return { icon: r.status === 'approved' ? '✓' : '✕', text: `${who} 请求 ${what(r.toolName, r.args)}`, tag: { approved: '你批准了', denied: '你拒绝了', timeout: '没人处理，超时' }[r.status] || r.status, risk, bad: r.status !== 'approved', note: r.reason };
+    case 'tool.approval_denied':
+      return { icon: '✕', text: `${who} ${what(r.tool, r.args)}`, tag: '被拒绝', risk, bad: true };
+    case 'tool.denied':
+      return { icon: '⛔', text: `${who} 想 ${what(r.tool, r.args)}`, tag: '被拦下', bad: true, note: r.reason };
+    case 'desktop.takeover':
+      return { icon: '🖥', text: who ? `接管了 ${who} 的桌面` : '接管了桌面', tag: r.mode === 'view' ? '只能看' : '能看能控', note: r.from ? `来自 ${r.from}` : '' };
+    case 'policy.changed': {
+      const c = r.change || {};
+      const names = { careful: '谨慎', standard: '标准', auto: '放手' };
+      const parts = [];
+      if (c.level) parts.push(`审批级别改为「${names[c.level] || c.level}」`);
+      if (c.takeover) parts.push(`接管桌面改为「${c.takeover === 'view' ? '只能看' : '能看能控'}」`);
+      if (c.addRule) parts.push(`加了规则「${c.addRule.text}」（${c.addRule.action === 'allow' ? '直接做' : '先问我'}）`);
+      if (c.removeRule) parts.push('删了一条规则');
+      if (c.addDeny) parts.push(`禁止命令「${c.addDeny}」`);
+      if (c.removeDeny) parts.push('删了一条禁止的命令');
+      if (c.autoApproveAll !== undefined) parts.push(c.autoApproveAll ? '改为放手' : '改为标准');
+      return { icon: '⚙', text: parts.join('；') || '改了权限设置', tag: '权限' };
+    }
+    case 'bot.abilities': {
+      const label = (tools) => [...new Set((tools || []).map((t) => (ABILITIES.find((a) => a.tools.includes(t)) || {}).label || t))].join('、');
+      const parts = [];
+      if (r.added?.length) parts.push(`加上：${label(r.added)}`);
+      if (r.removed?.length) parts.push(`去掉：${label(r.removed)}`);
+      if (r.trusted !== undefined) parts.push(r.trusted ? '常规操作直接做' : '常规操作要先问');
+      return { icon: '⚙', text: `${who} 的能力 ${parts.join('；')}`, tag: '能力' };
+    }
+    default:
+      return null;
+  }
+}
+
+async function loadAudit() {
+  const list = $('audit-list');
+  if (!list) return;
+  list.innerHTML = '<div class="row-note">正在读取…</div>';
+  let rows = [];
+  try { rows = await api(`/api/audit?view=${auditView}&limit=200`); } catch (err) { list.innerHTML = ''; list.appendChild(el('div', 'row-note', `读不到记录：${err.message}`)); return; }
+  list.innerHTML = '';
+  const lines = (rows || []).map((r) => [r, auditLine(r)]).filter(([, l]) => l);
+  if (!lines.length) { list.appendChild(el('div', 'row-note', '这里还没有记录。')); return; }
+  for (const [r, l] of lines) {
+    const row = el('div', `audit-row${l.bad ? ' bad' : ''}`);
+    row.appendChild(el('span', 'audit-time', auditTime(r.ts)));
+    row.appendChild(el('span', 'audit-icon', l.icon));
+    const body = el('span', 'audit-text');
+    body.appendChild(el('span', '', l.text));
+    if (l.note) body.appendChild(el('small', '', l.note));
+    row.appendChild(body);
+    if (l.risk) row.appendChild(el('span', `audit-risk r-${r.risk}`, `${l.risk}风险`));
+    if (l.tag) row.appendChild(el('span', 'audit-tag', l.tag));
+    list.appendChild(row);
+  }
+}
+
 async function loadPolicy() {
   const policy = await api('/api/policy');
   renderPolicy(policy);
@@ -8302,6 +8410,7 @@ function desktopTakeover() {
 /** Start controlling the desktop. With a live preview mounted this only
  *  lifts the shield, so there is no reconnect and no black frame. */
 async function openDesktopViewer() {
+  api('/api/audit/takeover', { method: 'POST', body: { botId: pcTargetBotId(), mode: state.policy?.takeover === 'view' ? 'view' : 'control' } }).catch(() => {});
   if (!state.computer?.desktop?.url) {
     try { await loadComputer(); } catch { /* the viewer can still ask for a password */ }
   }
@@ -8568,6 +8677,13 @@ function wireChrome() {
   });
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
+  });
+  document.querySelectorAll('#audit-filters .chip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      auditView = btn.dataset.view;
+      document.querySelectorAll('#audit-filters .chip-btn').forEach((b) => b.classList.toggle('on', b === btn));
+      loadAudit();
+    });
   });
   document.querySelectorAll('input[name="takeover-mode"]').forEach((radio) => {
     radio.addEventListener('change', () => {

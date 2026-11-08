@@ -2777,6 +2777,13 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const tbad = await api('/api/policy', { method: 'PUT', body: { takeover: 'drive' } });
     const tback = await api('/api/policy', { method: 'PUT', body: { takeover: 'control' } });
     check('takeover setting: view only and back, bad value refused', tv.json?.takeover === 'view' && tbad.status === 400 && tback.json?.takeover === 'control');
+    // Activity log: permission changes, ability changes and takeovers land there.
+    await api('/api/audit/takeover', { method: 'POST', body: { botId: 'chief', mode: 'view' } });
+    const changes = (await api('/api/audit?view=changes&limit=50')).json || [];
+    const takeovers = (await api('/api/audit?view=takeover&limit=10')).json || [];
+    const raw = (await api('/api/audit?limit=5')).json || [];
+    check('activity log: permission changes are recorded', changes.some((r) => r.kind === 'policy.changed' && r.change?.addRule?.text === '发邮件先问我'));
+    check('activity log: a takeover is recorded with its mode; filters keep to their kind', takeovers[0]?.kind === 'desktop.takeover' && takeovers[0]?.mode === 'view' && takeovers.every((r) => r.kind === 'desktop.takeover') && changes.every((r) => /policy.changed|bot.abilities/.test(r.kind)) && Array.isArray(raw));
     check('rules API: add, refuse empty, remove', add.json?.rules?.[0]?.action === 'ask' && bad.status === 400 && del.json?.rules?.length === 0);
   }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
@@ -2798,6 +2805,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     await api('/api/bots/chief', { method: 'PATCH', body: { tools: [...after.tools, 'shell'], role: chief.role } });
     const back = JSON.parse(fsx.readFileSync(botFileOf('chief'), 'utf8'));
     check('abilities: switching it back on clears the record', back.tools.includes('shell') && !(back.revokedTools || []).includes('shell'));
+    const abil = (await api('/api/audit?view=changes&limit=50')).json || [];
+    check('activity log: ability changes are recorded (removed, then added back)', abil.some((r) => r.kind === 'bot.abilities' && (r.removed || []).includes('shell')) && abil.some((r) => r.kind === 'bot.abilities' && (r.added || []).includes('shell')));
   }
   {
     const get = await api('/api/policy');

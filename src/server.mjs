@@ -836,7 +836,18 @@ route('POST', /^\/api\/bots$/, async (_req, _res, { body, state }) => {
 });
 
 route('PATCH', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {
+  const before = await getBot(params.id);
   const bot = await updateBot(params.id, body || {});
+  if (before && (Array.isArray(body?.tools) || body?.policy?.autoApproveMedium !== undefined)) {
+    const had = new Set(before.tools || []);
+    const has = new Set(bot.tools || []);
+    const added = [...has].filter((t) => !had.has(t));
+    const removed = [...had].filter((t) => !has.has(t));
+    const trust = Boolean(before.policy?.autoApproveMedium) !== Boolean(bot.policy?.autoApproveMedium) ? Boolean(bot.policy?.autoApproveMedium) : undefined;
+    if (added.length || removed.length || trust !== undefined) {
+      await audit({ kind: 'bot.abilities', botId: bot.id, added, removed, ...(trust !== undefined ? { trusted: trust } : {}) });
+    }
+  }
   if (body?.primary === true) {
     await setPrimaryBot(bot.id, state.config);
   }
@@ -1378,6 +1389,11 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   }
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
+  const change = {};
+  for (const k of ['level', 'takeover', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll']) {
+    if (body?.[k] !== undefined) change[k] = body[k];
+  }
+  await audit({ kind: 'policy.changed', change });
   const pub = publicPolicy(next);
   state.bus.emit({ type: 'policy.changed', autoApproveAll: pub.autoApproveAll, level: pub.level });
   return pub;
@@ -1631,8 +1647,32 @@ route('GET', /^\/api\/skills\/(?<name>[^/]+)$/, async (_req, _res, { params }) =
 
 // --- audit / turns ---------------------------------------------------------
 
+//   GET /api/audit[?limit=&view=important|all|approvals|blocked|takeover|changes]
+//   POST /api/audit/takeover {botId, mode}  (the UI reports a takeover)
+const AUDIT_VIEWS = {
+  important: (r) => (r.kind === 'tool.run' ? r.risk && r.risk !== 'LOW' : r.kind !== 'approval.requested'),
+  approvals: (r) => r.kind === 'approval.resolved' || r.kind === 'tool.approval_denied',
+  blocked: (r) => r.kind === 'tool.denied' || (r.kind === 'approval.resolved' && r.status !== 'approved'),
+  takeover: (r) => r.kind === 'desktop.takeover',
+  changes: (r) => r.kind === 'policy.changed' || r.kind === 'bot.abilities',
+  all: () => true,
+};
+
 route('GET', /^\/api\/audit$/, async (_req, _res, { query }) => {
-  return readAudit({ limit: Math.min(Number(query.get('limit')) || 100, 500) });
+  const limit = Math.min(Number(query.get('limit')) || 100, 500);
+  const view = AUDIT_VIEWS[query.get('view')];
+  if (!view) return readAudit({ limit }); // older clients: the raw tail
+  return (await readAudit({ limit: 5000 })).filter(view).slice(0, limit);
+});
+
+route('POST', /^\/api\/audit\/takeover$/, async (req, _res, { body }) => {
+  await audit({
+    kind: 'desktop.takeover',
+    botId: String(body?.botId || '').slice(0, 80) || null,
+    mode: body?.mode === 'view' ? 'view' : 'control',
+    from: clientIp(req),
+  });
+  return { ok: true };
 });
 
 route('GET', /^\/api\/turns$/, async (_req, _res, { state }) => {
