@@ -27,7 +27,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 
 import { P } from './store.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
@@ -192,6 +192,55 @@ function installHint() {
  * *watches* the bot work; headless is opt-in via BROWSER_HEADLESS=1 (and the
  * only option on a VM without a display).
  */
+// ---------------------------------------------------------------------------
+// Windows remote machines: show the browser on the signed-in desktop
+// ---------------------------------------------------------------------------
+//
+// A Windows machine's hub runs in session 0 (a scheduled task), where no window
+// can be seen, so its browser used to be headless and the human could not take
+// over a login. When someone is signed in at the console (what the takeover
+// view shows) and it is the hub's own account, the browser is started in that
+// interactive session through a one-off scheduled task (/IT needs no password
+// for the task owner) and attached over its debugging port like any other.
+
+let consoleUserCache = { at: 0, user: null };
+
+/** "MACHINE\\user" signed in at the console, or null (cached 30 s). */
+export async function windowsConsoleUser() {
+  if (process.platform !== 'win32') return null;
+  if (Date.now() - consoleUserCache.at < 30000) return consoleUserCache.user;
+  const user = await new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-CimInstance Win32_ComputerSystem).UserName'],
+      // Slow, busy machines (a 1-core VM running Windows Update) need the time.
+      { timeout: 60000, windowsHide: true }, (err, stdout) => resolve(err ? null : String(stdout || '').trim() || null));
+  });
+  consoleUserCache = { at: Date.now(), user };
+  return user;
+}
+
+/** True when this process has no desktop of its own (Windows session 0). */
+function inWindowsServiceSession() {
+  return process.platform === 'win32' && !process.env.SESSIONNAME;
+}
+
+const sameAccount = (a, b) => String(a || '').split('\\').pop().toLowerCase() === String(b || '').split('\\').pop().toLowerCase();
+
+/** Start the browser in the console user's session. Resolves true if the task ran. */
+async function launchOnWindowsDesktop(exe, args, user) {
+  const quote = (a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a);
+  const script = path.join(P.dataDir, 'browser-desktop.cmd');
+  await fsp.mkdir(P.dataDir, { recursive: true });
+  // A .cmd file keeps the task's command line short (schtasks /TR is limited).
+  await fsp.writeFile(script, `@echo off\r\nstart "" ${[exe, ...args].map(quote).join(' ')}\r\n`, 'utf8');
+  const run = (cmdArgs) => new Promise((resolve) => {
+    execFile('schtasks.exe', cmdArgs, { timeout: 20000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || stderr || '') }));
+  });
+  const made = await run(['/Create', '/F', '/TN', 'NightshiftBrowser', '/SC', 'ONCE', '/ST', '00:00', '/IT', '/RU', user, '/TR', `"${script}"`]);
+  if (!made.ok) return false;
+  const started = await run(['/Run', '/TN', 'NightshiftBrowser']);
+  return started.ok;
+}
+
 export function buildLaunchArgs({ port, profileDir: profile, headless = false, extraArgs = [] } = {}) {
   const args = [
     `--remote-debugging-port=${port}`,
@@ -582,9 +631,39 @@ class BrowserManager {
     }
 
     const port = await findFreePort();
-    const headless = process.env.BROWSER_HEADLESS === '1';
+    let headless = process.env.BROWSER_HEADLESS === '1';
     const profile = profileDir(this.key);
     await fsp.mkdir(profile, { recursive: true });
+
+    // Windows hub in session 0 with someone signed in at the console: put the
+    // window on that desktop so the human can see it and take over.
+    let onDesktop = false;
+    if (inWindowsServiceSession()) {
+      const user = await windowsConsoleUser().catch(() => null);
+      if (user && sameAccount(user, os.userInfo().username)) {
+        const desktopArgs = buildLaunchArgs({ port, profileDir: profile, headless: false });
+        if (await launchOnWindowsDesktop(executable.path, desktopArgs, user)) {
+          // Edge took 141 s on a 1-core VM with the CPU at 100%; a normal
+          // machine needs about 2 s.
+          const version = await waitForVersion(port, 150000);
+          if (version) {
+            const browser = await CdpConnection.connect(version.webSocketDebuggerUrl, { label: 'browser (desktop)' });
+            const page = await this.attachPage(browser, port);
+            this.session = {
+              port, pid: 0, child: null, exe: executable.path, headless: false, adopted: false,
+              display: 'console', profile, key: this.key, browser, page, pageUrl: 'about:blank', onDesktop: true,
+            };
+            this.inFlight = 0;
+            this.lastActivity = Date.now();
+            await fsp.writeFile(stateFile(), JSON.stringify({ port, pid: 0, executable: executable.path, headless: false, onDesktop: true, startedAt: new Date().toISOString() }, null, 2), 'utf8');
+            return this.session;
+          }
+        }
+      }
+      // Nobody signed in (or another account): stay invisible and say so.
+      headless = true;
+      onDesktop = false;
+    }
 
     // On a Linux hub with per-bot desktops, the window must appear on THIS
     // bot's X display; otherwise every bot would paint on the same screen.
@@ -612,7 +691,7 @@ class BrowserManager {
     launchedChild = child;
     ensureExitHook();
 
-    const version = await waitForVersion(port, 25000);
+    const version = await waitForVersion(port, inWindowsServiceSession() ? 120000 : 25000);
     if (!version) {
       try {
         child.kill();
@@ -680,6 +759,7 @@ class BrowserManager {
         exe: state.executable || detectBrowserExecutable().path || '',
         headless: Boolean(state.headless),
         adopted: true,
+        onDesktop: Boolean(state.onDesktop),
         browser,
         page,
         pageUrl: 'about:blank',
@@ -1339,6 +1419,8 @@ class BrowserManager {
       detectedBy: executable.source,
       supported: browserSupport().supported,
       pageUrl: running ? session.pageUrl : null,
+      // Windows remote machines: whether the human can see (and take over) this browser.
+      ...(process.platform === 'win32' && !process.env.SESSIONNAME ? { visibleOnDesktop: Boolean(session?.onDesktop), takeoverNote: session?.onDesktop ? '' : '这台 Windows 机器上没有人登录桌面（或不是同一个账号），浏览器在后台无界面运行，接管时看不到它；需要用户登录桌面后重新打开浏览器。' } : {}),
     };
     if (!running) {
       out.checked = executable.checked.slice(0, 6);
