@@ -8802,7 +8802,8 @@ async function refreshScreen() {
   // A fresh machine is still installing its desktop and browser in the background.
   const setup = state.computer?.desktopSetup;
   if (setup && !state.computer?.desktop?.url) {
-    const mins = setup.startedAt ? Math.max(1, Math.round((Date.now() - Date.parse(setup.startedAt)) / 60000)) : 0;
+    // elapsedSec comes from that machine's own clock (it may differ from ours).
+    const mins = Number.isFinite(setup.elapsedSec) ? Math.max(1, Math.round(setup.elapsedSec / 60)) : 1;
     img.style.display = 'none';
     note.textContent = setup.state === 'failed'
       ? `桌面没装全（${setup.detail}）：在这台机器上重新添加一次可以补上。`

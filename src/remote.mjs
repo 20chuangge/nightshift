@@ -378,7 +378,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
   const setProgress = (job, message) => {
     job.message = message;
     // The setup scripts announce their steps as "[desk] 3/7 …".
-    const scriptStep = /^\[desk\]\s*(\d+\s*\/\s*\d+\s*.+)$/.exec(String(message).trim());
+    const scriptStep = /^(?:\[desk\]\s*)?(\d+\s*\/\s*\d+\s+.+)$/.exec(String(message).trim());
     if (scriptStep) phase(job, scriptStep[1].slice(0, 40));
     const match = /(\d+)\s*\/\s*(\d+)/.exec(message);
     if (match) {

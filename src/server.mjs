@@ -1470,7 +1470,12 @@ route('GET', /^\/api\/computer$/, async (req, _res, { state, query }) => {
   // A fresh Linux machine installs its desktop and browser in the background
   // after the Hub is up (setup-linux.sh); say how far that is.
   const setup = readJsonSync(path.join(P.dataDir, 'desktop-setup.json'), null);
-  if (setup?.state && setup.state !== 'done') snap.desktopSetup = { state: setup.state, detail: setup.detail || '', startedAt: setup.startedAt || null };
+  // Elapsed time is worked out here, on this machine's own clock: a restored
+  // VM snapshot can be days off, and the viewer's clock is not this one.
+  if (setup?.state && setup.state !== 'done') {
+    const started = Date.parse(setup.startedAt || '');
+    snap.desktopSetup = { state: setup.state, detail: setup.detail || '', startedAt: setup.startedAt || null, elapsedSec: Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : null };
+  }
   // noVNC asks for the VNC password every single time, which is unbearable when
   // the viewer opens in a panel. Hand it the password once via the URL.
   // Source: DESK_VNC_PASSWORD, or data/vnc.json written by the installer.
