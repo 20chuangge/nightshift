@@ -2896,6 +2896,26 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
       check('install: while the desktop installs, the panel shows the note, not the (black) live view', /const installing = state\.computer\?\.desktopSetup\?\.state === 'running';/.test(ui) && /!watching \|\| installing\)/.test(ui));
       check('install: a domestic mirror only when clearly faster, through its own lists, with a fallback', /pick_mirror\(\)/.test(sh) && /Dir::State::Lists=\/var\/lib\/apt\/desk-mirror-lists/.test(sh) && /a > 2 \* b/.test(sh) && /APT_SRC=""   # the mirror did not work/.test(sh) && /signed-by=/.test(sh));
+      check('install: the speed check works with wget too, and elapsed time is the script\'s own', /fetch_time\(\)/.test(sh) && /wget -q -T 20 -O \/dev\/null/.test(sh) && /"elapsed":%s/.test(sh) && /"\$SECONDS"/.test(sh));
+      check('install: the Chromium snap downloads while apt installs the rest', /snap install chromium >\/dev\/null 2>&1 &/.test(sh) && /wait "\$SNAP_PID"/.test(sh));
+    }
+    // Step 11: away from home (Tailscale), and no made-up command results.
+    {
+      const A = await import('../src/agent.mjs');
+      const f = A.looksLikeMadeUpRun;
+      check('made-up results: a run reported with no tool call is caught', f('执行这条命令：sudo bash x.sh', '执行完成，输出如下：\n```\nok\n```', true) && f('run `ls /tmp`', 'exit=0', true));
+      check('made-up results: ordinary answers and bots that cannot run are left alone', !f('今天天气怎么样', '```js\nconsole.log(1)\n```', true) && !f('执行这条命令', '执行完成', false) && !f('执行一下', '好的，我需要先确认你要执行哪条命令？', true));
+      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      check('made-up results: taken back from the chat and retried once, only in a turn that ran nothing', /type: 'message\.retract'/.test(agentSrc) && /!trail\.length && !fabricationNudged/.test(agentSrc));
+      const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+      check('made-up results: the page drops the retracted bubble', /case 'message\.retract':/.test(page));
+      const health = await api('/api/health');
+      check('away: the hub reports a Tailscale address field (null when not on a tailnet or loopback-only)', health.status === 200 && 'tailnetUrl' in (health.json || {}));
+      const { tailnetAddress } = await import('../src/auth.mjs');
+      check('away: tailnet detection does not crash and only returns 100.64/10 addresses', (() => { const a = tailnetAddress(); return a === null || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a); })());
+      const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+      check('away: the client falls back to the Tailscale address and carries the pairing over', /async function reachMachine\(url\)/.test(main) && /cookies\.set\(\{\s*url: alt/.test(main) && /const reach = target \? await reachMachine\(target\)/.test(main) && /patchMachine\(url, \{ tailnetUrl/.test(main));
+      check('away: the page knows which machine it is when opened through Tailscale', /m\.tailnetUrl === location\.origin/.test(page) && /id="pair-tailnet"/.test(page));
     }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }

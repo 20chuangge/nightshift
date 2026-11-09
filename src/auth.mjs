@@ -275,6 +275,21 @@ export function preferredLanAddress() {
     ?.address;
 }
 
+/**
+ * This machine's Tailscale address, if it is on a tailnet: an IPv4 in
+ * 100.64.0.0/10 (Tailscale's range). With it, the hub is reachable from the
+ * owner's other devices anywhere, no port opened to the internet.
+ */
+export function tailnetAddress() {
+  const all = listLanAddresses();
+  const inRange = (a) => {
+    const [x, y] = a.split('.').map(Number);
+    return x === 100 && y >= 64 && y <= 127;
+  };
+  return (all.find((i) => /tailscale/i.test(i.name) && inRange(i.address))
+    || all.find((i) => inRange(i.address)))?.address || null;
+}
+
 export function lanUrlFor(address, port) {
   return address && port ? `http://${address}:${port}` : null;
 }

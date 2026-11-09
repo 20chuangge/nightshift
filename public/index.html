@@ -2845,7 +2845,7 @@
       <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
       <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
       <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
-      <button class="setnav" type="button" data-set-target="sec-pair">手机配对</button>
+      <button class="setnav" type="button" data-set-target="sec-pair">手机和外网</button>
       <button class="setnav" type="button" data-set-target="sec-about">关于</button>
     </nav>
     <div class="settings-scroll" id="settings-scroll">
@@ -3178,12 +3178,19 @@
       </section>
 
       <section class="dsec" id="sec-pair">
-        <div class="dsec-head">手机配对</div>
+        <div class="dsec-head">手机和外网</div>
         <div class="pair-card">
           <div class="pair-label">局域网地址</div>
           <div class="pair-row">
             <div class="pair-value mono" id="pair-url">—</div>
             <button class="btn tiny" id="pair-copy-url" type="button">复制</button>
+          </div>
+          <div id="pair-tailnet-wrap" hidden>
+            <div class="pair-label" style="margin-top:16px">Tailscale 地址（在外面也能用）</div>
+            <div class="pair-row">
+              <div class="pair-value mono" id="pair-tailnet">—</div>
+              <button class="btn tiny" id="pair-copy-tailnet" type="button">复制</button>
+            </div>
           </div>
           <div class="pair-label" style="margin-top:16px">配对码</div>
           <div class="pair-row">
@@ -3194,6 +3201,18 @@
           <div class="pair-empty" id="pair-empty" hidden></div>
         </div>
         <div class="row-note">配对码只用于把手机接进这台电脑上的夜班，不会上传到任何地方。</div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外怎么用</div>
+        <div class="row-note" id="outside-state">—</div>
+        <details class="vault-add" id="outside-guide">
+          <summary>用 Tailscale（免费，几分钟装好）</summary>
+          <ol class="feishu-steps">
+            <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
+            <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
+            <li>电脑上：什么都不用改。局域网连不上时，夜班会自动改走 Tailscale 地址，不用重新配对。</li>
+            <li>手机上：打开 Tailscale，再用手机浏览器打开上面的 Tailscale 地址，输入配对码。</li>
+          </ol>
+        </details>
+        <div class="row-note">不想装软件：在「飞书」里接上飞书应用，出门在外直接在手机飞书里给助理发消息。</div>
       </section>
 
       <section class="dsec" id="sec-about">
@@ -6718,6 +6737,16 @@ function handleEvent(ev) {
       break;
     }
 
+    case 'message.retract':
+      // The hub took back what was streamed (a made-up result): drop the bubble.
+      if (state.liveTurn?.bubble) {
+        state.liveTurn.bubble.closest('.row')?.remove();
+        state.liveTurn.bubble = null;
+        state.liveTurn.text = '';
+      }
+      showTyping(ev.botId || state.botId, '正在处理…');
+      break;
+
     case 'message.delta':
       hideTyping();          // text is arriving: the bubble is the feedback now
       appendDelta(ev.text, sender);
@@ -7680,6 +7709,17 @@ function renderPairing() {
   const code = p.code || '';
 
   $('pair-url').textContent = url || location.origin;
+  const tailnet = (s.server && s.server.tailnetUrl) || '';
+  $('pair-tailnet-wrap').hidden = !tailnet;
+  $('pair-tailnet').textContent = tailnet;
+  const outside = $('outside-state');
+  if (outside) {
+    outside.textContent = tailnet
+      ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
+      : (s.server && s.server.lanUrl)
+        ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
+        : '这是本机的夜班，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
+  }
   const codeNode = $('pair-code');
   codeNode.textContent = code ? formatPairCode(code) : '未生成';
   codeNode.classList.toggle('empty', !code);
@@ -8918,7 +8958,7 @@ function onLocalMachine() {
 
 function machineDisplayName() {
   if (onLocalMachine()) return '本机';
-  const row = machineBridge?.machines?.find((m) => m.url === location.origin);
+  const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin);
   return row?.name || state.computer?.host?.hostname || location.hostname;
 }
 
@@ -9903,6 +9943,7 @@ function wireChrome() {
 
   // pairing
   $('pair-copy-url').addEventListener('click', () => copyText($('pair-url').textContent.trim(), '地址已复制'));
+  $('pair-copy-tailnet')?.addEventListener('click', () => copyText($('pair-tailnet').textContent.trim(), '地址已复制'));
   $('pair-copy-code').addEventListener('click', () => {
     const raw = ((state.settings && state.settings.pairing) || state.pairing || {}).code
       || $('pair-code').textContent.replace(/\s+/g, '');

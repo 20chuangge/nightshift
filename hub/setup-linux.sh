@@ -432,16 +432,26 @@ pm_refresh() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WA
 pm_one() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT $APT_SRC install -y -qq "$1" >/dev/null 2>&1 ;; *) "$PM" install -y -q "$1" >/dev/null 2>&1 ;; esac; }
 pm_install() { local pkg; for pkg in "$@"; do pm_one "$pkg" && continue; pm_refresh; pm_one "$pkg" || true; done; }
 
+# Ubuntu's Chromium is a snap (~180 MB, the slowest part). snapd has its own
+# lock, so it downloads while apt installs everything else.
+SNAP_PID=""
+if [ "$PM" = apt ] && ! has chromium && ! has chromium-browser && has snap; then
+  snap install chromium >/dev/null 2>&1 &
+  SNAP_PID=$!
+fi
 status running "选下载源"
 pick_mirror
-status running "安装屏幕组件（Xvfb、x11vnc、noVNC）"
 if [ "$PM" = apt ]; then
+  status running "安装屏幕组件和 XFCE 桌面（浏览器同时在下载）"
   pm_install xvfb x11vnc websockify novnc dbus-x11
-  status running "安装浏览器 Chromium（最大的一步，约 180 MB）"
+  has xfce4-session || pm_install xfce4 xfce4-terminal
+  if [ -n "$SNAP_PID" ]; then
+    status running "等浏览器 Chromium 装完（最大的一步，约 180 MB）"
+    wait "$SNAP_PID" || true
+  fi
+  # No snapd, or the snap failed: the apt way (on Ubuntu a transitional package for the snap).
   has chromium || has chromium-browser || pm_install chromium-browser
   has chromium || has chromium-browser || pm_install chromium
-  status running "安装 XFCE 桌面"
-  has xfce4-session || pm_install xfce4 xfce4-terminal
 else
   pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11
   status running "安装浏览器 Chromium"

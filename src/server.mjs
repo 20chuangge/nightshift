@@ -88,6 +88,7 @@ import {
   listLanAddresses,
   preferredLanAddress,
   lanUrlFor,
+  tailnetAddress,
 } from './auth.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
@@ -570,6 +571,8 @@ route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
     activeTurns: state.runtime.activeTurns().length,
     requireAuth: Boolean(state.requireAuth),
     lanUrl: state.lanUrl,
+    // Reachable from the owner's other devices anywhere (Tailscale), when on a tailnet.
+    tailnetUrl: tailnetUrl(state),
     recoveredTurns: state.recoveredTurns.length,
     // Self-update: what this machine was set up with, and what this build's
     // scripts would install (a client compares them before pushing an update).
@@ -612,6 +615,13 @@ route('GET', /^\/api\/events$/, async (_req, _res, { query, state }) => {
 //   POST /api/pair           {code} -> {ok:true} + Set-Cookie: desk_session
 //   GET  /api/pairing        -> {url, code}
 
+/** http://100.x.y.z:port when this hub listens beyond loopback and the machine is on Tailscale. */
+function tailnetUrl(state) {
+  if (!state.lanUrl) return null; // loopback only: not reachable from other devices anyway
+  const ip = tailnetAddress();
+  return ip ? `http://${ip}:${state.port}` : null;
+}
+
 function pairingInfo(state) {
   const port = state.port;
   const url =
@@ -629,6 +639,7 @@ route('GET', /^\/api\/settings$/, async (_req, _res, { state }) => ({
     host: state.host,
     port: state.port,
     lanUrl: state.lanUrl,
+    tailnetUrl: tailnetUrl(state),
     requireAuth: Boolean(state.requireAuth),
   },
   pairing: pairingInfo(state),

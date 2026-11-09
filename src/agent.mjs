@@ -130,6 +130,17 @@ function machinesSection(ui) {
   ];
 }
 
+/**
+ * Did the human ask for something to be run, and does the reply read like the
+ * output of running it? Used only when the turn called no tool at all.
+ */
+export function looksLikeMadeUpRun(userText, reply, canRun) {
+  if (!canRun) return false;
+  const asked = /执行|运行|跑一下|跑下|命令|run\b|execute|sudo |bash |`[^`]+`|\$ /i.test(userText);
+  if (!asked) return false;
+  return /```|exit(code)?\s*[=:]\s*\d|退出码|执行完成|输出如下|原样输出|命令输出|stdout|已执行|运行结果/i.test(reply);
+}
+
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp }) {
     this.config = config;
@@ -430,6 +441,7 @@ export class AgentRuntime {
       };
 
       const trail = [];
+      let fabricationNudged = false;
       // Exact repeats of the same call (name + arguments) mean it is stuck.
       const recentCalls = [];
       let stuck = null;
@@ -474,6 +486,18 @@ export class AgentRuntime {
           summary = `Model error: ${err.message}`;
           this.bus.emit({ type: 'error', ...baseEvent, message: summary });
           break;
+        }
+
+        // A reply that reports running something, in a turn that ran nothing,
+        // is made up (the model copying earlier output from the chat). Take
+        // it back and make it actually run the tool, once.
+        if (!response.toolCalls?.length && !trail.length && !fabricationNudged
+          && looksLikeMadeUpRun(String(text), String(response.content || ''), this.registry.isGranted(bot, 'shell'))) {
+          fabricationNudged = true;
+          this.bus.emit({ type: 'message.retract', ...baseEvent });
+          messages.push({ role: 'assistant', content: response.content || '' });
+          messages.push({ role: 'user', content: '（系统检查）你这一轮没有调用任何工具，却写出了执行结果。不要照着聊天记录或记忆编造输出。用户要你执行的命令，现在就调用 shell 真的执行，再按真实输出回答；做不了就直接说做不了。' });
+          continue;
         }
 
         // What the model said in this very step: a task_finish in the same

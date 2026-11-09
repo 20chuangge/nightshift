@@ -137,6 +137,37 @@ async function probeHub(url) {
   }
 }
 
+/** Update one machine's record in place (keeps the list order). */
+function patchMachine(url, patch) {
+  const list = readMachines();
+  const i = list.findIndex((m) => m.url === url);
+  if (i < 0) return;
+  list[i] = { ...list[i], ...patch };
+  writeMachines(list);
+}
+
+/**
+ * The address to use for a machine right now: its LAN address, or - away from
+ * home, when that does not answer - its Tailscale address (100.x, learned from
+ * the machine itself). The pairing cookie is copied to that address so the
+ * human never pairs twice. Returns the base URL, or '' when neither answers.
+ */
+async function reachMachine(url) {
+  if (await probeHub(url)) return url;
+  const alt = readMachines().find((m) => m.url === url)?.tailnetUrl;
+  if (!alt || !(await probeHub(alt))) return '';
+  try {
+    for (const c of await session.defaultSession.cookies.get({ url })) {
+      await session.defaultSession.cookies.set({
+        url: alt, name: c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
+        ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}), ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+      });
+    }
+  } catch (err) { bootLog(`cookie copy to ${alt} failed: ${err.message}`); }
+  bootLog(`${url} unreachable, using its Tailscale address ${alt}`);
+  return alt;
+}
+
 /**
  * Pair this client with a hub using the code its installer printed, and keep
  * the session cookie in Electron's store. The human never sees a pairing
@@ -498,7 +529,8 @@ function machineLabel(url) {
 async function switchTo(url, message = '') {
   const target = url ? normalizeHub(url) : '';
   if (url && !target) return { ok: false, error: '地址格式不对' };
-  if (target && !(await probeHub(target))) {
+  const reach = target ? await reachMachine(target) : '';
+  if (target && !reach) {
     return { ok: false, error: L(`连不上 ${machineLabel(target)}（机器关机了，或网络不通）`, `Can't reach ${machineLabel(target)} (it's off, or the network is down)`) };
   }
   remoteHub = target;
@@ -508,7 +540,7 @@ async function switchTo(url, message = '') {
   bootLog(`switch → ${target || 'local'}`);
   refreshChrome();
   if (win && !win.isDestroyed()) {
-    const next = new URL(target || localUrl());
+    const next = new URL(reach || target || localUrl());
     next.searchParams.set('shell', 'desk');
     const seq = ++switchSeq;
     win.loadURL(next.toString()).catch((err) => {
@@ -636,6 +668,7 @@ ipcMain.on('shell:close', (event) => {
 ipcMain.handle('desk:list-machines', () => ({
   current: remoteHub || '',
   local: !remoteHub,
+  // each row may carry tailnetUrl: the same machine reached over Tailscale
   machines: readMachines(),
 }));
 
@@ -647,7 +680,10 @@ ipcMain.handle('desk:machines-attention', async () => {
     .filter((m) => (m.url === 'local' ? Boolean(remoteHub) : m.url !== remoteHub));
   return Promise.all(others.map(async (m) => {
     try {
-      const res = await net.fetch(`${String(m.target).replace(/\/+$/, '')}/api/attention`, { signal: AbortSignal.timeout(6000) });
+      // A remote machine may only answer on its Tailscale address (away from home).
+      let base = String(m.target);
+      if (m.url !== 'local' && !(await probeHub(base))) base = (await reachMachine(m.url)) || base;
+      const res = await net.fetch(`${base.replace(/\/+$/, '')}/api/attention`, { signal: AbortSignal.timeout(6000) });
       if (!res.ok) return { name: m.name, url: m.url, reachable: false };
       const a = await res.json();
       return { name: m.name, url: m.url, reachable: true, needsYou: a.needsYou || 0, unread: a.unread || 0, working: a.working || 0 };
@@ -848,7 +884,9 @@ async function autoUpdateMachine(machine) {
   const name = machine.name || url.replace(/^https?:\/\//, '');
   const mine = app.getVersion();
   try {
-    const res = await net.fetch(`${url}/api/health`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
+    // Away from home the machine may only answer on its Tailscale address.
+    const base = (await reachMachine(url)) || url;
+    const res = await net.fetch(`${base}/api/health`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
     if (!res || !res.ok) {
       // Off, unpaired or too busy to answer: try again in 2 minutes, a few times.
       const n = (updateAttempts.get(url) || 0) + 1;
@@ -858,6 +896,9 @@ async function autoUpdateMachine(machine) {
     }
     const health = await res.json();
     updateChecked.add(url);
+    // Remember where this machine can be reached from outside (Tailscale).
+    const known = readMachines().find((m) => m.url === url)?.tailnetUrl || '';
+    if ((health.tailnetUrl || '') !== known) patchMachine(url, { tailnetUrl: health.tailnetUrl || '' });
     if (versionCmp(health.version, mine) >= 0) { updateAttempts.delete(url); return; }
     if (!health.selfUpdate) {
       notifyPage(L(`「${name}」还是 ${health.version}：重新添加一次这台机器就能更新到 ${mine}，之后会自动更新`, `"${name}" is still on ${health.version}: add it again once to update it to ${mine}; after that it updates on its own`), true);
@@ -868,7 +909,7 @@ async function autoUpdateMachine(machine) {
     const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, cookie: await cookieHeaderFor(url) }),
+      body: JSON.stringify({ url: base, cookie: await cookieHeaderFor(base) }),
     });
     const out = await r.json().catch(() => ({}));
     if (out.ok && out.updated) {
