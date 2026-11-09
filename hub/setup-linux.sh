@@ -33,6 +33,7 @@ PORT=4390
 PKG=""
 NODE_TAR=""
 TS_KEY_FILE=""
+TS_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)   PORT="$2"; shift ;;
@@ -43,6 +44,8 @@ while [ $# -gt 0 ]; do
     --node=*) NODE_TAR="${1#*=}" ;;
     --tailscale-key-file)   TS_KEY_FILE="$2"; shift ;;
     --tailscale-key-file=*) TS_KEY_FILE="${1#*=}" ;;
+    --tailscale-name)   TS_NAME="$2"; shift ;;
+    --tailscale-name=*) TS_NAME="${1#*=}" ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "[desk] 未知参数: $1" >&2; exit 1 ;;
   esac
@@ -381,6 +384,12 @@ if [ "$DESKTOP_PENDING" = 1 ]; then
 # Progress goes to data/desktop-setup.json, which the Hub shows in its panel.
 PM="$1"; STATUS="$2"
 START="$(date -Is)"
+# Red Hat family major version (10 = no X11 desktop stack any more).
+EL_MAJOR=0
+if [ -r /etc/os-release ]; then
+  . /etc/os-release
+  case " ${ID:-} ${ID_LIKE:-} " in *" rhel "*|*" centos "*|*" fedora "*) [ "${ID:-}" != fedora ] && EL_MAJOR="${VERSION_ID%%.*}" ;; esac
+fi
 has() { command -v "$1" >/dev/null 2>&1; }
 status() {
   # elapsed: this script's own seconds - a restored VM often sets its clock mid-install
@@ -455,6 +464,17 @@ if [ "$PM" = apt ]; then
   # No snapd, or the snap failed: the apt way (on Ubuntu a transitional package for the snap).
   has chromium || has chromium-browser || pm_install chromium-browser
   has chromium || has chromium-browser || pm_install chromium
+elif [ "${EL_MAJOR:-0}" -ge 10 ]; then
+  # Rocky / RHEL 10 dropped the X11 stack (Xvfb, x11vnc, XFCE are in no repo,
+  # EPEL included). The browser still works without a screen.
+  status running "安装浏览器 Chromium"
+  pm_install chromium
+  if has chromium || has chromium-browser; then
+    status unsupported "这个系统（Rocky / RHEL 10）去掉了旧的 X11 桌面组件，机器人的屏幕暂时没法装；执行命令、无界面浏览器照常能用"
+  else
+    status failed "没装上：Chromium"
+  fi
+  exit 0
 else
   pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11
   status running "安装浏览器 Chromium"
@@ -485,27 +505,16 @@ fi
 # moves to a root-only file, Tailscale reads it from there (never on a command
 # line), and it is removed afterwards.
 if [ -n "$TS_KEY_FILE" ] && [ -s "$TS_KEY_FILE" ]; then
-  TS_KEY_ROOT=/root/.desk-tailscale.key
-  ( umask 077; head -c 400 "$TS_KEY_FILE" | tr -d '\r\n ' > "$TS_KEY_ROOT" )
-  shred -u "$TS_KEY_FILE" 2>/dev/null || rm -f "$TS_KEY_FILE"
-  TS_SCRIPT=/usr/local/lib/desk-tailscale.sh
-  cat > "$TS_SCRIPT" <<'DESK_TS_EOF'
-#!/usr/bin/env bash
-KEY=/root/.desk-tailscale.key
-trap 'shred -u "$KEY" 2>/dev/null || rm -f "$KEY"' EXIT
-if ! command -v tailscale >/dev/null 2>&1; then
-  if command -v curl >/dev/null 2>&1; then curl -fsSL https://tailscale.com/install.sh | sh
-  else wget -qO- https://tailscale.com/install.sh | sh; fi
-fi
-command -v tailscale >/dev/null 2>&1 || { echo "Tailscale 没装上"; exit 1; }
-systemctl enable --now tailscaled >/dev/null 2>&1 || true
-tailscale up --auth-key="file:$KEY" && tailscale ip -4
-DESK_TS_EOF
-  chmod 700 "$TS_SCRIPT"
-  if has systemd-run && systemd-run --unit=desk-tailscale-setup --collect --quiet /bin/bash -c "$TS_SCRIPT > /var/log/desk-tailscale.log 2>&1" >/dev/null 2>&1; then
+  # hub/tailscale-linux.sh (in the package): installs, joins with the key (read
+  # from a root-only file, never a command line) and removes it; the device is
+  # named after the machine's name in Nightshift.
+  TS_SCRIPT="$APP_DIR/hub/tailscale-linux.sh"
+  chmod 700 "$TS_SCRIPT" 2>/dev/null || true
+  TS_CMD="/bin/bash '$TS_SCRIPT' '$TS_KEY_FILE' '$TS_NAME' > /var/log/desk-tailscale.log 2>&1"
+  if has systemd-run && systemd-run --unit=desk-tailscale-setup --collect --quiet /bin/bash -c "$TS_CMD" >/dev/null 2>&1; then
     say "Tailscale 在后台安装并加入你的网络，装好后在外面也能连上这台机器"
   else
-    setsid nohup /bin/bash -c "$TS_SCRIPT > /var/log/desk-tailscale.log 2>&1" >/dev/null 2>&1 9>&- < /dev/null &
+    setsid nohup /bin/bash -c "$TS_CMD" >/dev/null 2>&1 9>&- < /dev/null &
     say "Tailscale 在后台安装"
   fi
 fi

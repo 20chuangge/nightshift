@@ -47,6 +47,11 @@ const JOB_TIMEOUT_MS = 60 * 60 * 1000;
 /** Setup scripts tag their lines "[desk]"; the human only needs the words. */
 const cleanLine = (text) => String(text).replace(/^\s*\[desk\]\s*/, '').replace(/^警告：/, '⚠ ');
 
+/** A Tailscale device name from the machine's name: letters, digits, dashes (or none). */
+export function tailscaleDeviceName(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+}
+
 function remoteError(code, message) {
   const err = new Error(message);
   err.code = code;
@@ -415,7 +420,19 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
    * PowerShell sessions too), then run the script with Windows PowerShell.
    * The script itself refuses a non-admin account.
    */
-  async function installWindows(client, job, packed, hubPort) {
+  /** Windows: the Tailscale key into a file only administrators can read (from stdin, never a command line). -> its path or '' */
+  async function putWindowsTailscaleKey(client, key) {
+    const ps = "$k=[Console]::In.ReadToEnd().Trim(); $p=Join-Path $env:SystemRoot 'Temp\\desk-tailscale.key'; "
+      + "Set-Content -Path $p -Value $k -NoNewline -Encoding ascii; "
+      + "icacls $p /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' | Out-Null; "
+      + "if ((Get-Item $p).Length -gt 10) { Write-Output \"KEYPATH=$p\" } else { exit 1 }";
+    const put = await execStream(client, `powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { stdin: `${key}\n`, endInput: true, timeoutMs: 30000 })
+      .catch((err) => ({ code: 1, output: err.message }));
+    const m = /KEYPATH=(.+)/.exec(put.output || '');
+    return put.code === 0 && m ? m[1].trim() : '';
+  }
+
+  async function installWindows(client, job, packed, hubPort, { tailscaleKey = '', tailscaleName = '' } = {}) {
     await uploadFile(client, packed.file, 'desk-hub.tar.gz');
     // The desktop (TightVNC) installer comes from here, not from the target:
     // a freshly installed Windows often cannot validate tightvnc.com's
@@ -446,10 +463,18 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     } finally {
       fsp.rm(withBom, { force: true }).catch(() => {});
     }
+    // Optional Tailscale: the key goes in a private file first; never skipped silently.
+    const windowsTailscaleArgs = async () => {
+      if (!tailscaleKey) return '';
+      setProgress(job, '把 Tailscale 密钥交给那台机器…');
+      const keyPath = await putWindowsTailscaleKey(client, tailscaleKey);
+      if (!keyPath) { job.tailscale = 'Tailscale 没装：密钥没能交给那台机器'; return ''; }
+      return ` -TailscaleKeyFile "${keyPath}"${tailscaleName ? ` -TailscaleName ${tailscaleName}` : ''}`;
+    };
     setProgress(job, '安装并启动（首次 2-5 分钟）…');
     return execStream(
       client,
-      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz${vncArg}${nodeArg}`,
+      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz${vncArg}${nodeArg}${await windowsTailscaleArgs()}`,
       {
         onLine: (line) => {
           const text = line.trim();
@@ -459,7 +484,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     );
   }
 
-  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '' }) {
+  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '' }) {
     let client = null;
     try {
       phase(job, '连接 SSH');
@@ -495,7 +520,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         setProgress(job, `上传程序（${Math.max(1, Math.round(packed.bytes / 1024 / 1024))} MB）…`);
         let result;
         if (windows) {
-          result = await installWindows(client, job, packed, hubPort);
+          result = await installWindows(client, job, packed, hubPort, { tailscaleKey, tailscaleName });
         } else {
           const remotePkg = '/tmp/desk-hub.tar.gz';
           const remoteScript = '/tmp/desk-setup.sh';
@@ -513,12 +538,12 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
 
           // Optional Tailscale key: written over the SSH channel into a file only
           // this account can read (never a local file, never a command line).
-          let tsArg = '';
+          let tsArg = tailscaleName ? ` --tailscale-name ${shellQuote(tailscaleName)}` : '';
           if (tailscaleKey) {
             setProgress(job, '把 Tailscale 密钥交给那台机器…');
             const put = await execStream(client, 'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin: `${tailscaleKey}\n`, endInput: true, timeoutMs: 15000 })
               .catch((err) => ({ code: 1, output: err.message }));
-            if (put.code === 0) tsArg = ' --tailscale-key-file /tmp/desk-tailscale.key';
+            if (put.code === 0) tsArg += ' --tailscale-key-file /tmp/desk-tailscale.key';
             // Never skip it silently: the human asked for it.
             else job.tailscale = `Tailscale 没装：密钥没能交给那台机器（${cleanLine(String(put.output || '')).slice(0, 120) || `exit ${put.code}`}）`;
           }
@@ -652,7 +677,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           jobs.delete(id);
         }
       }
-      run(job, { host, sshPort, username, password, hubPort, tailscaleKey });
+      run(job, { host, sshPort, username, password, hubPort, tailscaleKey, tailscaleName: tailscaleDeviceName(input.name || host) });
       return publicJob(job);
     },
     get(id) {

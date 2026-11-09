@@ -2488,6 +2488,9 @@
   .row.card-row .takeover-card { margin: 0; width: 100%; }
   .specialist-welcome { padding-top: 12px; }
   .pw-wrap { position: relative; display: block; }
+  .warn-note { color: #fbbf24; }
+  .ts-install .btn-row { display: flex; gap: 8px; align-items: center; }
+  .ts-install .btn-row .pw-wrap { flex: 1; }
   .pw-wrap > input { width: 100%; padding-right: 58px; box-sizing: border-box; }
   .pw-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--dim); font-size: 12px; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
   .pw-eye:hover { color: var(--text); background: var(--border-soft); }
@@ -2733,6 +2736,7 @@
 
     <!-- center -->
     <section class="chat">
+      <div class="conn-banner busy-banner" id="busy-banner" role="status" hidden><span id="busy-text"></span><button class="btn tiny" id="busy-close" type="button">知道了</button></div>
       <div class="conn-banner" id="conn-banner" role="status" hidden><span id="conn-text"></span><button class="btn tiny" id="conn-retry" type="button">重试</button><button class="btn tiny" id="conn-local" type="button" hidden>切换到本机</button></div>
       <div class="chat-head">
         <button class="icon-btn" id="nav-toggle" type="button" aria-label="打开助手列表" aria-expanded="false" title="助手列表">
@@ -3273,6 +3277,14 @@
         <div class="row-note">配对码只用于把手机接进这台电脑上的夜班，不会上传到任何地方。</div>
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外怎么用</div>
         <div class="row-note" id="outside-state">—</div>
+        <div class="ts-install" id="ts-install" hidden>
+          <div class="row-note">直接在这台机器上装好 Tailscale：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，把 tskey-auth- 开头的密钥贴在这里。密钥只用这一次，用完就删掉。</div>
+          <div class="btn-row">
+            <input class="field" id="ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
+            <button class="btn" id="ts-go" type="button">装上 Tailscale</button>
+          </div>
+          <div class="row-note" id="ts-state"></div>
+        </div>
         <details class="vault-add" id="outside-guide">
           <summary>用 Tailscale（免费，几分钟装好）</summary>
           <ol class="feishu-steps">
@@ -3342,6 +3354,8 @@
     <label class="form-label" for="vnc-addr" style="margin-top:8px">IP 地址</label>
     <input class="field" id="vnc-addr" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" inputmode="url" />
 
+    <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：夜班的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
+
     <label class="form-label" for="vnc-ssh-user" style="margin-top:8px">SSH 用户名</label>
     <input class="field" id="vnc-ssh-user" placeholder="ubuntu" autocomplete="off" spellcheck="false" />
 
@@ -3353,7 +3367,7 @@
 
     <details class="vault-add" id="vnc-ts">
       <summary>在外面也要连上它（可选，Tailscale）</summary>
-      <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。目前只支持 Linux。</div>
+      <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。Linux 和 Windows 都可以。</div>
       <div class="row-note"><a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">打开 Tailscale 密钥页面</a></div>
       <input class="field" id="vnc-ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
     </details>
@@ -8288,6 +8302,12 @@ function renderPairing() {
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
         : '这是本机的夜班，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
   }
+  // A public address: say the connection is not encrypted.
+  try {
+    const lanHost = s.server?.lanUrl ? new URL(s.server.lanUrl).hostname : '';
+    if (outside && !tailnet && lanHost && isPublicAddress(lanHost)) outside.textContent = '这台机器用的是公网地址：连接没有加密，配对凭据会明文经过公网。建议装上 Tailscale，以后只走加密连接。';
+  } catch { /* no address */ }
+  loadTailscaleBox(Boolean(tailnet)).catch(() => {});
   const codeNode = $('pair-code');
   codeNode.textContent = code ? formatPairCode(code) : '未生成';
   codeNode.classList.toggle('empty', !code);
@@ -9416,7 +9436,9 @@ async function refreshScreen() {
     const known = Number.isFinite(setup.elapsedSec);
     const mins = known ? Math.max(1, Math.round(setup.elapsedSec / 60)) : 0;
     img.style.display = 'none';
-    note.textContent = setup.state === 'failed'
+    note.textContent = setup.state === 'unsupported'
+      ? setup.detail
+      : setup.state === 'failed'
       ? `桌面没装全（${setup.detail}）：在这台机器上重新添加一次可以补上。`
       : known
         ? `桌面和浏览器还在后台安装：${setup.detail || '准备中'}（已 ${mins} 分钟，通常 3–10 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。`
@@ -9686,6 +9708,75 @@ async function onMachineListClick(event) {
 }
 
 /** Accept "1.2.3.4", "1.2.3.4:22" or a URL; only the host matters here. */
+/**
+ * The machine this window shows is overloaded (CPU near 100% for a minute, or
+ * almost no memory left): everything gets slow, so say why, once.
+ */
+const busyWatch = { dismissed: false, timer: null };
+async function checkBusy() {
+  clearTimeout(busyWatch.timer);
+  busyWatch.timer = setTimeout(checkBusy, 60000);
+  let h;
+  try { h = await api('/api/health'); } catch { return; }
+  const l = h.load;
+  const banner = $('busy-banner');
+  if (!banner || !l) return;
+  if (!l.busy) { banner.hidden = true; busyWatch.dismissed = false; return; }
+  if (busyWatch.dismissed) return;
+  const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
+  $('busy-text').textContent = l.why === 'memory'
+    ? `这台机器内存快用完了（只剩 ${gb(l.memFreeMB)} / ${gb(l.memTotalMB)}），夜班会变慢。可以关掉不用的程序，或给它加内存。`
+    : `这台机器很忙：CPU 已经满负荷一分多钟（${l.cores} 核，${l.cpu}%），夜班会变慢。常见原因是系统更新或杀毒扫描；虚拟机建议至少 2 核、4 GB 内存。`;
+  banner.hidden = false;
+}
+
+/** Settings → 手机和外网: install Tailscale on a machine already added (one given to the bots). */
+let tsWatch = null;
+async function loadTailscaleBox(onTailnet) {
+  const box = $('ts-install');
+  if (!box) return;
+  const t = await api('/api/tailscale');
+  box.hidden = onTailnet || !t.canInstall;
+  const st = $('ts-state');
+  st.textContent = t.status?.state === 'running' ? '正在安装 Tailscale，通常 1–3 分钟…'
+    : t.status?.state === 'failed' ? `上次没装好：${t.status.detail}`
+      : t.status?.state === 'done' ? t.status.detail : '';
+  clearTimeout(tsWatch);
+  if (t.status?.state === 'running') tsWatch = setTimeout(() => loadSettings().then(() => renderPairing()).catch(() => {}), 6000);
+}
+
+async function installTailscale() {
+  const key = $('ts-key').value.trim();
+  if (!/^tskey-auth-/.test(key)) { toast(/^tskey-api-/.test(key) ? '这是 API 访问令牌，不是 Auth key：在 Tailscale 后台点「Generate auth key」' : 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key', true); return; }
+  try {
+    await api('/api/tailscale/install', { method: 'POST', body: { authKey: key } });
+    $('ts-key').value = '';
+    $('ts-state').textContent = '正在安装 Tailscale，通常 1–3 分钟…';
+    clearTimeout(tsWatch);
+    tsWatch = setTimeout(() => loadSettings().then(() => renderPairing()).catch(() => {}), 6000);
+  } catch (err) { toast(err.message, true); }
+}
+
+/** A public address (a cloud host), not the LAN, Tailscale or this computer. */
+function isPublicAddress(host) {
+  const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h || h === 'localhost' || h.endsWith('.local') || h.endsWith('.lan') || h.endsWith('.ts.net') || !h.includes('.') && !h.includes(':')) return false;
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    return !(a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127));
+  }
+  if (h.includes(':')) return !/^(fc|fd|fe80|::1)/.test(h);
+  return true; // a domain name: most likely on the internet
+}
+
+function updatePublicHint() {
+  const address = parseTargetAddress($('vnc-addr').value);
+  const pub = Boolean(address && isPublicAddress(address.host));
+  $('vnc-public').hidden = !pub;
+  if (pub) $('vnc-ts').open = true;
+}
+
 function parseTargetAddress(raw) {
   const text = String(raw || '').trim();
   if (!text) return null;
@@ -9798,6 +9889,7 @@ function openMachineModal() {
   $('vnc-modal').setAttribute('aria-hidden', 'false');
   $('vnc-scrim').classList.add('show');
   setTimeout(() => $('vnc-addr').focus(), 50);
+  updatePublicHint();
 }
 
 function closeMachineModal() {
@@ -10362,6 +10454,10 @@ function wireChrome() {
     for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) addRevealButtons(n);
   }).observe(document.body, { childList: true, subtree: true });
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
+  $('vnc-addr')?.addEventListener('input', updatePublicHint);
+  $('ts-go')?.addEventListener('click', installTailscale);
+  $('busy-close')?.addEventListener('click', () => { busyWatch.dismissed = true; $('busy-banner').hidden = true; });
+  setTimeout(checkBusy, 20000);
   $('tts-voice')?.addEventListener('change', async () => {
     try { voice.status = await api('/api/voice', { method: 'PUT', body: { ttsVoice: $('tts-voice').value } }); toast('朗读声音已更换'); } catch (err) { toast(err.message, true); }
   });

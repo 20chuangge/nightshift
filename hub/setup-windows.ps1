@@ -27,6 +27,9 @@ param(
   [string]$VncMsi = '',
   # Node.js zip uploaded by the client (preferred over downloading here).
   [string]$NodeZip = '',
+  # Optional: a Tailscale auth key in a private file, and the device name.
+  [string]$TailscaleKeyFile = '',
+  [string]$TailscaleName = '',
   # Test mode: download and unpack only, touch nothing system-wide.
   [switch]$NoSystem
 )
@@ -317,6 +320,15 @@ $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
   Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
   Select-Object -First 1).IPAddress
 if (-not $ip) { $ip = '127.0.0.1' }
+# Optional: join the human's tailnet in the background (hub\tailscale-windows.ps1).
+if ($TailscaleKeyFile -and (Test-Path $TailscaleKeyFile)) {
+  $tsScript = Join-Path $AppDir 'hub\tailscale-windows.ps1'
+  $tsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tsScript`"", '-KeyFile', "`"$TailscaleKeyFile`"")
+  if ($TailscaleName) { $tsArgs += @('-Name', $TailscaleName) }
+  Start-Process powershell.exe -ArgumentList $tsArgs -WindowStyle Hidden
+  Say 'Tailscale 在后台安装并加入你的网络，装好后在外面也能连上这台机器'
+}
+
 Write-Output "DESK_OS=$osName"
 Write-Output "DESK_HUB_URL=http://${ip}:$Port"
 Write-Output "DESK_PAIR_CODE=$(if ($code) { $code } else { 'unknown' })"

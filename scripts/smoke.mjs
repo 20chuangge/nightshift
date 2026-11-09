@@ -3212,7 +3212,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
     const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
     check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
-    check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && sh.includes('tailscale up --auth-key="file:$KEY"') && sh.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup'));
+    const tsl = await fsp.readFile(new URL('../hub/tailscale-linux.sh', import.meta.url), 'utf8');
+    check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && tsl.includes('tailscale up --auth-key="file:$KEY"') && tsl.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup') && sh.includes('$APP_DIR/hub/tailscale-linux.sh'));
     const { createProvisioner } = await import('../src/remote.mjs').catch(() => ({}));
     if (typeof createProvisioner === 'function') {
       let code = '';
@@ -3479,6 +3480,33 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const ps1 = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
     const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
     check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'夜班服务没能启动起来或没有应答'"));
+  }
+  // Step 18: cloud hosts, Tailscale on Windows and on machines already added, Rocky 10, busy machines.
+  {
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const fnSrc = /function isPublicAddress\(host\) \{[\s\S]*?\n\}\n/.exec(page)?.[0] || '';
+    const isPublic = new Function(fnSrc + 'return isPublicAddress;')();
+    check('cloud hosts: a public address is told apart from the LAN, Tailscale and this computer', isPublic('47.100.1.2') && isPublic('my-vps.example.com') && !isPublic('192.168.1.20') && !isPublic('10.0.0.5') && !isPublic('172.20.1.1') && !isPublic('100.100.1.2') && !isPublic('localhost') && !isPublic('win11') && !isPublic('box.tail1234.ts.net'));
+    check('cloud hosts: adding one warns the connection is not encrypted and opens the Tailscale option; settings say so too', page.includes('id="vnc-public"') && page.includes("if (pub) $('vnc-ts').open = true;") && page.includes('这台机器用的是公网地址：连接没有加密'));
+    const RM = await import('../src/remote.mjs');
+    check('tailscale: the device is named after the machine (letters, digits, dashes)', RM.tailscaleDeviceName('Rocky') === 'rocky' && RM.tailscaleDeviceName('My Box 2') === 'my-box-2' && RM.tailscaleDeviceName('动画机') === '');
+    const ps = await fsp.readFile(new URL('../hub/tailscale-windows.ps1', import.meta.url), 'utf8');
+    const winSetup = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
+    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    check('tailscale on Windows: ASCII-only installer (PowerShell 5 safe), key from a file, unattended, key removed', ![...ps].some((c) => c.charCodeAt(0) > 127) && ps.includes('"--auth-key=file:$KeyFile"') && ps.includes("'--unattended'") && ps.includes('Remove-Item -Force $KeyFile'));
+    check('tailscale on Windows: the key goes over SSH stdin into an admins-only file, and setup starts the installer', rm.includes("icacls $p /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F'") && rm.includes('endInput: true, timeoutMs: 30000') && winSetup.includes('[string]$TailscaleKeyFile') && winSetup.includes("hub\\tailscale-windows.ps1"));
+    check('tailscale on Windows: the installer downloads with curl.exe (PowerShell 5 downloads crawl), and a key that waits for the last step is not taken away', ps.includes("'System32\\curl.exe'") && ps.includes("$ProgressPreference = 'SilentlyContinue'") && (await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8')).includes('if (/^start \\d{4}-/m.test(log)) return;'));
+    const ts = await api('/api/tailscale');
+    const local = await api('/api/tailscale/install', { method: 'POST', body: { authKey: 'tskey-auth-abcdefghijkl' } });
+    check('tailscale on a machine already added: offered only on machines given to the bots; this computer is told to install the app', ts.status === 200 && ts.json?.canInstall === false && 'status' in ts.json && local.status === 400 && local.json?.error?.code === 'TS_LOCAL');
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('tailscale on a machine already added: key file 0600, sudo -n systemd-run on Linux, the installer on Windows; results worded from DESK_TS codes', srv.includes('{ mode: 0o600 }') && srv.includes("spawnChild('sudo', ['-n', 'systemd-run'") && srv.includes("path.join(hubDir, 'tailscale-windows.ps1')") && srv.includes("m[2] === 'key' ?") && page.includes("api('/api/tailscale/install'"));
+    const winLaunch = srv.split('\n').find((l) => l.includes("'tailscale-windows.ps1'), '-KeyFile', keyFile")) || '';
+    check('tailscale on a machine already added: Windows launches the installer attached (a detached one runs nothing from the hub task); a key the installer never took is deleted after 90 s and reported', winLaunch && !winLaunch.includes('detached: true') && srv.includes('if (!fs.existsSync(keyFile)) return;') && srv.includes('DESK_TS=failed launch') && srv.includes('const TS_LAUNCH_FAILED'));
+    const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
+    check('Rocky / RHEL 10: no X11 desktop to install, so only Chromium, and an honest "not supported" instead of "add it again"', sh.includes('EL_MAJOR:-0}" -ge 10 ]; then') && sh.includes('status unsupported') && page.includes("setup.state === 'unsupported'"));
+    const h = await api('/api/health');
+    check('busy machines: health reports CPU, cores and memory; the page warns when it stays near 100%', h.json?.load && typeof h.json.load.cores === 'number' && typeof h.json.load.memFreeMB === 'number' && 'busy' in h.json.load && page.includes('async function checkBusy()') && page.includes('id="busy-banner"'));
   }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {

@@ -16,8 +16,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { spawn as spawnChild } from 'node:child_process';
 import fsp from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 import {
   P,
@@ -646,6 +647,31 @@ async function dispatchApi(req, res, state, pathname, url) {
 
 // --- health / config -------------------------------------------------------
 
+// CPU use sampled every 15 s (os.loadavg is 0 on Windows); "busy" after a minute near 100%.
+const loadSamples = [];
+let lastCpu = null;
+function sampleCpu() {
+  const t = os.cpus().reduce((a, c) => { for (const [k, v] of Object.entries(c.times)) a[k] = (a[k] || 0) + v; return a; }, {});
+  const total = Object.values(t).reduce((a, b) => a + b, 0);
+  if (lastCpu) {
+    const dt = total - lastCpu.total;
+    const busy = dt - (t.idle - lastCpu.idle);
+    if (dt > 0) loadSamples.push(Math.round((busy / dt) * 100));
+    while (loadSamples.length > 4) loadSamples.shift();
+  }
+  lastCpu = { total, idle: t.idle };
+}
+sampleCpu();
+setInterval(sampleCpu, 15000).unref();
+function machineLoad() {
+  const cpu = loadSamples.length ? loadSamples[loadSamples.length - 1] : null;
+  const memFreeMB = Math.round(os.freemem() / 1048576);
+  const memTotalMB = Math.round(os.totalmem() / 1048576);
+  const cpuBusy = loadSamples.length >= 4 && loadSamples.every((x) => x >= 90);
+  const memBusy = memFreeMB < Math.max(300, memTotalMB * 0.05);
+  return { cpu, cores: os.cpus().length, memFreeMB, memTotalMB, busy: cpuBusy || memBusy, why: cpuBusy ? 'cpu' : memBusy ? 'memory' : null };
+}
+
 route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
   const bots = await listBots();
   return {
@@ -666,6 +692,8 @@ route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
     // Reachable from the owner's other devices anywhere (Tailscale), when on a tailnet.
     tailnetUrl: tailnetUrl(state),
     recoveredTurns: state.recoveredTurns.length,
+    // How busy the machine is (a one-core VM with Windows Update running made everything crawl).
+    load: machineLoad(),
     // Self-update: what this machine was set up with, and what this build's
     // scripts would install (a client compares them before pushing an update).
     setupVersion: installedSetupVersion(),
@@ -2149,6 +2177,82 @@ route('GET', /^\/api\/media\/jobs$/, async (_req, _res, { query, state }) => {
     jobs: recent.map((j) => ({ id: j.id, state: j.state, prompt: j.prompt, createdAt: j.createdAt, doneAt: j.doneAt || null, path: j.path || '', error: j.error || '' })),
     typicalSec,
   };
+});
+
+// --- Tailscale on a machine already added -----------------------------------------
+//   GET  /api/tailscale            -> {address, canInstall, status:{state:'idle'|'running'|'done'|'failed', detail}}
+//   POST /api/tailscale/install    {authKey}   install and join, in the background
+// Only on a machine given to the bots (the hub has the rights there); on the
+// human's own computer they install the Tailscale app themselves.
+
+const TS_LOG = process.platform === 'win32' ? path.join(process.env.ProgramData || 'C:\\ProgramData', 'Nightshift', 'tailscale.log') : '/var/log/desk-tailscale.log';
+let tsLaunchFailedAt = 0; // the hub gave up on an installer that never started (the log may be root-owned)
+const TS_LAUNCH_FAILED = '安装程序没能启动（密钥已删掉）；再点一次试试，还不行就到那台机器上手动装 Tailscale';
+function tailscaleStatus() {
+  if (tsLaunchFailedAt && Date.now() - tsLaunchFailedAt < 30 * 60 * 1000) return { state: 'failed', detail: TS_LAUNCH_FAILED };
+  let text = '';
+  let at = 0;
+  try { text = fs.readFileSync(TS_LOG, 'utf8'); at = fs.statSync(TS_LOG).mtimeMs; } catch { return { state: 'idle', detail: '' }; }
+  const m = [...text.matchAll(/DESK_TS=(done|failed)\s*(\S*)\s*(.*)/g)].pop();
+  if (!m) return Date.now() - at < 15 * 60 * 1000 ? { state: 'running', detail: '正在安装 Tailscale…' } : { state: 'idle', detail: '' };
+  if (m[1] === 'done') return { state: 'done', detail: m[2] ? `已加入你的网络：${m[2]}` : '已加入你的网络' };
+  const why = m[2] === 'launch' ? TS_LAUNCH_FAILED
+    : m[2] === 'key' ? '密钥不对：要 tskey-auth- 开头、没过期、没用过的 Auth key'
+    : m[2] === 'download' ? '下载不了 Tailscale（这台机器连不上 tailscale.com？）'
+      : (`${m[2]} ${m[3]}`.trim() || '安装失败');
+  return { state: 'failed', detail: why };
+}
+
+route('GET', /^\/api\/tailscale$/, async (_req, _res, { state }) => ({
+  address: tailnetUrl(state),
+  canInstall: process.env.DESK_MACHINE_MODE === 'remote' && ['linux', 'win32'].includes(process.platform),
+  status: tailscaleStatus(),
+}));
+
+route('POST', /^\/api\/tailscale\/install$/, async (_req, _res, { body, state }) => {
+  if (process.env.DESK_MACHINE_MODE !== 'remote') throw httpError(400, 'TS_LOCAL', '这是你自己的电脑：请直接安装 Tailscale 客户端并登录');
+  const key = String(body?.authKey || '').trim();
+  if (/^tskey-api-/.test(key)) throw httpError(400, 'TS_API_KEY', '这是 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」');
+  if (!/^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(key)) throw httpError(400, 'TS_BAD_KEY', 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key');
+  if (tailscaleStatus().state === 'running') throw httpError(409, 'TS_RUNNING', '已经在安装了，稍等');
+  const { tailscaleDeviceName } = await import('./remote.mjs');
+  const name = tailscaleDeviceName(state.uiState?.machine?.name || os.hostname());
+  const keyFile = path.join(os.tmpdir(), `desk-tailscale-${crypto.randomBytes(6).toString('hex')}.key`);
+  fs.writeFileSync(keyFile, `${key}\n`, { mode: 0o600 });
+  tsLaunchFailedAt = 0;
+  const hubDir = fileURLToPath(new URL('../hub/', import.meta.url)); // next to the code, not the data
+  try { fs.writeFileSync(TS_LOG, 'start\n'); } catch { /* root-owned on Linux: the script writes it */ }
+  if (process.platform === 'win32') {
+    // Not detached: from the hub's background task (session 0), a detached
+    // PowerShell exits at once with code 0 and runs nothing (seen on win11).
+    const child = spawnChild('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(hubDir, 'tailscale-windows.ps1'), '-KeyFile', keyFile, ...(name ? ['-Name', name] : [])], { stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+  } else {
+    // The hub's account may use sudo without a password on a machine given to the bots.
+    const cmd = `/bin/bash '${path.join(hubDir, 'tailscale-linux.sh')}' '${keyFile}' '${name}' > ${TS_LOG} 2>&1`;
+    const child = spawnChild('sudo', ['-n', 'systemd-run', '--unit=desk-tailscale-setup', '--collect', '--quiet', '/bin/bash', '-c', cmd], { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+  }
+  // Safety net for an installer that never started (no sudo, a launch that did
+  // nothing): after 90 s, remove the key and say so, never "installing…"
+  // forever. "Started" is the installer's own word for it: on Linux it takes
+  // the key file over at once; on Windows the key waits in its file until the
+  // last step (download and install come first), so look for its own log line.
+  setTimeout(() => {
+    if (!fs.existsSync(keyFile)) return;
+    if (process.platform === 'win32') {
+      let log = '';
+      try { log = fs.readFileSync(TS_LOG, 'utf8'); } catch { /* none yet */ }
+      if (/^start \d{4}-/m.test(log)) return; // it is running; it removes the key itself
+    }
+    try { fs.unlinkSync(keyFile); } catch { /* gone */ }
+    try { fs.appendFileSync(TS_LOG, 'DESK_TS=failed launch\n'); } catch { /* root-owned log */ }
+    tsLaunchFailedAt = Date.now();
+  }, 90000).unref();
+  await audit({ kind: 'tailscale.install', name });
+  return { ok: true, status: { state: 'running', detail: '正在安装 Tailscale…' } };
 });
 
 // --- daily briefing -----------------------------------------------------------
