@@ -380,7 +380,8 @@ PM="$1"; STATUS="$2"
 START="$(date -Is)"
 has() { command -v "$1" >/dev/null 2>&1; }
 status() {
-  printf '{"state":"%s","startedAt":"%s","updatedAt":"%s","detail":"%s"}\n' "$1" "$START" "$(date -Is)" "$2" > "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+  # elapsed: this script's own seconds - a restored VM often sets its clock mid-install
+  printf '{"state":"%s","startedAt":"%s","updatedAt":"%s","elapsed":%s,"detail":"%s"}\n' "$1" "$START" "$(date -Is)" "$SECONDS" "$2" > "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
   chmod 644 "$STATUS" 2>/dev/null || true
 }
 APT_WAIT="-o DPkg::Lock::Timeout=600 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
@@ -388,19 +389,33 @@ APT_WAIT="-o DPkg::Lock::Timeout=600 -o Acquire::http::Timeout=30 -o Acquire::ht
 # is clearly faster, this one install uses the mirror through its own source
 # list and package lists. The system's sources are not touched.
 APT_SRC=""
+# Seconds to fetch a small file (99 when it fails), with curl or wget.
+fetch_time() {
+  local t0 t1
+  t0="$(date +%s%N)"
+  if command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null -m 20 "$1" >/dev/null 2>&1 || { echo 99; return; }
+  else wget -q -T 20 -O /dev/null "$1" >/dev/null 2>&1 || { echo 99; return; }
+  fi
+  t1="$(date +%s%N)"
+  awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", (b - a) / 1e9 }'
+}
 pick_mirror() {
   [ "$PM" = apt ] || return 0
   . /etc/os-release 2>/dev/null || return 0
   [ "${ID:-}" = ubuntu ] && [ -n "${VERSION_CODENAME:-}" ] || return 0
-  command -v curl >/dev/null 2>&1 || return 0
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || return 0
   local cur mirror t_cur t_mir keyring
   cur="$(grep -hoE 'https?://[^ ]+/ubuntu/?' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null | grep -v security | head -1)"
   cur="${cur:-http://archive.ubuntu.com/ubuntu}"
   mirror="https://mirrors.aliyun.com/ubuntu"
-  t_cur="$(curl -o /dev/null -s -w '%{time_total}' -m 20 "${cur%/}/dists/$VERSION_CODENAME/InRelease" || echo 99)"
-  t_mir="$(curl -o /dev/null -s -w '%{time_total}' -m 20 "$mirror/dists/$VERSION_CODENAME/InRelease" || echo 99)"
-  # Only when it clearly pays: the archive takes over 1.5 s and the mirror is at least twice as fast.
-  awk -v a="$t_cur" -v b="$t_mir" 'BEGIN { exit !(a > 1.5 && b < 20 && a > 2 * b) }' || return 0
+  t_cur="$(fetch_time "${cur%/}/dists/$VERSION_CODENAME/InRelease")"
+  t_mir="$(fetch_time "$mirror/dists/$VERSION_CODENAME/InRelease")"
+  # Only when it clearly pays: the archive takes over 1.5 s and the mirror is at
+  # least twice as fast. DESK_APT_MIRROR=force / off overrides (tests, opt-out).
+  if [ "${DESK_APT_MIRROR:-}" = off ]; then return 0; fi
+  if [ "${DESK_APT_MIRROR:-}" != force ]; then
+    awk -v a="$t_cur" -v b="$t_mir" 'BEGIN { exit !(a > 1.5 && b < 20 && a > 2 * b) }' || return 0
+  fi
   keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
   [ -f "$keyring" ] || return 0
   mkdir -p /var/lib/apt/desk-mirror-lists/partial

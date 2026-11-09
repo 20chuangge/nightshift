@@ -1473,8 +1473,19 @@ route('GET', /^\/api\/computer$/, async (req, _res, { state, query }) => {
   // Elapsed time is worked out here, on this machine's own clock: a restored
   // VM snapshot can be days off, and the viewer's clock is not this one.
   if (setup?.state && setup.state !== 'done') {
-    const started = Date.parse(setup.startedAt || '');
-    snap.desktopSetup = { state: setup.state, detail: setup.detail || '', startedAt: setup.startedAt || null, elapsedSec: Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : null };
+    // Prefer the install script's own count of seconds (a restored VM often
+    // sets its clock mid-install), plus the time since it last wrote.
+    let elapsedSec = null;
+    if (Number.isFinite(setup.elapsed)) {
+      let since = 0;
+      try { since = (Date.now() - fs.statSync(path.join(P.dataDir, 'desktop-setup.json')).mtimeMs) / 1000; } catch { /* none */ }
+      elapsedSec = Math.round(setup.elapsed + (since > 0 && since < 3600 ? since : 0));
+    } else {
+      const started = Date.parse(setup.startedAt || '');
+      const s = Number.isFinite(started) ? Math.round((Date.now() - started) / 1000) : NaN;
+      elapsedSec = s >= 0 && s < 6 * 3600 ? s : null; // nonsense after a clock jump: say nothing
+    }
+    snap.desktopSetup = { state: setup.state, detail: setup.detail || '', startedAt: setup.startedAt || null, elapsedSec };
   }
   // noVNC asks for the VNC password every single time, which is unbearable when
   // the viewer opens in a panel. Hand it the password once via the URL.

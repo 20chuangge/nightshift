@@ -8802,12 +8802,15 @@ async function refreshScreen() {
   // view would only show a black screen until the desktop itself is in).
   const setup = state.computer?.desktopSetup;
   if (setup && img && note) {
-    // elapsedSec comes from that machine's own clock (it may differ from ours).
-    const mins = Number.isFinite(setup.elapsedSec) ? Math.max(1, Math.round(setup.elapsedSec / 60)) : 1;
+    // elapsedSec is counted on that machine (null when it cannot be trusted).
+    const known = Number.isFinite(setup.elapsedSec);
+    const mins = known ? Math.max(1, Math.round(setup.elapsedSec / 60)) : 0;
     img.style.display = 'none';
     note.textContent = setup.state === 'failed'
       ? `桌面没装全（${setup.detail}）：在这台机器上重新添加一次可以补上。`
-      : `桌面和浏览器还在后台安装：${setup.detail || '准备中'}（已 ${mins} 分钟，通常 3–8 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。`;
+      : known
+        ? `桌面和浏览器还在后台安装：${setup.detail || '准备中'}（已 ${mins} 分钟，通常 3–10 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。`
+        : `桌面和浏览器还在后台安装：${setup.detail || '准备中'}（通常 3–10 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。`;
     note.style.display = 'block';
     return;
   }

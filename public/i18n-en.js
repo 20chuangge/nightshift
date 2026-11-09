@@ -1081,4 +1081,6 @@ window.DESK_I18N_EN = {
   "{0} 分 {1} 秒": "{0} min {1} s",
   "{0} 秒": "{0} s",
   "已就绪；机器人的桌面和浏览器在后台继续安装（约 3–8 分钟）。": "Ready; the bots’ desktop and browser keep installing in the background (about 3–8 minutes).",
+  "桌面和浏览器还在后台安装：{0}（已 {1} 分钟，通常 3–10 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。": "The desktop and browser are still installing in the background: {0} ({1} min so far, usually 3–10). The bot’s screen appears here when done; bots can already do other work.",
+  "桌面和浏览器还在后台安装：{0}（通常 3–10 分钟）。装好后这里会自动显示机器人的屏幕，机器人已经可以先做别的事。": "The desktop and browser are still installing in the background: {0} (usually 3–10 minutes). The bot’s screen appears here when done; bots can already do other work.",
 };
