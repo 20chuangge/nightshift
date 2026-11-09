@@ -14,6 +14,7 @@
  * call as failed; the agent turns it into a tool result the model can read.
  */
 
+import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -25,6 +26,8 @@ import { generateImages, generateVideo, submitVideo } from './media.mjs';
 // -> writer -> ...), and how many hand-offs one task may make in total.
 export const MAX_HANDOFF_DEPTH = 3;
 export const MAX_HANDOFFS = 12;
+// How this machine marks its own bots in a hand-off chain that crosses machines.
+const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -473,7 +476,10 @@ export function createRegistry(deps) {
         if (jobs) {
           // Background: a video can sit in the provider's queue for a long time.
           const task = await submitVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl });
-          const job = await jobs.add({ botId: ctx.bot?.id, groupId: ctx.group?.id || null, prompt: args?.prompt, task });
+          // Made for a teammate: the bot the human is talking to hears when it is ready, too.
+          const origin = Array.isArray(ctx.chain) ? ctx.chain[0] : null;
+          const reportTo = origin && !String(origin).includes('@') && origin !== ctx.bot?.id ? origin : null;
+          const job = await jobs.add({ botId: ctx.bot?.id, groupId: ctx.group?.id || null, prompt: args?.prompt, task, reportTo });
           return {
             submitted: true,
             job: job.id,
@@ -1035,11 +1041,13 @@ export function createRegistry(deps) {
 
   add({
     name: 'bot_list',
-    description: 'List the other bots on the team with their role and what they are allowed to do.',
+    description: 'List the bots on the team: the ones on this machine (with what they may do) and, under otherMachines, the ones on the human\'s other machines (hand them work with bot_message and its machine argument).',
     risk: RISK.LOW,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     async run(_args, ctx) {
       const bots = await ctx.bots.listBots();
+      const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+      const otherMachines = peers ? await peers.rosters().catch(() => []) : [];
       return {
         bots: bots.map((b) => ({
           id: b.id,
@@ -1049,14 +1057,125 @@ export function createRegistry(deps) {
           tools: b.tools,
           isMe: b.id === ctx.bot.id,
         })),
+        ...(otherMachines.length ? { otherMachines } : {}),
       };
+    },
+  });
+
+  /**
+   * bot_message to a bot on another machine: run its turn there (over the
+   * peer link the desktop client set up), wait, bring the reply back. The
+   * same depth / budget / no-hand-back rules travel with the task.
+   */
+  async function handOffToPeer(args, ctx) {
+    const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+    const peer = peers?.find(args.machine);
+    if (!peer) throw toolError('PEER_NOT_FOUND', `no machine called "${args.machine}"; bot_list shows the machines this one can reach`);
+    if ((ctx.depth || 0) >= MAX_HANDOFF_DEPTH) {
+      throw toolError('BOT_DEPTH_EXCEEDED', `hand-offs go at most ${MAX_HANDOFF_DEPTH} levels deep and this is the last one: do this part yourself`);
+    }
+    const budget = ctx.handoffBudget || { left: MAX_HANDOFFS };
+    if (budget.left <= 0) throw toolError('BOT_HANDOFF_BUDGET', `this task already used its ${MAX_HANDOFFS} hand-offs: do the rest yourself and report what is left`);
+    let roster;
+    try { roster = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 15000 }); } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
+    const want = String(args.botId || '').trim().toLowerCase();
+    const list = roster.bots || roster || [];
+    const target = list.find((b) => b.id.toLowerCase() === want) || list.find((b) => String(b.name).toLowerCase() === want)
+      || list.find((b) => String(b.name).toLowerCase().includes(want));
+    if (!target) throw toolError('BOT_NOT_FOUND', `「${peer.name}」上没有「${args.botId}」；那台机器上有：${list.map((b) => `${b.name}（${b.id}）`).join('、')}`);
+    budget.left -= 1;
+    // Chain entries from this machine carry this machine's tag, so the other
+    // side can tell its own bots from ours.
+    const chain = (Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id]).map((c) => (c.includes('@') ? c : `${c}@${SELF_TAG}`));
+    let started;
+    try {
+      started = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(target.id)}/message`, {
+        body: {
+          text: String(args.text || ''),
+          handoff: { depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], budgetLeft: budget.left, from: { bot: ctx.bot.name } },
+        },
+        timeoutMs: 20000,
+      });
+    } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
+    // Wait for that turn to finish over there (up to the turn budget here).
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (ctx.signal?.aborted) throw toolError('CANCELLED', 'cancelled');
+      await new Promise((r) => setTimeout(r, 3000));
+      let msgs;
+      try { msgs = await peers.json(peer, 'GET', `/api/bots/${encodeURIComponent(target.id)}/messages?limit=60`, { timeoutMs: 15000, signal: ctx.signal }); } catch { continue; }
+      const mine = (msgs.messages || msgs || []).filter((m) => m.turnId === started.turnId);
+      const done = mine.find((m) => m.role === 'status');
+      if (!done) continue;
+      const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim();
+      return { machine: peer.name, botId: target.id, botName: target.name, status: done.status || 'success', turnId: started.turnId, reply: reply || done.summary || '(no reply)' };
+    }
+    throw toolError('PEER_TIMEOUT', `「${peer.name}」上的${target.name} 30 分钟还没做完`);
+  }
+
+  add({
+    name: 'file_send',
+    description: 'Copy a file from this machine\'s workspace to another machine\'s workspace (before handing a bot there work that needs it). Returns the path on the other machine. Up to 25 MB.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        machine: { type: 'string', description: 'The other machine\'s name (see bot_list otherMachines).' },
+        path: { type: 'string', description: 'Workspace-relative path of the file here.' },
+      },
+      required: ['machine', 'path'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+      const peer = peers?.find(args?.machine);
+      if (!peer) throw toolError('PEER_NOT_FOUND', `no machine called "${args?.machine}"`);
+      const r = resolvePath(ctx.workspaceDir, args.path);
+      if (!r.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', 'only files in the workspace can be sent');
+      let bytes;
+      try { bytes = await fsp.readFile(r.abs); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+      if (bytes.length > 25 * 1024 * 1024) throw toolError('FILE_TOO_LARGE', 'files over 25 MB cannot be sent');
+      try {
+        const out = await peers.json(peer, 'POST', '/api/uploads', { raw: bytes, headers: { 'x-file-name': encodeURIComponent(path.basename(r.abs)) }, timeoutMs: 120000 });
+        return { machine: peer.name, path: out.path, bytes: bytes.length };
+      } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
+    },
+  });
+
+  add({
+    name: 'file_fetch',
+    description: 'Copy a file from another machine\'s workspace into this machine\'s workspace (a result a bot there made). Returns the path here.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        machine: { type: 'string', description: 'The other machine\'s name.' },
+        path: { type: 'string', description: 'Workspace-relative path on that machine (as its bot reported it).' },
+      },
+      required: ['machine', 'path'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+      const peer = peers?.find(args?.machine);
+      if (!peer) throw toolError('PEER_NOT_FOUND', `no machine called "${args?.machine}"`);
+      const rel = String(args.path || '').replace(/^\.\//, '').replace(/^workspace\//, '');
+      let res;
+      try { res = await peers.call(peer, 'GET', `/api/workspace/file?path=${encodeURIComponent(rel)}`, { timeoutMs: 120000 }); } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
+      if (!res.ok) throw toolError('FS_NOT_FOUND', `「${peer.name}」上没有这个文件：${rel}`);
+      const bytes = Buffer.from(await res.arrayBuffer());
+      const day = new Date().toISOString().slice(0, 10);
+      const destRel = path.posix.join('from-machines', String(peer.name).replace(/[\\/:*?"<>|]/g, '_'), day, path.posix.basename(rel));
+      await fsp.mkdir(path.join(ctx.workspaceDir, path.posix.dirname(destRel)), { recursive: true });
+      await fsp.writeFile(path.join(ctx.workspaceDir, destRel), bytes);
+      return { machine: peer.name, path: destRel, bytes: bytes.length };
     },
   });
 
   add({
     name: 'bot_message',
     description:
-      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary, and may hand parts on to its own teammates. Give it everything it needs (goal, inputs, file paths, what to deliver). Hand-offs go up to 3 levels deep and 12 per task; you cannot hand work back to a bot that is waiting on you - return your result instead.',
+      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary, and may hand parts on to its own teammates. Give it everything it needs (goal, inputs, file paths, what to deliver). For a bot on another machine, also give machine (its name from bot_list otherMachines); files there are separate - send what it needs with file_send first, and fetch its results with file_fetch. Hand-offs go up to 3 levels deep and 12 per task; you cannot hand work back to a bot that is waiting on you - return your result instead.',
     // LOW: internal coordination between teammates that share one workspace. The
     // "sending messages always asks" rule in the reference product is about
     // outward-facing channels (email, chat to a human); there is no such tool
@@ -1066,14 +1185,16 @@ export function createRegistry(deps) {
     parameters: {
       type: 'object',
       properties: {
-        botId: { type: 'string', description: 'Target bot id.' },
+        botId: { type: 'string', description: 'Target bot id (or name).' },
         text: { type: 'string', description: 'What you are asking them to do.' },
+        machine: { type: 'string', description: 'Only for a bot on another machine: that machine\'s name (see bot_list otherMachines).' },
       },
       required: ['botId', 'text'],
       additionalProperties: false,
     },
     async run(args, ctx) {
       const targetId = String(args?.botId || '');
+      if (args?.machine) return handOffToPeer(args, ctx);
       if (targetId === ctx.bot.id) throw toolError('BOT_SELF_MESSAGE', 'a bot cannot message itself; just do the work');
       if ((ctx.depth || 0) >= MAX_HANDOFF_DEPTH) {
         throw toolError('BOT_DEPTH_EXCEEDED', `hand-offs go at most ${MAX_HANDOFF_DEPTH} levels deep and this is the last one: do this part yourself`);
@@ -1083,7 +1204,7 @@ export function createRegistry(deps) {
       // Everyone above this bot on the chain is waiting for it; handing work
       // back to one of them would make both wait for each other forever.
       const chain = Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id];
-      if (chain.includes(target.id)) {
+      if (chain.includes(target.id) || chain.includes(`${target.id}@${SELF_TAG}`)) {
         throw toolError('BOT_IN_CHAIN', `${target.name} is waiting for your result (the work came from them, or through them). Do not hand it back: finish your part and return it as your final answer.`);
       }
       const budget = ctx.handoffBudget || { left: MAX_HANDOFFS };
@@ -1686,6 +1807,8 @@ export function createRegistry(deps) {
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
+      // Handing work to another machine needs moving its inputs and results.
+      if ((name === 'file_send' || name === 'file_fetch') && grants.has('bot_message')) return true;
       return false;
     },
     /** OpenAI function-tool schemas for the model call. */

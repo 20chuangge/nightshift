@@ -36,6 +36,17 @@ export function createAttention({ file, bus }) {
     if (typeof changeTimer?.unref === 'function') changeTimer.unref();
   };
 
+  /** A bot or group was deleted: drop what it left behind. */
+  function forget(key) {
+    delete saved.seen[key];
+    delete saved.result[key];
+    delete saved.waiting[key];
+    working.delete(key);
+    for (const [id, k] of approvals) if (k === key) approvals.delete(id);
+    persist();
+    changed();
+  }
+
   function onEvent(ev) {
     if (!ev || ev.type === 'attention.changed') return;
     const key = keyOf(ev);
@@ -70,6 +81,8 @@ export function createAttention({ file, bus }) {
         if (ev.approvalId && approvals.delete(ev.approvalId)) changed();
         break;
       case 'roster.changed':
+        // A deleted bot or group must not keep a badge on the sidebar.
+        if (ev.action === 'delete' && key) { forget(key); break; }
         changed();
         break;
       default:
@@ -119,15 +132,14 @@ export function createAttention({ file, bus }) {
       return true;
     },
 
-    /** A bot or group was deleted: drop what it left behind. */
-    forget(key) {
-      delete saved.seen[key];
-      delete saved.result[key];
-      delete saved.waiting[key];
-      working.delete(key);
-      for (const [id, k] of approvals) if (k === key) approvals.delete(id);
-      persist();
-      changed();
+    forget,
+
+    /** Drop every key that is not a live bot or group (left from older versions). */
+    prune(liveKeys) {
+      const live = new Set(liveKeys);
+      const stale = new Set([...Object.keys(saved.seen), ...Object.keys(saved.result), ...Object.keys(saved.waiting)].filter((k) => !live.has(k)));
+      for (const key of stale) forget(key);
+      return stale.size;
     },
   };
 }

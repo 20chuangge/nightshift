@@ -3087,6 +3087,89 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const ok = await api('/api/attention/seen', { method: 'POST', body: { key: 'bot:chief' } });
     check('status: routes answer and check their input', r.status === 200 && typeof r.json?.needsYou === 'number' && bad.status === 400 && ok.status === 200);
   }
+  // Step 12: bots on different machines work together (a stand-in peer machine here).
+  {
+    const fsx = await import('node:fs');
+    const { EventBus } = await import('../src/store.mjs');
+    const { createAttention } = await import('../src/attention.mjs');
+    const { createPeers } = await import('../src/peers.mjs');
+    const T = await import('../src/tools.mjs');
+    // Badges of deleted bots and groups go away (now and from older versions).
+    const adir = fsx.mkdtempSync(path.join(os.tmpdir(), 'att12-'));
+    const abus = new EventBus();
+    const att = createAttention({ file: path.join(adir, 'a.json'), bus: abus });
+    await att.load();
+    abus.emit({ type: 'turn.end', botId: 'gone', turnId: 'x', summary: 'ok' });
+    abus.emit({ type: 'turn.end', botId: 'old', turnId: 'y', summary: 'ok' });
+    abus.emit({ type: 'roster.changed', scope: 'bots', action: 'delete', botId: 'gone' });
+    const pruned = att.prune(['bot:keep']);
+    check('badges: a deleted bot loses its badge; leftovers of older versions are pruned', !att.snapshot().items['bot:gone'] && !att.snapshot().items['bot:old'] && pruned === 1);
+    // A stand-in machine "ubuntu" with one bot, behind a pairing token.
+    const TOKEN = 'peer-token-123456';
+    const peerWs = fsx.mkdtempSync(path.join(os.tmpdir(), 'peer-ws-'));
+    fsx.writeFileSync(path.join(peerWs, 'cut.txt'), 'final cut');
+    const seen = [];
+    const peerSrv = http.createServer(async (req, res) => {
+      const chunks = []; for await (const c of req) chunks.push(c);
+      const body = Buffer.concat(chunks);
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
+      const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      if (req.headers.authorization !== 'Bearer ' + TOKEN) return send(401, { error: { code: 'UNPAIRED' } });
+      if (req.url === '/api/bots') return send(200, [{ id: 'bot-ed', name: '剪辑', role: '剪视频' }]);
+      if (req.method === 'POST' && req.url === '/api/bots/bot-ed/message') return send(200, { turnId: 'turn-77' });
+      if (req.url.startsWith('/api/bots/bot-ed/messages')) return send(200, [{ turnId: 'turn-77', role: 'assistant', text: '剪好了：cut.txt' }, { turnId: 'turn-77', role: 'status', status: 'success' }]);
+      if (req.url === '/api/uploads') return send(200, { path: 'uploads/day/' + decodeURIComponent(req.headers['x-file-name']) });
+      if (req.url.startsWith('/api/workspace/file')) { res.writeHead(200); return res.end(fsx.readFileSync(path.join(peerWs, 'cut.txt'))); }
+      send(404, {});
+    });
+    await new Promise((r) => peerSrv.listen(0, '127.0.0.1', r));
+    const peerUrl = 'http://127.0.0.1:' + peerSrv.address().port;
+    const pdir = fsx.mkdtempSync(path.join(os.tmpdir(), 'peers-'));
+    const peers = createPeers({ file: path.join(pdir, 'peers.json') });
+    await peers.load();
+    const listed = await peers.set([{ name: 'ubuntu', url: peerUrl, token: TOKEN }, { name: 'bad', url: 'ftp://x', token: TOKEN }, { name: 'short', url: peerUrl, token: 'x' }]);
+    check('peers: the list keeps valid machines only and never hands tokens back', listed.length === 1 && listed[0].name === 'ubuntu' && !JSON.stringify(listed).includes(TOKEN) && peers.find('UBU')?.name === 'ubuntu');
+    const dead = createPeers({ file: path.join(pdir, 'dead.json') });
+    await dead.set([{ name: 'away', url: 'http://127.0.0.1:1', tailnetUrl: peerUrl, token: TOKEN }]);
+    const viaTail = await dead.json(dead.find('away'), 'GET', '/api/bots');
+    check('peers: a machine not answering on the LAN is reached on its Tailscale address', Array.isArray(viaTail) && viaTail[0].id === 'bot-ed');
+    const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'ws12-'));
+    fsx.writeFileSync(path.join(ws, 'script.md'), '分镜');
+    const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => null, getPeers: () => peers });
+    const me = { id: 'director', name: '导演', tools: ['bot_message'] };
+    const ctx = { bot: me, depth: 1, chain: ['chief', 'director'], handoffBudget: { left: 5 }, workspaceDir: ws, bots: { listBots: async () => [me], getBot: async () => null } };
+    const lst = await reg.get('bot_list').run({}, ctx);
+    check('peers: bot_list shows the bots on the other machines', lst.otherMachines?.[0]?.machine === 'ubuntu' && lst.otherMachines[0].bots[0].name === '剪辑');
+    const sent = await reg.get('file_send').run({ machine: 'ubuntu', path: 'script.md' }, ctx);
+    check('peers: file_send copies a workspace file to the other machine', sent.path === 'uploads/day/script.md' && seen.some((s) => s.url === '/api/uploads' && s.body.toString() === '分镜'));
+    const r = await reg.get('bot_message').run({ machine: 'ubuntu', botId: '剪辑', text: '剪片' }, ctx);
+    const posted = JSON.parse(seen.find((s) => s.url === '/api/bots/bot-ed/message').body.toString());
+    const host = os.hostname();
+    check('peers: bot_message hands work to a bot on another machine by name and brings its reply back', r.reply === '剪好了：cut.txt' && r.machine === 'ubuntu' && r.status === 'success');
+    check('peers: the chain, depth and budget travel with it (this machine tags its own bots)', posted.handoff.depth === 2 && posted.handoff.chain.join('>') === 'chief@' + host + '>director@' + host + '>bot-ed' && posted.handoff.budgetLeft === 4 && ctx.handoffBudget.left === 4);
+    const got = await reg.get('file_fetch').run({ machine: 'ubuntu', path: 'cut.txt' }, ctx);
+    check('peers: file_fetch brings a result back into this workspace', got.path.startsWith('from-machines/ubuntu/') && fsx.readFileSync(path.join(ws, got.path), 'utf8') === 'final cut');
+    const err = async (p) => { try { await p; return null; } catch (e) { return e.code; } };
+    const e1 = await err(reg.get('bot_message').run({ machine: 'nope', botId: 'x', text: 'x' }, ctx));
+    const e2 = await err(reg.get('bot_message').run({ machine: 'ubuntu', botId: 'x', text: 'x' }, { ...ctx, depth: T.MAX_HANDOFF_DEPTH }));
+    await peers.set([{ name: 'ubuntu', url: peerUrl, token: 'wrong-token-999' }]);
+    const e3 = await err(reg.get('file_send').run({ machine: 'ubuntu', path: 'script.md' }, ctx));
+    check('peers: unknown machine, depth limit and a wrong token are refused clearly', e1 === 'PEER_NOT_FOUND' && e2 === 'BOT_DEPTH_EXCEEDED' && e3 === 'PEER_UNAUTHORIZED', [e1, e2, e3].join(','));
+    check('peers: file tools come with bot_message', reg.isGranted(me, 'file_send') && reg.isGranted(me, 'file_fetch') && !reg.isGranted({ tools: [] }, 'file_fetch'));
+    peerSrv.close();
+    // The hub routes: the list goes in, tokens never come out.
+    const put = await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'box', url: 'http://10.0.0.9:4390', token: 'secret-peer-token-1' }] } });
+    const back = await api('/api/peers');
+    check('peers: PUT/GET /api/peers, tokens never come back', put.status === 200 && back.json?.peers?.[0]?.name === 'box' && !JSON.stringify(back.json).includes('secret-peer-token-1'));
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } });
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('peers: work from another machine keeps the chain limits and says where it came from', srv.includes('Math.min(3, Math.max(1, Number(h.depth)') && srv.includes("source: h ? 'peer' : 'chat'"));
+    const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    check('peers: the client hands every hub the other machines, at start, every 10 min and on changes', main.includes('async function sharePeers()') && main.includes("'/api/peers', { peers: others }") && main.includes('sharePeersTimer = setTimeout') && main.includes('setInterval(() => sharePeers()'));
+    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const vj = await fsp.readFile(new URL('../src/videojobs.mjs', import.meta.url), 'utf8');
+    check('peers: bots are told teammates work on other machines; delegated videos report to the origin bot', agentSrc.includes('function peersLine(peers, canHandOff)') && vj.includes('reportTo') && srv.includes('const tellUpstream = async'));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

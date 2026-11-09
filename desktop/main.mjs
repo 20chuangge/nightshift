@@ -97,6 +97,34 @@ function writeMachines(list) {
     fs.mkdirSync(path.dirname(MACHINES_FILE), { recursive: true });
     fs.writeFileSync(MACHINES_FILE, `${JSON.stringify(list, null, 2)}\n`);
   } catch { /* a read-only profile must not break switching */ }
+  // Added, renamed, removed or a new Tailscale address: tell every hub.
+  clearTimeout(sharePeersTimer);
+  sharePeersTimer = setTimeout(() => sharePeers().catch(() => {}), 3000);
+}
+
+/**
+ * Hand every hub (this computer's and each machine's) the list of the human's
+ * other machines, with the pairing token this client holds for each, so their
+ * bots can hand work to each other and move files directly - even while this
+ * laptop is closed. This computer's hub listens on loopback only, so it is
+ * never in a remote machine's list.
+ */
+let sharePeersTimer = null;
+async function sharePeers() {
+  if (HUB_MODE || !serverPort) return;
+  const machines = [];
+  for (const m of readMachines()) {
+    const raw = await session.defaultSession.cookies.get({ url: m.url, name: 'desk_session' }).catch(() => []);
+    const token = raw[0]?.value || '';
+    if (token) machines.push({ name: m.name || m.url, url: m.url, tailnetUrl: m.tailnetUrl || '', token });
+  }
+  const targets = [{ url: localUrl().replace(/\/+$/, ''), local: true }, ...machines];
+  for (const t of targets) {
+    const others = machines.filter((m) => m.url !== t.url);
+    const base = t.local ? t.url : ((await reachMachine(t.url)) || t.url);
+    const r = await putToMachine(base.replace(/\/+$/, ''), '/api/peers', { peers: others });
+    if (!r.ok) bootLog(`share peers with ${t.url}: ${r.error}`);
+  }
 }
 
 /** Add or update one machine. A name the human gave is never overwritten. */
@@ -1141,6 +1169,9 @@ if (!gotLock) {
       createWindowFor(DEV_URL || reach || localUrl());
       createTray();
       setTimeout(() => autoUpdateMachines().catch(() => {}), 8000);
+      // Machines learn about each other now and every 10 minutes (new pairings, new addresses).
+      setTimeout(() => sharePeers().catch(() => {}), 15000);
+      setInterval(() => sharePeers().catch(() => {}), 10 * 60 * 1000);
     } catch (err) {
       dialog.showErrorBox(L('夜班启动失败', 'Nightshift failed to start'), String(err?.stack || err));
       app.quit();

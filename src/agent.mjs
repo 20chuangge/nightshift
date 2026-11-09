@@ -141,8 +141,14 @@ export function looksLikeMadeUpRun(userText, reply, canRun) {
   return /```|exit(code)?\s*[=:]\s*\d|退出码|执行完成|输出如下|原样输出|命令输出|stdout|已执行|运行结果/i.test(reply);
 }
 
+/** The human's other machines, whose bots this one can hand work to. */
+function peersLine(peers, canHandOff) {
+  if (!peers.length || !canHandOff) return [];
+  return [`Teammates also work on the human's other machines: ${peers.map((p) => p.name).join(', ')}. bot_list shows who is there; hand them work with bot_message and its machine argument. Their files are separate: file_send what they need first, file_fetch what they made.`];
+}
+
 export class AgentRuntime {
-  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp }) {
+  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
     this.config = config;
     this.registry = registry;
     this.model = model;
@@ -150,6 +156,7 @@ export class AgentRuntime {
     // Late-bound product state (settings, UI state). Only the primary bot's
     // settings/ui tools read it; a runtime without it still runs every turn.
     this.getApp = typeof getApp === 'function' ? getApp : () => null;
+    this.getPeers = typeof getPeers === 'function' ? getPeers : () => null;
     // Group chats are optional: a runtime without them still runs 1:1 turns, and
     // the group tools answer GROUPS_UNAVAILABLE instead of pretending.
     this.groups = groups || null;
@@ -221,6 +228,7 @@ export class AgentRuntime {
         ? 'You are the primary bot. You coordinate: split work, hand tasks to the right teammate with bot_message, and report back to the human.'
         : 'You are a specialist bot. Do your part of the work and report back concisely. When part of a job belongs to a teammate (see the team below), hand it to them with bot_message - give them the inputs and file paths they need - and put their results together; you get each reply back. Never hand work back to the bot that gave it to you.',
       teamLine,
+      ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
       '## One shared computer',

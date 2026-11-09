@@ -74,12 +74,14 @@ export function createVideoJobs({ file, getKey, workspaceDir, onDone, onFail, po
     },
 
     /** -> the job (id, state 'running') */
-    async add({ botId, groupId = null, prompt, task }) {
+    async add({ botId, groupId = null, prompt, task, reportTo = null }) {
       const job = {
         id: `vj_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         botId,
         // Asked in a group: the finished video goes back to that group.
         ...(groupId ? { groupId } : {}),
+        // Handed down from another bot: that one is told when it is done, too.
+        ...(reportTo ? { reportTo } : {}),
         prompt: String(prompt || '').slice(0, 300),
         task,
         state: 'running',

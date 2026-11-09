@@ -70,6 +70,7 @@ import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu } from './feishu.mjs';
+import { createPeers } from './peers.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -192,6 +193,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getVision: () => (refs.getVision ? refs.getVision() : null),
     getMedia: (kind) => (refs.getMedia ? refs.getMedia(kind) : null),
     getVideoJobs: () => refs.videoJobs || null,
+    getPeers: () => refs.peers || null,
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -229,6 +231,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     approvals,
     bus,
     getApp: () => refs.app,
+    getPeers: () => refs.peers || null,
   });
   refs.runtime = runtime;
 
@@ -304,12 +307,27 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     runtime.runTurn({ botId: job.botId, text, source: 'media', ...(group ? { group, groupRole: 'speaker', recordUser: false } : {}) })
       .catch((err) => console.error('[video] could not report:', err.message));
   };
+  // A video a teammate made for a task handed down from the bot the human is
+  // talking to: that bot hears about it too, so the human is not left waiting.
+  const tellUpstream = async (job, what) => {
+    if (!job.reportTo || job.reportTo === job.botId) return;
+    const maker = await getBot(job.botId).catch(() => null);
+    const up = await getBot(job.reportTo).catch(() => null);
+    if (!up) return;
+    await tellBot({ botId: up.id }, `[后台任务] 你交给团队的视频（由「${maker?.name || job.botId}」提交，内容：${job.prompt}）${what}`);
+  };
   refs.videoJobs = createVideoJobs({
     file: path.join(P.dataDir, 'video-jobs.json'),
     getKey: () => refs.getMedia('video')?.apiKey || '',
     workspaceDir,
-    onDone: (job) => tellBot(job, `[后台任务] 你之前提交的视频生成好了：${job.path}（内容：${job.prompt}）。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`),
-    onFail: (job) => tellBot(job, `[后台任务] 你之前提交的视频没有生成成功：${job.error}（内容：${job.prompt}）。告诉用户原因，问要不要重试。`),
+    onDone: async (job) => {
+      await tellBot(job, `[后台任务] 你之前提交的视频生成好了：${job.path}（内容：${job.prompt}）。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`);
+      await tellUpstream(job, `生成好了：${job.path}。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`);
+    },
+    onFail: async (job) => {
+      await tellBot(job, `[后台任务] 你之前提交的视频没有生成成功：${job.error}（内容：${job.prompt}）。告诉用户原因，问要不要重试。`);
+      await tellUpstream(job, `没有生成成功：${job.error}。告诉用户原因，问要不要重试。`);
+    },
   });
   await refs.videoJobs.load();
 
@@ -334,6 +352,18 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   listBots().then((b) => { state.botsCache = b; }).catch(() => {});
   bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
   await state.feishu.load();
+
+  // The human's other machines, as the desktop client hands them over: bots
+  // here can hand work to bots there and move files, machine to machine.
+  refs.peers = createPeers({ file: path.join(P.dataDir, 'peers.json') });
+  await refs.peers.load();
+  state.peers = refs.peers;
+
+  // Badges of bots and groups deleted by an older version (which kept them).
+  try {
+    const [liveBots, liveGroups] = await Promise.all([listBots(), groups.listGroups()]);
+    attention.prune([...liveBots.map((b) => `bot:${b.id}`), ...liveGroups.map((g) => `group:${g.id}`)]);
+  } catch { /* never block startup on this */ }
 
   // -------------------------------------------------------------------------
   // product-state callbacks used by the primary bot's settings/ui tools
@@ -701,6 +731,17 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- peers (the human's other machines) -----------------------------------------
+//   GET /api/peers   -> {peers:[{name, url, tailnetUrl}]}   never the tokens
+//   PUT /api/peers   {peers:[{name, url, tailnetUrl, token}]}   from the desktop client
+
+route('GET', /^\/api\/peers$/, async (_req, _res, { state }) => ({ peers: state.peers.list() }));
+
+route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
+  const peers = await state.peers.set(body?.peers);
+  return { peers };
+});
 
 // --- Feishu --------------------------------------------------------------------
 //   GET  /api/feishu          -> {enabled, appId, hasSecret, botId, pairCode, users, connected, error}
@@ -1078,8 +1119,16 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
 
   // Answer immediately with the turn id; the turn streams over SSE.
   const turnId = uid('turn');
+  // Work handed over by a bot on another machine: keep the chain's limits.
+  const h = body?.handoff && typeof body.handoff === 'object' ? body.handoff : null;
+  const handoff = h ? {
+    depth: Math.min(3, Math.max(1, Number(h.depth) || 1)),
+    chain: (Array.isArray(h.chain) ? h.chain : []).slice(0, 10).map((c) => String(c).slice(0, 120)),
+    handoffBudget: { left: Math.min(12, Math.max(0, Number(h.budgetLeft) || 0)) },
+  } : null;
+  const fromNote = h ? `（另一台机器上的「${String(h.from?.bot || '队友').slice(0, 40)}」派给你的活；你的最终回答会传回给它。需要的文件可能在那台机器上，让它用 file_send 发过来，或在回答里写明你产出的文件路径。）\n\n` : '';
   state.runtime
-    .runTurn({ botId: bot.id, text, source: 'chat', turnId })
+    .runTurn({ botId: bot.id, text: fromNote + text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}) })
     .catch((err) => {
       state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message });
     });
