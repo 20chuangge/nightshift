@@ -12,6 +12,7 @@
  */
 
 import net from 'node:net';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
@@ -303,6 +304,42 @@ async function tightVncInstaller() {
   return { file, bytes: bytes.length };
 }
 
+/**
+ * The Node.js build a target needs, downloaded once on this computer (checked
+ * against the official SHA-256 list) and cached, then uploaded over the LAN:
+ * a fresh machine downloading 30 MB from nodejs.org is often the slowest step
+ * of an install. kind: 'linux' (tar.gz) | 'win' (zip); arch: x64 | arm64.
+ * Returns {file, bytes} or null (the target then downloads it itself).
+ */
+export async function nodePackage(kind, arch = 'x64') {
+  const ext = kind === 'win' ? 'zip' : 'tar.gz';
+  const dir = path.join(os.tmpdir(), 'nightshift-cache');
+  await fsp.mkdir(dir, { recursive: true });
+  const re = new RegExp(`^node-v22\\.[0-9.]+-${kind}-${arch}\\.${ext.replace('.', '\\.')}$`);
+  const cached = (await fsp.readdir(dir).catch(() => [])).filter((n) => re.test(n)).sort().pop();
+  if (cached) {
+    const st = await fsp.stat(path.join(dir, cached));
+    if (st.size > 10 * 1024 * 1024) return { file: path.join(dir, cached), bytes: st.size };
+  }
+  for (const base of ['https://npmmirror.com/mirrors/node/latest-v22.x', 'https://nodejs.org/dist/latest-v22.x']) {
+    try {
+      const sums = await (await fetch(`${base}/SHASUMS256.txt`, { signal: AbortSignal.timeout(20000) })).text();
+      const line = sums.split('\n').find((l) => re.test(l.trim().split(/\s+/).pop() || ''));
+      if (!line) continue;
+      const [hash, name] = line.trim().split(/\s+/);
+      const res = await fetch(`${base}/${name}`, { signal: AbortSignal.timeout(300000) });
+      if (!res.ok) continue;
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== hash.toLowerCase()) continue;
+      const file = path.join(dir, name);
+      await fsp.writeFile(`${file}.part`, bytes);
+      await fsp.rename(`${file}.part`, file);
+      return { file, bytes: bytes.length };
+    } catch { /* next source */ }
+  }
+  return null;
+}
+
 /** modelToShare: () => {provider, baseUrl, model, apiKey} | null
  *  voiceToShare: () => {baseUrl, model, apiKey} | null  (speech-to-text) */
 export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null } = {}) {
@@ -321,13 +358,28 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     hubUrl: job.hubUrl || '',
     pairCode: job.pairCode || '',
     modelShared: Boolean(job.modelShared),
+    // How long each step took, to see what makes an install slow.
+    timings: (job.timings || []).map((t) => ({ label: t.label, ms: t.ms })),
+    desktopPending: Boolean(job.desktopPending),
     startedAt: job.startedAt,
     finishedAt: job.finishedAt || null,
     log: job.log.slice(-24),
   });
 
+  /** Start timing a phase; the previous one ends here. */
+  const phase = (job, label) => {
+    const now = Date.now();
+    job.timings = job.timings || [];
+    const last = job.timings[job.timings.length - 1];
+    if (last && last.ms === undefined) last.ms = now - last.at;
+    if (label) job.timings.push({ label, at: now });
+  };
+
   const setProgress = (job, message) => {
     job.message = message;
+    // The setup scripts announce their steps as "[desk] 3/7 …".
+    const scriptStep = /^\[desk\]\s*(\d+\s*\/\s*\d+\s*.+)$/.exec(String(message).trim());
+    if (scriptStep) phase(job, scriptStep[1].slice(0, 40));
     const match = /(\d+)\s*\/\s*(\d+)/.exec(message);
     if (match) {
       job.step = Number(match[1]);
@@ -371,6 +423,13 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       await uploadFile(client, msi.file, 'desk-tightvnc.msi');
       vncArg = ' -VncMsi desk-tightvnc.msi';
     }
+    let nodeArg = '';
+    const nodeZip = await nodePackage('win', 'x64').catch(() => null);
+    if (nodeZip) {
+      setProgress(job, `上传 Node.js（${Math.max(1, Math.round(nodeZip.bytes / 1024 / 1024))} MB，目标机器不用再下载）…`);
+      await uploadFile(client, nodeZip.file, 'desk-node.zip');
+      nodeArg = ' -NodeZip desk-node.zip';
+    }
     // PowerShell 5.1 reads a BOM-less script as the ANSI code page, which
     // garbles the Chinese progress text; ship it with a UTF-8 BOM.
     const source = await fsp.readFile(SETUP_SCRIPTS.windows);
@@ -385,7 +444,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     setProgress(job, '安装并启动（首次 2-5 分钟）…');
     return execStream(
       client,
-      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz${vncArg}`,
+      `powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup.ps1 -Port ${Number(hubPort)} -Pkg desk-hub.tar.gz${vncArg}${nodeArg}`,
       {
         onLine: (line) => {
           const text = line.trim();
@@ -398,6 +457,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
   async function run(job, { host, sshPort, username, password, hubPort }) {
     let client = null;
     try {
+      phase(job, '连接 SSH');
       setProgress(job, '正在连接 SSH…');
       client = await connectSsh({ host, port: sshPort, username, password });
 
@@ -423,6 +483,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         }
       }
 
+      phase(job, '打包并上传');
       setProgress(job, '打包夜班程序…');
       const packed = await packApp();
       try {
@@ -435,11 +496,20 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           const remoteScript = '/tmp/desk-setup.sh';
           await uploadFile(client, packed.file, remotePkg);
           await uploadFile(client, SETUP_SCRIPTS.linux, remoteScript);
+          let nodeArg = '';
+          const machine = await execStream(client, 'uname -m', { timeoutMs: 15000 }).catch(() => ({ output: '' }));
+          const arch = /aarch64|arm64/.test(machine.output) ? 'arm64' : /x86_64|amd64/.test(machine.output) ? 'x64' : '';
+          const nodeTar = arch ? await nodePackage('linux', arch).catch(() => null) : null;
+          if (nodeTar) {
+            setProgress(job, `上传 Node.js（${Math.max(1, Math.round(nodeTar.bytes / 1024 / 1024))} MB，目标机器不用再下载）…`);
+            await uploadFile(client, nodeTar.file, '/tmp/desk-node.tar.gz');
+            nodeArg = ' --node /tmp/desk-node.tar.gz';
+          }
 
           setProgress(job, '安装并启动（首次 3-10 分钟）…');
           result = await execStream(
             client,
-            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}`,
+            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}`,
             {
               stdin: isRoot ? '' : `${password}\n`,
               onLine: (line) => {
@@ -462,7 +532,10 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           throw remoteError('REMOTE_HUB_FAILED', `安装失败：${tail}`);
         }
         // "na": Windows has no per-bot desktops yet; its bots browse headless.
-        if (!['1', 'na'].includes(value('DESK_DESKTOP_OK'))) {
+        // "pending": the desktop and browser are installing in the background
+        // after the Hub came up (the slow part); not a failure.
+        if (value('DESK_DESKTOP_OK') === 'pending') job.desktopPending = true;
+        else if (!['1', 'na'].includes(value('DESK_DESKTOP_OK'))) {
           job.warning = '装好了，但桌面相关的程序没装全，Bot 的屏幕会是黑的';
         }
       } finally {
@@ -493,8 +566,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         job.message = job.warning;
       } else {
         job.state = 'done';
-        job.message = '已就绪。';
+        job.message = job.desktopPending ? '已就绪；机器人的桌面和浏览器在后台继续安装（约 3–8 分钟）。' : '已就绪。';
       }
+      phase(job, null);
       job.finishedAt = nowIso();
     } catch (err) {
       job.state = 'error';

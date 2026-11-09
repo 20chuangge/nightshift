@@ -114,6 +114,7 @@ const TAKEOVER_RULES = [
   '- Never ask for passwords, verification codes or card numbers in chat, and never type a password with browser_type.',
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
   '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
+  '- Approvals: describe them only from what actually happened (a tool result, an approval card). Never say a step was approved or that you asked when that did not happen.',
   '',
 ];
 

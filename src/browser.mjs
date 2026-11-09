@@ -611,6 +611,12 @@ class BrowserManager {
 
     const executable = detectBrowserExecutable();
     if (!executable.path) {
+      // A fresh Linux machine installs Chromium in the background after setup.
+      let setup = null;
+      try { setup = JSON.parse(fs.readFileSync(path.join(P.dataDir, 'desktop-setup.json'), 'utf8')); } catch { /* none */ }
+      if (setup?.state === 'running') {
+        throw Object.assign(new Error(`这台机器的浏览器还在后台安装（${setup.detail || '准备中'}），通常再过几分钟就好；告诉用户稍后再试，先做不需要浏览器的事。`), { code: 'browser_installing' });
+      }
       throw Object.assign(
         new Error(executable.skipped || `no Chromium-based browser found. ${installHint()}`),
         { code: 'not_configured', checked: executable.checked, hint: installHint() },

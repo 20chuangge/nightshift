@@ -25,6 +25,8 @@ param(
   [string]$AppDir = '',
   # TightVNC installer uploaded by the client (preferred over downloading here).
   [string]$VncMsi = '',
+  # Node.js zip uploaded by the client (preferred over downloading here).
+  [string]$NodeZip = '',
   # Test mode: download and unpack only, touch nothing system-wide.
   [switch]$NoSystem
 )
@@ -72,6 +74,22 @@ function NodeOk([string]$exe) {
 }
 $runtime = Join-Path $AppDir 'runtime'
 $nodeExe = Join-Path $runtime 'node.exe'
+if (-not (NodeOk $nodeExe) -and $NodeZip -and (Test-Path $NodeZip)) {
+  # Brought over by the client: nothing to download here.
+  Say '用夜班带过来的 Node（不用下载）'
+  try {
+    $tmp = Join-Path $env:TEMP "desk-node-$PID"
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    Expand-Archive -Force -Path $NodeZip -DestinationPath $tmp
+    $unpacked = Get-ChildItem $tmp -Directory | Where-Object { $_.Name -like 'node-v*' } | Select-Object -First 1
+    if ($unpacked) {
+      if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+      Move-Item $unpacked.FullName $runtime
+    }
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    Remove-Item -Force $NodeZip -ErrorAction SilentlyContinue
+  } catch { Warn "带过来的 Node 解压失败，改为下载：$($_.Exception.Message)" }
+}
 if (-not (NodeOk $nodeExe)) {
   $nodeExe = ''
   $tmp = Join-Path $env:TEMP "desk-node-$PID"

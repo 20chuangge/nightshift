@@ -2875,6 +2875,24 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const feishuSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
       check('feishu: saving the same settings again does not drop the connection', /const changed = `\$\{cfg\.appId\}\|\$\{cfg\.appSecret\}\|\$\{cfg\.enabled\}` !== before;/.test(feishuSrc));
     }
+    // Step 9: faster installs (Hub first, desktop + browser in the background; Node from the client).
+    {
+      const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
+      const hubStart = sh.indexOf('say "6/7');
+      const bg = sh.indexOf('systemd-run --unit=desk-desktop-setup');
+      check('install: desktop and browser install after the Hub is up, in their own unit', hubStart > 0 && bg > hubStart && /DESKTOP_OK=pending/.test(sh) && !/^\s*pm_install xfce4 xfce4-terminal\s*$/m.test(sh.slice(0, hubStart)));
+      check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用夜班带过来的 Node/.test(sh));
+      const ps1 = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
+      check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用夜班带过来的 Node/.test(ps1));
+      const fsx = await import('node:fs');
+      const setupFile = path.join(home, 'data', 'desktop-setup.json');
+      fsx.writeFileSync(setupFile, JSON.stringify({ state: 'running', startedAt: new Date().toISOString(), detail: '安装 XFCE 桌面' }));
+      const pc = await api('/api/computer');
+      fsx.rmSync(setupFile, { force: true });
+      check('install: the screen panel hears that the desktop is still installing', pc.json?.desktopSetup?.state === 'running' && /XFCE/.test(pc.json.desktopSetup.detail));
+      const br = await fsp.readFile(new URL('../src/browser.mjs', import.meta.url), 'utf8');
+      check('install: a bot that needs the browser meanwhile is told it is still installing', /browser_installing/.test(br));
+    }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }
     check('generation: not configured says where to set it up', none === 'IMAGE_NOT_CONFIGURED');

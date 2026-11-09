@@ -31,12 +31,15 @@ SETUP_VERSION=1
 
 PORT=4390
 PKG=""
+NODE_TAR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)   PORT="$2"; shift ;;
     --port=*) PORT="${1#*=}" ;;
     --pkg)    PKG="$2"; shift ;;
     --pkg=*)  PKG="${1#*=}" ;;
+    --node)   NODE_TAR="$2"; shift ;;
+    --node=*) NODE_TAR="${1#*=}" ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "[desk] 未知参数: $1" >&2; exit 1 ;;
   esac
@@ -155,6 +158,13 @@ if node_ok "$RUNTIME/bin/node"; then
   NODE_BIN="$RUNTIME/bin/node"
 elif has node && node_ok "$(command -v node)"; then
   NODE_BIN="$(command -v node)"
+elif [ -n "$NODE_TAR" ] && [ -f "$NODE_TAR" ] && tar tzf "$NODE_TAR" >/dev/null 2>&1; then
+  # Brought over by the client: nothing to download here.
+  say "用夜班带过来的 Node（不用下载）"
+  rm -rf "$RUNTIME" && mkdir -p "$RUNTIME"
+  tar xzf "$NODE_TAR" -C "$RUNTIME" --strip-components=1
+  NODE_BIN="$RUNTIME/bin/node"
+  rm -f "$NODE_TAR"
 else
   case "$(uname -m)" in
     x86_64|amd64) ARCH=x64 ;;
@@ -182,29 +192,24 @@ say "Node $("$NODE_BIN" -v)：$NODE_BIN"
 
 # ---------------------------------------------------------------------------
 say "3/7 每个 Bot 的桌面（Xvfb、x11vnc、websockify、noVNC、XFCE、Chromium）"
-if [ "$PM" = apt ]; then
-  pm_install xvfb x11vnc websockify novnc dbus-x11
-  has chromium || has chromium-browser || pm_install chromium-browser
-  has chromium || has chromium-browser || pm_install chromium
-  if ! has xfce4-session; then
-    say "安装 XFCE（约 1-2 分钟）"
-    pm_install xfce4 xfce4-terminal
-  fi
-else
-  pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11 chromium
-  if ! has xfce4-session; then
-    say "安装 XFCE（约 2-4 分钟）"
-    "$PM" -y -q groupinstall "Xfce" >/dev/null 2>&1 || pm_install xfce4-session xfwm4 xfdesktop xfce4-panel xfce4-terminal
-  fi
-fi
+# These are the slow part of a fresh install (XFCE, and Chromium, which is a
+# ~180 MB snap on Ubuntu). The Hub does not need them to start, so they are
+# installed in the background once it is running and paired; the screen panel
+# shows the progress meanwhile.
+desktop_complete() {
+  for bin in Xvfb x11vnc websockify xfce4-session; do has "$bin" || return 1; done
+  [ -d /usr/share/novnc ] || return 1
+  has chromium || has chromium-browser || has google-chrome || return 1
+}
 DESKTOP_OK=1
-for bin in Xvfb x11vnc websockify; do
-  has "$bin" || { warn "缺 $bin，Bot 桌面用不了；Hub 本身不受影响"; DESKTOP_OK=0; }
-done
-[ -d /usr/share/novnc ] || { warn "缺 noVNC 网页（/usr/share/novnc）"; DESKTOP_OK=0; }
-# Bot desktops run XFCE: GNOME does not start inside a bare Xvfb, so a machine
-# that already has GNOME still needs XFCE for its bots.
-has xfce4-session || { warn "XFCE 没装成，Bot 桌面会是黑屏"; DESKTOP_OK=0; }
+DESKTOP_PENDING=0
+if desktop_complete; then
+  say "桌面程序都在"
+else
+  say "桌面和浏览器稍后在后台安装，先把 Hub 装好"
+  DESKTOP_OK=pending
+  DESKTOP_PENDING=1
+fi
 
 # One desktop session per bot display (GNOME when the host has the memory).
 cat > /usr/local/bin/desk-bot-session <<'DESK_SESSION_EOF'
@@ -362,6 +367,58 @@ done
 if [ "$HUB_OK" = 0 ]; then
   echo "[desk] Hub 没能在 ${PORT} 上应答，最近日志：" >&2
   journalctl -u "$SERVICE" -n 15 --no-pager >&2 2>/dev/null || true
+fi
+
+if [ "$DESKTOP_PENDING" = 1 ]; then
+  DESK_SCRIPT="$APP_DIR/setup-desktop.sh"
+  DESK_STATUS="$APP_DIR/data/desktop-setup.json"
+  cat > "$DESK_SCRIPT" <<'DESK_DESKTOP_EOF'
+#!/bin/bash
+# Installs what the bots' desktops need, after the Hub is already running.
+# Progress goes to data/desktop-setup.json, which the Hub shows in its panel.
+PM="$1"; STATUS="$2"
+START="$(date -Is)"
+has() { command -v "$1" >/dev/null 2>&1; }
+status() {
+  printf '{"state":"%s","startedAt":"%s","updatedAt":"%s","detail":"%s"}\n' "$1" "$START" "$(date -Is)" "$2" > "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+  chmod 644 "$STATUS" 2>/dev/null || true
+}
+APT_WAIT="-o DPkg::Lock::Timeout=600 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+pm_refresh() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT update -qq >/dev/null 2>&1 || true ;; *) "$PM" -y -q makecache >/dev/null 2>&1 || true ;; esac; }
+pm_one() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT install -y -qq "$1" >/dev/null 2>&1 ;; *) "$PM" install -y -q "$1" >/dev/null 2>&1 ;; esac; }
+pm_install() { local pkg; for pkg in "$@"; do pm_one "$pkg" && continue; pm_refresh; pm_one "$pkg" || true; done; }
+
+status running "安装屏幕组件（Xvfb、x11vnc、noVNC）"
+if [ "$PM" = apt ]; then
+  pm_install xvfb x11vnc websockify novnc dbus-x11
+  status running "安装浏览器 Chromium（最大的一步，约 180 MB）"
+  has chromium || has chromium-browser || pm_install chromium-browser
+  has chromium || has chromium-browser || pm_install chromium
+  status running "安装 XFCE 桌面"
+  has xfce4-session || pm_install xfce4 xfce4-terminal
+else
+  pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11
+  status running "安装浏览器 Chromium"
+  pm_install chromium
+  status running "安装 XFCE 桌面"
+  has xfce4-session || "$PM" -y -q groupinstall "Xfce" >/dev/null 2>&1 || pm_install xfce4-session xfwm4 xfdesktop xfce4-panel xfce4-terminal
+fi
+missing=""
+for bin in Xvfb x11vnc websockify xfce4-session; do has "$bin" || missing="$missing $bin"; done
+[ -d /usr/share/novnc ] || missing="$missing noVNC"
+has chromium || has chromium-browser || missing="$missing Chromium"
+if [ -z "$missing" ]; then status done ""; else status failed "没装上：$missing"; fi
+DESK_DESKTOP_EOF
+  chmod 755 "$DESK_SCRIPT"
+  printf '{"state":"running","startedAt":"%s","updatedAt":"%s","detail":"准备安装"}\n' "$(date -Is)" "$(date -Is)" > "$DESK_STATUS"
+  chmod 644 "$DESK_STATUS"
+  # Its own unit, so it outlives this script and the SSH session.
+  if has systemd-run && systemd-run --unit=desk-desktop-setup --collect --quiet /bin/bash "$DESK_SCRIPT" "$PM" "$DESK_STATUS" >/dev/null 2>&1; then
+    say "桌面和浏览器在后台安装（约 3-8 分钟），装好后机器人的屏幕自动可用"
+  else
+    setsid nohup /bin/bash "$DESK_SCRIPT" "$PM" "$DESK_STATUS" >/dev/null 2>&1 9>&- < /dev/null &
+    say "桌面和浏览器在后台安装（约 3-8 分钟）"
+  fi
 fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"

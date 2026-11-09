@@ -44,7 +44,8 @@ const setupLog = (hubOk) => [
   'DESK_PAIR_CODE=12345678',
   'DESK_APP_DIR=/opt/desk-hub',
   `DESK_HUB_OK=${hubOk ? 1 : 0}`,
-  'DESK_DESKTOP_OK=1',
+  // a fresh machine: desktop and browser still installing in the background
+  'DESK_DESKTOP_OK=pending',
 ].join('\n');
 
 /** What setup-windows.ps1 prints. */
@@ -82,6 +83,7 @@ function respond(command) {
   if (command.includes('Get-NetFirewallRule')) return [0, 'True\n'];
   if (command.includes('-LocalPort 5900')) return [0, '127.0.0.1\n'];
   if (command === 'id -u') return [0, '1000\n'];
+  if (command === 'uname -m') return [0, 'x86_64\n'];
   if (command === "sudo -S -p '' -v") return [0, ''];
   if (command.includes('bash /tmp/desk-setup.sh')) return [0, `${setupLog(scenario !== 'broken')}\n`];
   if (command.includes('systemctl is-active')) return [0, 'active\n'];
@@ -195,6 +197,9 @@ const checks = [
   ['Windows：用 Windows PowerShell 执行，带端口和程序包', windows.seen.some((c) => /^powershell -NoProfile -ExecutionPolicy Bypass -File desk-setup\.ps1 -Port \d+ -Pkg desk-hub\.tar\.gz/.test(c))],
   ['Windows：TightVNC 安装包由客户端带过去，脚本用它（不在目标机下载）', windows.uploads.some((u) => u.filename === 'desk-tightvnc.msi' && u.bytes === 4096) && windows.seen.some((c) => / -VncMsi desk-tightvnc.msi/.test(c))],
   ['Windows：检查了计划任务、防火墙和远程模式', ['Get-ScheduledTask', 'Get-NetFirewallRule', '/api/policy'].every((k) => windows.seen.some((c) => c.includes(k)))],
+  ['Linux：Node 由客户端带过去（不在目标机下载）', linux.uploads.some((u) => u.filename === '/tmp/desk-node.tar.gz' && u.bytes > 10 * 1024 * 1024) && linux.seen.some((c) => / --node \/tmp\/desk-node\.tar\.gz/.test(c))],
+  ['Linux：桌面在后台继续装（pending）不算失败', linux.code === 0 && !/桌面相关的程序没装全/.test(linux.output)],
+  ['Windows：Node 由客户端带过去（不在目标机下载）', windows.uploads.some((u) => u.filename === 'desk-node.zip' && u.bytes > 10 * 1024 * 1024) && windows.seen.some((c) => / -NodeZip desk-node\.zip/.test(c))],
   ['既不是 Linux 也不是 Windows：UNSUPPORTED，什么都没传', alien.code === 3 && /结论: UNSUPPORTED/.test(alien.output) && alien.uploads.length === 0],
   ['Hub 没起来：判 FAIL，不误报成功', broken.code === 1 && /结论: FAIL/.test(broken.output)],
 ];
