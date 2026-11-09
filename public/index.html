@@ -2497,7 +2497,7 @@
   .att-video video { width: 100%; border-radius: 10px; background: #000; }
   .att-video-dl { font-size: 11.5px; color: var(--dim); align-self: flex-end; }
 
-  .folder-write { white-space: nowrap; font-size: 12.5px; }
+  .folder-write { white-space: nowrap; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; align-self: center; margin: 0; }
 
   /* feishu ------------------------------------------------------------ */
   .feishu-status { margin: 8px 0; font-size: 13px; }
@@ -3035,7 +3035,7 @@
           <label class="switch-row folder-write" for="folder-write"><input type="checkbox" id="folder-write" /> 允许写入</label>
           <button class="btn" id="folder-add-btn" type="button">开放</button>
         </div>
-        <label class="lbl" for="folder-outside">其他位置</label>
+        <label class="lbl" for="folder-outside" style="margin-top:14px">其他位置</label>
         <select class="field" id="folder-outside">
           <option value="ask">先问我</option>
           <option value="deny">一律不许</option>
@@ -8795,13 +8795,13 @@ async function loadComputer() {
 
 let screenTimer = null;
 async function refreshScreen() {
-  if (state.computer?.desktop?.perBot) return;   // live view is already embedded
   const img = $('pc-screen');
   const note = $('pc-screen-note');
-  if (!img) return;
-  // A fresh machine is still installing its desktop and browser in the background.
+  // A fresh machine is still installing its desktop and browser in the
+  // background: say so, even when the screen parts are in already (the live
+  // view would only show a black screen until the desktop itself is in).
   const setup = state.computer?.desktopSetup;
-  if (setup && !state.computer?.desktop?.url) {
+  if (setup && img && note) {
     // elapsedSec comes from that machine's own clock (it may differ from ours).
     const mins = Number.isFinite(setup.elapsedSec) ? Math.max(1, Math.round(setup.elapsedSec / 60)) : 1;
     img.style.display = 'none';
@@ -8811,6 +8811,8 @@ async function refreshScreen() {
     note.style.display = 'block';
     return;
   }
+  if (state.computer?.desktop?.perBot) return;   // live view is already embedded
+  if (!img) return;
   try {
     const res = await fetch(`/api/computer/screenshot?ts=${Date.now()}`, { credentials: 'same-origin' });
     if (!res.ok) {
@@ -9108,7 +9110,8 @@ function syncViewer() {
   if (!wrap) return;
   const takeover = desktopTakeover();
   const watching = state.panelOpen && state.tab === 'computer';
-  if (!takeover && (!state.computer?.desktop?.url || !watching)) {
+  const installing = state.computer?.desktopSetup?.state === 'running';
+  if (!takeover && (!state.computer?.desktop?.url || !watching || installing)) {
     unmountViewer();
     if (shield) shield.hidden = true;
     return;

@@ -2892,6 +2892,10 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('install: the screen panel hears that the desktop is still installing', pc.json?.desktopSetup?.state === 'running' && /XFCE/.test(pc.json.desktopSetup.detail));
       const br = await fsp.readFile(new URL('../src/browser.mjs', import.meta.url), 'utf8');
       check('install: a bot that needs the browser meanwhile is told it is still installing', /browser_installing/.test(br));
+      // Step 10 small fixes: the panel says "installing" instead of a black live view; a faster mirror for this install only.
+      const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+      check('install: while the desktop installs, the panel shows the note, not the (black) live view', /const installing = state\.computer\?\.desktopSetup\?\.state === 'running';/.test(ui) && /!watching \|\| installing\)/.test(ui));
+      check('install: a domestic mirror only when clearly faster, through its own lists, with a fallback', /pick_mirror\(\)/.test(sh) && /Dir::State::Lists=\/var\/lib\/apt\/desk-mirror-lists/.test(sh) && /a > 2 \* b/.test(sh) && /APT_SRC=""   # the mirror did not work/.test(sh) && /signed-by=/.test(sh));
     }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }

@@ -384,10 +384,41 @@ status() {
   chmod 644 "$STATUS" 2>/dev/null || true
 }
 APT_WAIT="-o DPkg::Lock::Timeout=600 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
-pm_refresh() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT update -qq >/dev/null 2>&1 || true ;; *) "$PM" -y -q makecache >/dev/null 2>&1 || true ;; esac; }
-pm_one() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT install -y -qq "$1" >/dev/null 2>&1 ;; *) "$PM" install -y -q "$1" >/dev/null 2>&1 ;; esac; }
+# Ubuntu: when the configured archive is slow from here and a domestic mirror
+# is clearly faster, this one install uses the mirror through its own source
+# list and package lists. The system's sources are not touched.
+APT_SRC=""
+pick_mirror() {
+  [ "$PM" = apt ] || return 0
+  . /etc/os-release 2>/dev/null || return 0
+  [ "${ID:-}" = ubuntu ] && [ -n "${VERSION_CODENAME:-}" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local cur mirror t_cur t_mir keyring
+  cur="$(grep -hoE 'https?://[^ ]+/ubuntu/?' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null | grep -v security | head -1)"
+  cur="${cur:-http://archive.ubuntu.com/ubuntu}"
+  mirror="https://mirrors.aliyun.com/ubuntu"
+  t_cur="$(curl -o /dev/null -s -w '%{time_total}' -m 20 "${cur%/}/dists/$VERSION_CODENAME/InRelease" || echo 99)"
+  t_mir="$(curl -o /dev/null -s -w '%{time_total}' -m 20 "$mirror/dists/$VERSION_CODENAME/InRelease" || echo 99)"
+  # Only when it clearly pays: the archive takes over 1.5 s and the mirror is at least twice as fast.
+  awk -v a="$t_cur" -v b="$t_mir" 'BEGIN { exit !(a > 1.5 && b < 20 && a > 2 * b) }' || return 0
+  keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+  [ -f "$keyring" ] || return 0
+  mkdir -p /var/lib/apt/desk-mirror-lists/partial
+  printf 'deb [signed-by=%s] %s %s main restricted universe multiverse\ndeb [signed-by=%s] %s %s-updates main restricted universe multiverse\ndeb [signed-by=%s] %s %s-security main restricted universe multiverse\n' \
+    "$keyring" "$mirror" "$VERSION_CODENAME" "$keyring" "$mirror" "$VERSION_CODENAME" "$keyring" "$mirror" "$VERSION_CODENAME" > /var/lib/apt/desk-mirror.list
+  APT_SRC="-o Dir::Etc::SourceList=/var/lib/apt/desk-mirror.list -o Dir::Etc::SourceParts=/nonexistent -o Dir::State::Lists=/var/lib/apt/desk-mirror-lists"
+  if DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT $APT_SRC update -qq >/dev/null 2>&1; then
+    status running "用国内镜像下载（原来的源 ${t_cur}s，镜像 ${t_mir}s）"
+  else
+    APT_SRC=""   # the mirror did not work: back to the system's sources
+  fi
+}
+pm_refresh() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT $APT_SRC update -qq >/dev/null 2>&1 || true ;; *) "$PM" -y -q makecache >/dev/null 2>&1 || true ;; esac; }
+pm_one() { case "$PM" in apt) DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT $APT_SRC install -y -qq "$1" >/dev/null 2>&1 ;; *) "$PM" install -y -q "$1" >/dev/null 2>&1 ;; esac; }
 pm_install() { local pkg; for pkg in "$@"; do pm_one "$pkg" && continue; pm_refresh; pm_one "$pkg" || true; done; }
 
+status running "选下载源"
+pick_mirror
 status running "安装屏幕组件（Xvfb、x11vnc、noVNC）"
 if [ "$PM" = apt ]; then
   pm_install xvfb x11vnc websockify novnc dbus-x11
