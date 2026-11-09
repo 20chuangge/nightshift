@@ -2915,6 +2915,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('away: tailnet detection does not crash and only returns 100.64/10 addresses', (() => { const a = tailnetAddress(); return a === null || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a); })());
       const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
       check('away: the client falls back to the Tailscale address and carries the pairing over', /async function reachMachine\(url\)/.test(main) && /cookies\.set\(\{\s*url: alt/.test(main) && /const reach = target \? await reachMachine\(target\)/.test(main) && /patchMachine\(url, \{ tailnetUrl/.test(main));
+      check('away: a system proxy that does not bypass 100.64/10 is bypassed in this app only; addresses are relearned every few minutes', main.includes('async function tailnetDirect()') && main.includes('100.64.0.0/10;*.local') && main.includes('for (const m of readMachines()) learnTailnet(m.url)'));
       check('away: the page knows which machine it is when opened through Tailscale', /m\.tailnetUrl === location\.origin/.test(page) && /id="pair-tailnet"/.test(page));
     }
     let none = '';

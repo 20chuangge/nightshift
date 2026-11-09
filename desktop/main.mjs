@@ -137,6 +137,47 @@ async function probeHub(url) {
   }
 }
 
+/**
+ * A system proxy (Clash and the like) usually bypasses 192.168.* and 10.* but
+ * not Tailscale's 100.64.0.0/10, so the window's requests to a machine's
+ * Tailscale address would go to the proxy and fail. When that is the case,
+ * this app's own session keeps the same proxy for everything else and goes
+ * direct to private and Tailscale addresses. The system setting is untouched.
+ */
+let tailnetDirectDone = false;
+async function tailnetDirect() {
+  if (tailnetDirectDone) return;
+  try {
+    const viaTailnet = await session.defaultSession.resolveProxy('http://100.64.0.1/');
+    if (/^DIRECT/i.test(viaTailnet.trim())) { tailnetDirectDone = true; return; }
+    const m = /PROXY\s+([^;\s]+)/i.exec(viaTailnet) || /SOCKS5?\s+([^;\s]+)/i.exec(viaTailnet);
+    if (!m) return;
+    const scheme = /^SOCKS/i.test(viaTailnet.trim()) ? 'socks5://' : '';
+    await session.defaultSession.setProxy({
+      mode: 'fixed_servers',
+      proxyRules: `${scheme}${m[1]}`,
+      proxyBypassRules: '<local>;localhost;127.0.0.0/8;10.0.0.0/8;172.16.0.0/12;192.168.0.0/16;100.64.0.0/10;*.local',
+    });
+    tailnetDirectDone = true;
+    bootLog(`system proxy ${m[1]} does not bypass Tailscale: going direct to 100.64.0.0/10 in this app`);
+  } catch (err) { bootLog(`proxy bypass for Tailscale failed: ${err.message}`); }
+}
+
+/** Learn (every few minutes) the Tailscale address each machine reports. */
+const tailnetLearned = new Map();
+async function learnTailnet(url) {
+  if (!url || Date.now() - (tailnetLearned.get(url) || 0) < 5 * 60 * 1000) return;
+  tailnetLearned.set(url, Date.now());
+  try {
+    // net.fetch: this app's session, so the pairing cookie goes along.
+    const res = await net.fetch(`${url.replace(/\/$/, '')}/api/health`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return;
+    const health = await res.json();
+    const known = readMachines().find((m) => m.url === url)?.tailnetUrl || '';
+    if ((health.tailnetUrl || '') !== known) patchMachine(url, { tailnetUrl: health.tailnetUrl || '' });
+  } catch { /* off or away */ }
+}
+
 /** Update one machine's record in place (keeps the list order). */
 function patchMachine(url, patch) {
   const list = readMachines();
@@ -153,9 +194,11 @@ function patchMachine(url, patch) {
  * human never pairs twice. Returns the base URL, or '' when neither answers.
  */
 async function reachMachine(url) {
-  if (await probeHub(url)) return url;
+  // DESK_FORCE_TAILNET=1 acts as if the LAN were unreachable (testing away-from-home at home).
+  if (process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) return url;
   const alt = readMachines().find((m) => m.url === url)?.tailnetUrl;
   if (!alt || !(await probeHub(alt))) return '';
+  await tailnetDirect();
   try {
     for (const c of await session.defaultSession.cookies.get({ url })) {
       await session.defaultSession.cookies.set({
@@ -675,6 +718,8 @@ ipcMain.handle('desk:list-machines', () => ({
 // Sidebar badge: what is waiting on the machines this window is NOT showing.
 // The page cannot reach them (other origins); this process has their cookies.
 ipcMain.handle('desk:machines-attention', async () => {
+  // Every few minutes: pick up Tailscale addresses (it may have been installed since).
+  for (const m of readMachines()) learnTailnet(m.url);
   const others = [{ name: L('本机', 'This computer'), url: 'local', target: localUrl() }]
     .concat(readMachines().map((m) => ({ name: m.name, url: m.url, target: m.url })))
     .filter((m) => (m.url === 'local' ? Boolean(remoteHub) : m.url !== remoteHub));
