@@ -3332,7 +3332,7 @@
 
     <details class="vault-add" id="vnc-ts">
       <summary>在外面也要连上它（可选，Tailscale）</summary>
-      <div class="row-note">在 Tailscale 后台的 Settings → Keys 里生成一个 Auth key（tskey-auth- 开头），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。目前只支持 Linux。</div>
+      <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。目前只支持 Linux。</div>
       <div class="row-note"><a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">打开 Tailscale 密钥页面</a></div>
       <input class="field" id="vnc-ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
     </details>
@@ -9576,7 +9576,8 @@ function saveMachineFromModal() {
   const password = $('vnc-ssh-pass').value;
   if (!password) return fail('还需要那台机器的 SSH 密码，才能自动配置。');
   const tsKey = $('vnc-ts-key')?.value.trim() || '';
-  if (tsKey && !/^tskey-/.test(tsKey)) return fail('Tailscale 密钥应该以 tskey- 开头。');
+  if (tsKey && /^tskey-api-/.test(tsKey)) return fail('这是 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，用 tskey-auth- 开头的那种。');
+  if (tsKey && !/^tskey-auth-/.test(tsKey)) return fail('Tailscale 密钥应该是 tskey-auth- 开头的 Auth key。');
   note.hidden = true;
   startRemoteProvision({
     name: $('vnc-name').value.trim() || address.host,
@@ -9691,7 +9692,7 @@ async function startRemoteProvision(options) {
       paired = Boolean(added?.paired);
       await refreshMachines();
     }
-    show(job.state === 'warning' ? (job.message || '装好了，但有一项没完全就绪') : `「${options.name}」已经装好${paired ? '并配对' : ''}。`, job.state === 'warning' ? '' : 'ok');
+    show(job.state === 'warning' ? (job.message || '装好了，但有一项没完全就绪') : `「${options.name}」已经装好${paired ? '并配对' : ''}。${job.tailscale ? ` ${job.tailscale}。` : ''}`, job.state === 'warning' ? '' : 'ok');
     const note = $('vnc-modal-note');
     note.hidden = false;
     const secs = (ms) => (ms >= 60000 ? `${Math.floor(ms / 60000)} 分 ${Math.round((ms % 60000) / 1000)} 秒` : `${Math.max(1, Math.round(ms / 1000))} 秒`);

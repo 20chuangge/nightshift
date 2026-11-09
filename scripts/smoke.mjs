@@ -3211,13 +3211,16 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // Tailscale key when adding a Linux machine.
     const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
     const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
-    check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
+    check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
     check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && sh.includes('tailscale up --auth-key="file:$KEY"') && sh.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup'));
     const { createProvisioner } = await import('../src/remote.mjs').catch(() => ({}));
     if (typeof createProvisioner === 'function') {
       let code = '';
       try { createProvisioner({}).start({ host: '10.0.0.5', username: 'u', password: 'p', tailscaleKey: 'not-a-key' }); } catch (x) { code = x.code; }
       check('tailscale key: a key that is not tskey-… is refused before anything starts', code === 'REMOTE_BAD_TAILSCALE_KEY', code);
+      let apiCode = '';
+      try { createProvisioner({}).start({ host: '10.0.0.5', username: 'u', password: 'p', tailscaleKey: 'tskey-api-abcdefghij-XYZ' }); } catch (x) { apiCode = x.code + ':' + x.message; }
+      check('tailscale key: an API access token (tskey-api-) is refused with what to make instead; only tskey-auth- passes', apiCode.startsWith('REMOTE_BAD_TAILSCALE_KEY') && apiCode.includes('Generate auth key'));
     }
     check('tailscale key: optional field in the add-machine form', page.includes('id="vnc-ts-key"') && page.includes('tailscaleKey: $(\'vnc-ts-key\').value.trim()'));
   }
@@ -3381,6 +3384,20 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
     check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
+  }
+  // Tailscale key on a real machine: the write must end its input (cat waits for it), and a failure is said.
+  {
+    const RM = await import('../src/remote.mjs');
+    const { EventEmitter } = await import('node:events');
+    // Like "cat > file": closes only after its input ends.
+    const catClient = { exec: (_cmd, cb) => { const s = new EventEmitter(); let got = ''; s.write = (d) => { got += d; }; s.end = () => setTimeout(() => s.emit('close', got.includes('tskey') ? 0 : 1), 5); s.stderr = new EventEmitter(); cb(null, s); } };
+    const ended = await RM._execStream(catClient, 'cat > f', { stdin: 'tskey-auth-x\n', endInput: true, timeoutMs: 500 }).then((r) => r.code, (e) => e.code);
+    const hung = await RM._execStream(catClient, 'cat > f', { stdin: 'tskey-auth-x\n', timeoutMs: 300 }).then((r) => r.code, (e) => e.code);
+    check('tailscale key: the key write closes its input (without that, cat waits and times out)', ended === 0 && hung === 'REMOTE_TIMEOUT');
+    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    check('tailscale key: a key that did not reach the machine, or a script that did not start Tailscale, is reported (never skipped silently)', rm.includes('endInput: true, timeoutMs: 15000') && rm.includes("Tailscale 没装：密钥没能交给那台机器") && rm.includes("'Tailscale 没装：安装脚本没有收到密钥'") && rm.includes("if (/没装/.test(job.tailscale) && job.state === 'done') job.state = 'warning';") && rm.includes("tailscale: job.tailscale || ''"));
+    const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('tailscale key: the add-machine dialog says how Tailscale went', ui.includes("job.tailscale ? "));
   }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {

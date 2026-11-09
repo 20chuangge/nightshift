@@ -182,7 +182,7 @@ function uploadFile(client, localPath, remotePath) {
  * Exec one command, streaming output. `stdin` is written immediately (used for
  * the sudo password). Resolves with the exit code; throws on timeout.
  */
-function execStream(client, command, { stdin = '', onLine = () => {}, timeoutMs = JOB_TIMEOUT_MS } = {}) {
+function execStream(client, command, { stdin = '', endInput = false, onLine = () => {}, timeoutMs = JOB_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     let done = false;
     let output = '';
@@ -219,9 +219,13 @@ function execStream(client, command, { stdin = '', onLine = () => {}, timeoutMs 
         resolve({ code: code ?? 0, output });
       });
       if (stdin) stream.write(stdin);
+      // "sudo -S" reads one line and goes on; "cat > file" waits for the end of input.
+      if (endInput) stream.end();
     });
   });
 }
+
+export { execStream as _execStream };
 
 // ---------------------------------------------------------------------------
 // provisioning jobs
@@ -361,6 +365,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     // How long each step took, to see what makes an install slow.
     timings: (job.timings || []).map((t) => ({ label: t.label, ms: t.ms })),
     desktopPending: Boolean(job.desktopPending),
+    tailscale: job.tailscale || '',
     startedAt: job.startedAt,
     finishedAt: job.finishedAt || null,
     log: job.log.slice(-24),
@@ -510,8 +515,12 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           // this account can read (never a local file, never a command line).
           let tsArg = '';
           if (tailscaleKey) {
-            const put = await execStream(client, 'umask 077; cat > /tmp/desk-tailscale.key', { stdin: `${tailscaleKey}\n`, timeoutMs: 15000 }).catch(() => ({ code: 1 }));
+            setProgress(job, '把 Tailscale 密钥交给那台机器…');
+            const put = await execStream(client, 'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin: `${tailscaleKey}\n`, endInput: true, timeoutMs: 15000 })
+              .catch((err) => ({ code: 1, output: err.message }));
             if (put.code === 0) tsArg = ' --tailscale-key-file /tmp/desk-tailscale.key';
+            // Never skip it silently: the human asked for it.
+            else job.tailscale = `Tailscale 没装：密钥没能交给那台机器（${cleanLine(String(put.output || '')).slice(0, 120) || `exit ${put.code}`}）`;
           }
 
           setProgress(job, '安装并启动（首次 3-10 分钟）…');
@@ -542,6 +551,11 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         // "na": Windows has no per-bot desktops yet; its bots browse headless.
         // "pending": the desktop and browser are installing in the background
         // after the Hub came up (the slow part); not a failure.
+        if (tailscaleKey && !job.tailscale) {
+          job.tailscale = /Tailscale 在后台安装/.test(result.output)
+            ? 'Tailscale 正在后台安装并加入你的网络，几分钟后这台机器会出现 100 开头的地址'
+            : 'Tailscale 没装：安装脚本没有收到密钥';
+        }
         if (value('DESK_DESKTOP_OK') === 'pending') job.desktopPending = true;
         else if (!['1', 'na'].includes(value('DESK_DESKTOP_OK'))) {
           job.warning = '装好了，但桌面相关的程序没装全，Bot 的屏幕会是黑的';
@@ -576,6 +590,12 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         job.state = 'done';
         job.message = job.desktopPending ? '已就绪；机器人的桌面和浏览器在后台继续安装（约 3–8 分钟）。' : '已就绪。';
       }
+      // The Tailscale outcome is always said, and a failure makes it a warning.
+      if (job.tailscale) {
+        job.message = `${job.message} ${job.tailscale}。`;
+        if (/没装/.test(job.tailscale) && job.state === 'done') job.state = 'warning';
+        job.log.push(job.tailscale);
+      }
       phase(job, null);
       job.finishedAt = nowIso();
     } catch (err) {
@@ -597,8 +617,12 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const password = assertCredential(input.password, 'SSH password');
       // Optional, Linux only: a Tailscale auth key (tskey-auth-…) to join the human's tailnet.
       const tailscaleKey = String(input.tailscaleKey || '').trim();
-      if (tailscaleKey && !/^tskey-[A-Za-z0-9-]{10,200}$/.test(tailscaleKey)) {
-        throw remoteError('REMOTE_BAD_TAILSCALE_KEY', 'Tailscale 密钥应该以 tskey- 开头（在 Tailscale 后台 Settings → Keys 生成）。');
+      // Only an auth key adds a device; an API access token (tskey-api-) looks alike but is refused by Tailscale.
+      if (tailscaleKey && /^tskey-api-/.test(tailscaleKey)) {
+        throw remoteError('REMOTE_BAD_TAILSCALE_KEY', '这是 Tailscale 的 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，用 tskey-auth- 开头的那种。');
+      }
+      if (tailscaleKey && !/^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(tailscaleKey)) {
+        throw remoteError('REMOTE_BAD_TAILSCALE_KEY', 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key（在 Tailscale 后台 Settings → Keys 里点「Generate auth key」）。');
       }
 
       const job = {
