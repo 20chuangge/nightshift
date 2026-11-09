@@ -63,6 +63,7 @@ import * as skills from './skills.mjs';
 import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
+import * as providersModule from './providers.mjs';
 import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop } from './desktops.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
@@ -915,6 +916,34 @@ route('POST', /^\/api\/feishu\/unpair$/, async (_req, _res, { body, state }) => 
   const view = await state.feishu.unpair(String(body?.openId || ''));
   await audit({ kind: 'feishu.unpaired' });
   return view;
+});
+
+// --- what a provider offers ----------------------------------------------------
+//   POST /api/providers/models   {provider, baseUrl?, apiKey?} -> {models:[...], live:true} | {models: preset, live:false, error}
+// Read from the provider itself, so the list is never out of date. Without a
+// typed key, the saved key is used when it belongs to that provider.
+
+const providerModelCache = new Map(); // provider|baseUrl|keyTail -> {at, models}
+route('POST', /^\/api\/providers\/models$/, async (_req, _res, { body, state }) => {
+  const provider = String(body?.provider || '');
+  const preset = providersModule.providerPreset(provider);
+  if (!preset) throw httpError(400, 'BAD_PROVIDER', 'unknown provider');
+  const baseUrl = String(body?.baseUrl || preset.baseUrl || '');
+  const savedFits = state.settings?.provider === provider;
+  const apiKey = String(body?.apiKey || '') || (savedFits ? state.apiKey : '') || '';
+  const fallback = { models: preset.models || [], live: false };
+  if (!apiKey && providersModule.providerNeedsKey(provider)) return { ...fallback, error: '填上密钥后能读到它现在提供的全部模型' };
+  const key = `${provider}|${baseUrl}|${apiKey.slice(-6)}`;
+  const hit = providerModelCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return { models: hit.models, live: true };
+  try {
+    const { models } = await providersModule.fetchProviderModels({ provider, baseUrl, apiKey });
+    if (!models.length) return { ...fallback, error: '服务商没有列出模型' };
+    providerModelCache.set(key, { at: Date.now(), models });
+    return { models, live: true };
+  } catch (err) {
+    return { ...fallback, error: err.message };
+  }
 });
 
 // --- extra models (a bot can use its own) -------------------------------------
@@ -1784,6 +1813,8 @@ function publicPolicy(policy) {
     rules: (policy?.rules || []).map((r) => ({ id: r.id, text: r.text, action: r.action })),
     // Desktop takeover on this machine: 'control' (see and use) or 'view' (see only).
     takeover: policy?.takeover === 'view' ? 'view' : 'control',
+    // Making pictures and videos (costs money): 'level' follows the approval level, 'ask' always asks, 'auto' never does.
+    generate: ['ask', 'auto'].includes(policy?.generate) ? policy.generate : 'level',
     denyPatterns: eff.denyPatterns.length,
     // What the bots may touch on this machine (src/boundary.mjs).
     workspace: P.workspaceDir,
@@ -1820,6 +1851,10 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   if (body?.takeover !== undefined) {
     if (!['view', 'control'].includes(body.takeover)) throw httpError(400, 'BAD_TAKEOVER', "takeover must be 'view' or 'control'");
     next.takeover = body.takeover;
+  }
+  if (body?.generate !== undefined) {
+    if (!['level', 'ask', 'auto'].includes(body.generate)) throw httpError(400, 'BAD_GENERATE', "generate must be 'level', 'ask' or 'auto'");
+    next.generate = body.generate;
   }
   if (body?.addRule !== undefined) {
     const rule = normalizeRule(body.addRule);

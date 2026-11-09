@@ -30,7 +30,7 @@ import {
   sessionFile,
   turnFile,
 } from './store.mjs';
-import { effectivePolicy, classify, DECISION } from './approvals.mjs';
+import { effectivePolicy, classify, DECISION, machineMode } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary } from './boundary.mjs';
 
@@ -851,6 +851,13 @@ export class AgentRuntime {
       unattended: ctx.unattended,
     });
 
+    // Pictures and videos cost money: the human's choice for them wins over the level; a one-sentence rule below can still ask.
+    const generate = this.config.policy?.generate;
+    if ((name === 'image_generate' || name === 'video_generate') && verdict.decision !== DECISION.DENY) {
+      if (generate === 'ask') verdict = { ...verdict, decision: DECISION.ASK, reason: '按你的设置，生成图片、视频前先问你（会产生费用）' };
+      else if (generate === 'auto') verdict = { ...verdict, decision: DECISION.AUTO, reason: '按你的设置，生成图片、视频不用问' };
+    }
+
     // The human's one-sentence rules, matched by meaning.
     const rules = Array.isArray(this.config.policy?.rules) ? this.config.policy.rules : [];
     if (rules.length && verdict.decision !== DECISION.DENY && !RULE_EXEMPT.has(name)) {
@@ -867,7 +874,7 @@ export class AgentRuntime {
     // The machine's boundary (opened folders, sudo) comes last: no approval
     // level or "直接做" rule lets a bot past it without the human.
     if (verdict.decision !== DECISION.DENY) {
-      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {} });
+      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote' });
       if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
       else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
     }

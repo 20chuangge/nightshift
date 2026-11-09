@@ -2487,6 +2487,10 @@
   .takeover-card .btn-row { margin: 0 0 6px; }
   .row.card-row .takeover-card { margin: 0; width: 100%; }
   .specialist-welcome { padding-top: 12px; }
+  .pw-wrap { position: relative; display: block; }
+  .pw-wrap > input { width: 100%; padding-right: 58px; box-sizing: border-box; }
+  .pw-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--dim); font-size: 12px; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+  .pw-eye:hover { color: var(--text); background: var(--border-soft); }
   .video-jobs { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
   .video-job { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
   .specialist-welcome .muted { margin-top: 6px; font-size: 13px; color: var(--dim); }
@@ -2905,8 +2909,9 @@
           <input class="field" id="set-baseurl" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" inputmode="url" />
 
           <label class="lbl" for="set-model">模型</label>
-          <input class="field" id="set-model" placeholder="gpt-4o-mini" autocomplete="off" spellcheck="false" list="model-suggestions" />
+          <input class="field" id="set-model" placeholder="模型名" autocomplete="off" spellcheck="false" list="model-suggestions" />
           <datalist id="model-suggestions"></datalist>
+          <div class="row-note" id="model-list-note"></div>
 
           <label class="lbl" for="set-apikey">API 密钥</label>
           <input class="field" id="set-apikey" type="password" placeholder="sk-…" autocomplete="new-password" spellcheck="false" />
@@ -3056,6 +3061,15 @@
             <span><b>能看能控</b><small>看得到这台机器的屏幕，也能用鼠标键盘操作（登录、付款时要用）。</small></span></label>
           <label class="level-opt"><input type="radio" name="takeover-mode" value="view" />
             <span><b>只能看</b><small>只看画面，鼠标键盘不会传过去，防止误点。这是防误操作，不是安全隔离：已配对的设备随时可以改回来。</small></span></label>
+        </div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">生成图片和视频</div>
+        <div class="level-list" role="radiogroup" aria-label="生成图片和视频">
+          <label class="level-opt"><input type="radio" name="generate-mode" value="level" />
+            <span><b>跟随审批级别</b><small>「放手」时直接生成，其余级别先问我。</small></span></label>
+          <label class="level-opt"><input type="radio" name="generate-mode" value="ask" />
+            <span><b>每次先问我</b><small>生成要花钱：每张图、每段视频都先给我看要生成什么。</small></span></label>
+          <label class="level-opt"><input type="radio" name="generate-mode" value="auto" />
+            <span><b>直接生成</b><small>不用问，机器人需要时就生成（费用照常从你的生成服务扣）。</small></span></label>
         </div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">我的规则</div>
         <div class="row-note">用一句话告诉机器人什么要先问你、什么可以直接做。按意思判断，不用写得很精确。</div>
@@ -5721,6 +5735,28 @@ function splitAttachments(text) {
   return { text: body === '（见附件）' ? '' : body, files };
 }
 
+/** A "显示 / 隐藏" button inside each password box (keys, SSH passwords). */
+function addRevealButtons(root) {
+  const inputs = root.matches?.('input[type="password"]') ? [root] : [...(root.querySelectorAll?.('input[type="password"]') || [])];
+  for (const input of inputs) {
+    if (input.dataset.reveal) continue;
+    input.dataset.reveal = '1';
+    const wrap = el('span', 'pw-wrap');
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const btn = el('button', 'pw-eye', '显示');
+    btn.type = 'button';
+    btn.setAttribute('aria-label', '显示或隐藏内容');
+    btn.addEventListener('click', () => {
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? '隐藏' : '显示';
+      input.focus();
+    });
+    wrap.appendChild(btn);
+  }
+}
+
 /** The desktop app on this computer can open the bots' files with their usual program. */
 function canOpenLocally() {
   return Boolean(window.desk?.openFile) && onLocalMachine();
@@ -8159,12 +8195,39 @@ async function ensureProviderOptions() {
   return state.providers;
 }
 
+function fillModelList(models) {
+  const list = $('model-suggestions');
+  if (list) list.innerHTML = (models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+}
+
+/**
+ * The models the provider offers right now, read from the provider itself
+ * (with the typed key, or the saved one), so the list is never out of date.
+ */
+let liveModelsTimer = null;
+function loadLiveModels(delay = 0) {
+  clearTimeout(liveModelsTimer);
+  liveModelsTimer = setTimeout(async () => {
+    const provider = $('set-provider').value;
+    if (!provider || provider === 'mock') { $('model-list-note').textContent = ''; return; }
+    $('model-list-note').textContent = '正在向服务商读取它现在提供的模型…';
+    try {
+      const r = await api('/api/providers/models', { method: 'POST', body: { provider, baseUrl: $('set-baseurl').value.trim(), apiKey: $('set-apikey').value.trim() } });
+      if ($('set-provider').value !== provider) return;
+      fillModelList(r.models);
+      if (r.models?.length) $('set-model').placeholder = r.models[0];
+      $('model-list-note').textContent = r.live ? `服务商现在提供 ${r.models.length} 个模型，点输入框可以选。` : (r.error ? `${r.error}；先列出常用的几个。` : '');
+    } catch (err) {
+      $('model-list-note').textContent = '';
+    }
+  }, delay);
+}
+
 function renderProviderHints(provider) {
   const preset = (state.providers || []).find((p) => p.name === provider);
-  const list = $('model-suggestions');
-  if (list) {
-    list.innerHTML = (preset?.models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
-  }
+  fillModelList(preset?.models);
+  $('set-model').placeholder = preset?.models?.[0] || '模型名';
+  loadLiveModels();
   const link = $('provider-keyurl');
   if (link) {
     link.textContent = preset?.keyUrl ? `在 ${preset.label} 申请密钥 →` : '';
@@ -8986,6 +9049,7 @@ function renderPolicy(policy) {
   const level = policy?.level || (policy?.autoApproveAll ? 'auto' : 'standard');
   document.querySelectorAll('input[name="approval-level"]').forEach((r) => { r.checked = r.value === level; });
   document.querySelectorAll('input[name="takeover-mode"]').forEach((r) => { r.checked = r.value === (policy?.takeover || 'control'); });
+  document.querySelectorAll('input[name="generate-mode"]').forEach((r) => { r.checked = r.value === (policy?.generate || 'level'); });
   const box = $('auto-approve-all');
   if (box) box.checked = level === 'auto';
   if ($('policy-note')) {
@@ -10213,6 +10277,13 @@ function wireChrome() {
       loadAudit();
     });
   });
+  document.querySelectorAll('input[name="generate-mode"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      const said = { level: '生成图片和视频：跟随审批级别', ask: '生成图片和视频：每次先问我', auto: '生成图片和视频：直接生成' }[radio.value];
+      savePolicy({ generate: radio.value }, said);
+    });
+  });
   document.querySelectorAll('input[name="takeover-mode"]').forEach((radio) => {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
@@ -10285,6 +10356,11 @@ function wireChrome() {
   $('composer').addEventListener('click', updateMention);
   $('composer').addEventListener('blur', () => setTimeout(closeMention, 150));
   $('mic-btn').addEventListener('click', toggleVoice);
+  // Every key and password box: hidden by default, a button shows what was typed.
+  addRevealButtons(document);
+  new MutationObserver((records) => {
+    for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) addRevealButtons(n);
+  }).observe(document.body, { childList: true, subtree: true });
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
   $('tts-voice')?.addEventListener('change', async () => {
     try { voice.status = await api('/api/voice', { method: 'PUT', body: { ttsVoice: $('tts-voice').value } }); toast('朗读声音已更换'); } catch (err) { toast(err.message, true); }
@@ -10461,6 +10537,8 @@ function wireChrome() {
   });
   $('set-test').addEventListener('click', testConnection);
   $('set-clear-key').addEventListener('click', clearKey);
+  $('set-apikey').addEventListener('input', () => loadLiveModels(900));
+  $('set-baseurl').addEventListener('change', () => loadLiveModels());
   $('set-provider').addEventListener('change', () => {
     const provider = $('set-provider').value;
     const preset = (state.providers || []).find((p) => p.name === provider);

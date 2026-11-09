@@ -39,7 +39,8 @@ export const PROVIDER_PRESETS = {
     label: 'DeepSeek 深度求索',
     kind: 'openai',
     baseUrl: 'https://api.deepseek.com/v1',
-    models: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro', 'deepseek-flash'],
+    // What DeepSeek's /models lists (2026-11); the form reads the live list when it can.
+    models: ['deepseek-flash', 'deepseek-v4-pro'],
     keyUrl: 'https://platform.deepseek.com/api_keys',
   },
   moonshot: {
@@ -206,4 +207,28 @@ export function publicProviderCatalogue() {
       needsKey: p.needsKey !== false,
     };
   });
+}
+
+/**
+ * The models a provider offers right now, from its own /models endpoint (with
+ * the key). Chat models only, newest names as the provider gives them.
+ * -> {models: [...ids]}; throws with a readable message when it cannot tell.
+ */
+export async function fetchProviderModels({ provider, baseUrl, apiKey, fetchImpl = fetch, timeoutMs = 12000 } = {}) {
+  const preset = providerPreset(provider);
+  const base = String(baseUrl || preset?.baseUrl || '').replace(/\/+$/, '');
+  if (!base || !/^https?:\/\//.test(base)) throw new Error('没有接口地址');
+  const kind = providerKind(provider);
+  const headers = kind === 'anthropic'
+    ? { 'x-api-key': apiKey || '', 'anthropic-version': '2023-06-01' }
+    : (apiKey ? { authorization: `Bearer ${apiKey}` } : {});
+  const res = await fetchImpl(`${base}/models`, { headers, signal: AbortSignal.timeout(timeoutMs) });
+  if (res.status === 401 || res.status === 403) throw new Error('密钥不对或没有权限');
+  if (!res.ok) throw new Error(`服务商返回 ${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  const raw = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+  // Not chat models: embeddings, speech, images, moderation, rerankers.
+  const NOT_CHAT = /embed|whisper|tts|speech|audio|transcri|dall-e|image|moderation|rerank|bge-|sensevoice|cosyvoice|flux|stable-diffusion|kolors|wan-|video/i;
+  const ids = raw.map((m) => String(m?.id || m?.name || '').replace(/^models\//, '')).filter((id) => id && !NOT_CHAT.test(id));
+  return { models: [...new Set(ids)].slice(0, 300) };
 }

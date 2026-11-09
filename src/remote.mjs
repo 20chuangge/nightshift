@@ -545,8 +545,13 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         // The script checks its own work; trust its verdict over "exit 0".
         if (result.code !== 0 || value('DESK_HUB_OK') !== '1' || !job.pairCode) {
           const said = result.output.trim().split(/\r?\n/).filter((line) => line.trim() && !/^DESK_/.test(line));
-          const tail = said.slice(-4).map(cleanLine).join(' / ') || `exit ${result.code}`;
-          throw remoteError('REMOTE_HUB_FAILED', `安装失败：${tail}`);
+          // The reason first (which check failed), then what the script said last.
+          const why = value('DESK_HUB_OK') !== '1' ? '夜班服务没能启动起来或没有应答'
+            : !job.pairCode ? '服务起来了，但没读到配对码'
+              : `安装脚本出错（退出码 ${result.code}）`;
+          const reason = said.filter((line) => /^\[desk\]/.test(line)).slice(-2).map(cleanLine);
+          const tail = (reason.length ? reason : said.slice(-3).map(cleanLine)).join(' / ');
+          throw remoteError('REMOTE_HUB_FAILED', `安装失败：${why}${tail ? `。${tail}` : ''}。再点一次「连接并自动配置」会接着装（已装好的部分不会重做）。`);
         }
         // "na": Windows has no per-bot desktops yet; its bots browse headless.
         // "pending": the desktop and browser are installing in the background

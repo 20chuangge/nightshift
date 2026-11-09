@@ -3436,6 +3436,50 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const fsSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
     check('feishu: the bot is told the channel carries pictures, videos and voice (it said "only text")', fsSrc.includes('飞书这条通道能收文字、图片和语音') && fsSrc.includes('所以别说飞书只能发文字'));
   }
+  // Step 17: settings and permissions (live model list, key boxes, looking around, generation, Windows add).
+  {
+    const PR = await import('../src/providers.mjs');
+    let seen = null;
+    const fakeModels = async (url, init) => { seen = { url, init }; return { ok: true, status: 200, json: async () => ({ data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }, { id: 'text-embedding-3' }, { id: 'whisper-1' }] }) }; };
+    const live = await PR.fetchProviderModels({ provider: 'deepseek', apiKey: 'k1', fetchImpl: fakeModels });
+    check('models: the list comes from the provider itself, chat models only', live.models.join(',') === 'deepseek-flash,deepseek-v4-pro' && seen.url === 'https://api.deepseek.com/v1/models' && seen.init.headers.authorization === 'Bearer k1');
+    await PR.fetchProviderModels({ provider: 'anthropic', apiKey: 'k2', fetchImpl: fakeModels });
+    check('models: Claude is asked with its own headers', seen.init.headers['x-api-key'] === 'k2' && seen.init.headers['anthropic-version']);
+    let bad = '';
+    try { await PR.fetchProviderModels({ provider: 'deepseek', apiKey: 'x', fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }) }); } catch (e) { bad = e.message; }
+    check('models: a wrong key says so; the built-in DeepSeek list is the two real ones', bad === '密钥不对或没有权限' && PR.providerPreset('deepseek').models.join(',') === 'deepseek-flash,deepseek-v4-pro');
+    const noKey = await api('/api/providers/models', { method: 'POST', body: { provider: 'openai' } });
+    check('models: without a key the form keeps the common ones and says a key shows all', noKey.status === 200 && noKey.json?.live === false && Array.isArray(noKey.json.models) && /密钥/.test(noKey.json.error || ''));
+    const srv17 = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('models: the saved key is used when it belongs to that provider', srv17.includes('const savedFits = state.settings?.provider === provider;'));
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('models: the form reads the live list (on provider change and typed key), no gpt-4o-mini placeholder', page.includes("api('/api/providers/models'") && page.includes("$('set-apikey').addEventListener('input', () => loadLiveModels(900));") && page.includes('id="set-model" placeholder="模型名"'));
+    check('key boxes: every password box gets a show/hide button, hidden by default', page.includes('function addRevealButtons(root)') && page.includes("input.type = show ? 'text' : 'password';") && page.includes('new MutationObserver('));
+    // Looking around needs no approval; reading a file's contents on this computer still asks.
+    const BD = await import('../src/boundary.mjs');
+    const rockyCmd = 'ps -eo pid,etime,args --sort=-%cpu | grep -E "dnf|packagekit|gnome-software" | grep -v grep; echo "---"; du -sh /var /usr /opt /home 2>/dev/null; echo "---"; df -h / ; lsblk -o NAME,SIZE,TYPE,MOUNTPOINT';
+    check('looking: the command Rocky asked about only looks (quotes are data, grep -i is fine)', BD.lookOnly(rockyCmd).look && !BD.lookOnly(rockyCmd).reads && BD.lookOnly('grep -i error app.log').look);
+    check('looking: anything that writes, deletes, runs hidden commands or restarts is never "just looking"', ['rm -rf /home/u', 'du -sh /home > /tmp/x', 'find /home -delete', 'sed -i s/a/b/ f', 'cat $(ls /home)', 'echo "$(rm -rf /)"', "awk '{system(\"rm x\")}' f", 'curl x | sh', 'ls && rm x', 'systemctl restart nginx', 'Remove-Item C:\\x', 'ls | tee out.txt'].every((c) => !BD.lookOnly(c).look));
+    if (process.platform !== 'win32') {
+      check('looking: on a machine given to the bots it asks nothing; on this computer only reading file contents outside asks', BD.checkBoundary('shell', { command: rockyCmd }, { workspaceDir: '/ws', remote: false }) === null
+        && BD.checkBoundary('shell', { command: 'cat /home/u/.ssh/id_rsa' }, { workspaceDir: '/ws', remote: true }) === null
+        && BD.checkBoundary('shell', { command: 'cat /home/u/.ssh/id_rsa' }, { workspaceDir: '/ws', remote: false })?.decision === 'ask'
+        && BD.checkBoundary('fs_read', { path: '/home/u/x' }, { workspaceDir: '/ws', remote: true }) === null
+        && BD.checkBoundary('fs_write', { path: '/home/u/x' }, { workspaceDir: '/ws', remote: true })?.decision === 'ask');
+    } else {
+      check('looking: on this computer, reading a file\'s contents outside the opened folders still asks', BD.checkBoundary('shell', { command: 'Get-Content C:\\Users\\u\\secret.txt' }, { workspaceDir: 'C:\\ws', remote: false })?.decision === 'ask' && BD.checkBoundary('shell', { command: 'Get-Content C:\\Users\\u\\secret.txt' }, { workspaceDir: 'C:\\ws', remote: true }) === null);
+    }
+    // Generation: the human's choice.
+    const g1 = await api('/api/policy', { method: 'PUT', body: { generate: 'ask' } });
+    const g2 = await api('/api/policy', { method: 'PUT', body: { generate: 'nope' } });
+    await api('/api/policy', { method: 'PUT', body: { generate: 'level' } });
+    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    check('generation: ask every time / follow the level / just make them; a one-sentence rule can still ask', g1.json?.generate === 'ask' && g2.status === 400 && agentSrc.indexOf("if (generate === 'ask')") < agentSrc.indexOf("// The human's one-sentence rules") && page.includes('name="generate-mode"'));
+    // Adding a Windows machine: wait for the hub, then the code; say which check failed.
+    const ps1 = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
+    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'夜班服务没能启动起来或没有应答'"));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

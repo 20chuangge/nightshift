@@ -286,25 +286,31 @@ New-NetFirewallRule -DisplayName 'Nightshift Hub' -Direction Inbound -Protocol T
 # -----------------------------------------------------------------------------
 Say '7/7 启动并自检'
 Start-ScheduledTask -TaskName $TaskName
+# First the hub has to answer (a slow or busy machine - one core, Windows
+# Update running - can take minutes on its first start), then its pairing
+# code is surely on disk. Waiting for the code first gave up too early.
+$hubOk = 0
+$started = Get-Date
+while (((Get-Date) - $started).TotalSeconds -lt 240) {
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 "http://127.0.0.1:$Port/api/health"
+    if ($r.StatusCode -eq 200) { $hubOk = 1; break }
+  } catch { }
+  Start-Sleep -Seconds 2
+}
 $code = ''
-for ($i = 0; $i -lt 40 -and -not $code; $i++) {
-  Start-Sleep -Seconds 1
-  $sec = Join-Path $AppDir 'data\security.json'
+$sec = Join-Path $AppDir 'data\security.json'
+for ($i = 0; $i -lt 60 -and -not $code; $i++) {
   if (Test-Path $sec) {
     try { $code = [string](Get-Content -Raw $sec | ConvertFrom-Json).code } catch { }
   }
-}
-$hubOk = 0
-for ($i = 0; $i -lt 40; $i++) {
-  try {
-    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$Port/api/health"
-    if ($r.StatusCode -eq 200) { $hubOk = 1; break }
-  } catch { }
-  Start-Sleep -Seconds 1
+  if (-not $code) { Start-Sleep -Seconds 1 }
 }
 if (-not $hubOk) {
-  Write-Output "[desk] Hub 没能在 $Port 上应答，最近日志："
+  Write-Output "[desk] Hub 4 分钟内没能在 $Port 上应答（这台机器可能太忙：看看任务管理器里的 CPU）。最近日志："
   Get-Content -Tail 15 (Join-Path $AppDir 'data\hub.log') -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_ }
+} elseif (-not $code) {
+  Write-Output "[desk] Hub 已经应答，但没读到它的配对码（$sec）"
 }
 
 $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
