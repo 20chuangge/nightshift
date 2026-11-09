@@ -335,16 +335,28 @@ export function createFeishu(o) {
   // ---------------------------------------------------------------- results out
   const MEDIA = /(?:^|[\s`'"(（「：:，,])((?:[\w.-]+\/)+[\w.-]+\.(?:png|jpe?g|gif|webp|mp4))(?=$|[\s`'")）」，。,.;；:：、!！?？])/gi;
 
+  function stripPaths(text, files) {
+    let out = String(text || '');
+    for (const rel of files) {
+      const esc = rel.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+      // `path`, (path), 「path」 or a bare path; with its "路径：" label if any
+      out = out.replace(new RegExp(`(?:(?:图片|视频|文件)?路径[：:]\\s*)?[\`「(（]?(?:\\./|workspace/)?${esc}[\`」)）]?`, 'g'), '');
+    }
+    return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/^[：:，,\s]+|[：:，,\s]+$/g, '').trim();
+  }
+
   async function deliver(to, texts, summary) {
     const text = texts.join('\n\n').trim() || String(summary || '').trim();
-    if (text) await sendText(to, text);
-    const seen = new Set();
+    const files = [];
     for (const m of text.matchAll(MEDIA)) {
       const rel = m[1].replace(/^\.\//, '').replace(/^workspace\//, '');
-      if (seen.has(rel) || seen.size >= 4) continue;
-      seen.add(rel);
-      await sendFile(to, rel).catch((err) => log('could not send', rel, err.message));
+      if (!files.includes(rel) && files.length < 4) files.push(rel);
     }
+    // The pictures and videos go as real messages; their paths on this
+    // machine mean nothing on a phone, so the text leaves them out.
+    const shown = stripPaths(text, files);
+    if (shown) await sendText(to, shown);
+    for (const rel of files) await sendFile(to, rel).catch((err) => log('could not send', rel, err.message));
   }
 
   function onBus(ev) {
@@ -488,6 +500,7 @@ export function createFeishu(o) {
     },
     /** Patch {enabled?, appId?, appSecret?, botId?, newPairCode?}; appSecret "" keeps the old one. */
     async update(patch = {}) {
+      const before = `${cfg.appId}|${cfg.appSecret}|${cfg.enabled}`;
       if (patch.appId !== undefined) cfg.appId = String(patch.appId || '').trim().slice(0, 64);
       if (typeof patch.appSecret === 'string' && patch.appSecret.trim()) cfg.appSecret = patch.appSecret.trim();
       if (patch.botId !== undefined) cfg.botId = String(patch.botId || '').slice(0, 64);
@@ -495,7 +508,10 @@ export function createFeishu(o) {
       if (patch.newPairCode) cfg.pairCode = newPairCode();
       if (patch.clearSecret) cfg.appSecret = '';
       await saveFeishuFile(o.file, cfg);
-      if (patch.appId !== undefined || patch.appSecret !== undefined || patch.enabled !== undefined || patch.clearSecret) start();
+      // Reconnect only when what the connection uses changed: saving the same
+      // settings again must not drop a working connection.
+      const changed = `${cfg.appId}|${cfg.appSecret}|${cfg.enabled}` !== before;
+      if (changed || (cfg.enabled && !status.connected && !ws)) start();
       return this.view();
     },
     async unpair(openId) {
@@ -520,5 +536,6 @@ export function createFeishu(o) {
     // tests
     _handleFrame: handleFrame,
     _onBus: onBus,
+    _stripPaths: stripPaths,
   };
 }

@@ -2838,6 +2838,43 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('task end: a summary is not repeated when the model already answered in that step', /if \(!ctx\?\.spokeThisStep\) await this\.streamText/.test(agentSrc));
       check('takeover: a copied "点「接管屏幕」" reply still gets the takeover card', /auto_takeover_/.test(agentSrc) && /waitingFor = 'takeover';/.test(agentSrc));
     }
+    // Step 8: what the bots may touch (opened folders, sudo).
+    {
+      const os = await import('node:os');
+      const fsx = await import('node:fs');
+      const B = await import('../src/boundary.mjs');
+      const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+      const docs = fsx.mkdtempSync(path.join(os.tmpdir(), 'docs-'));
+      const secret = path.join(os.homedir(), 'secret-notes.txt');
+      const pol = (p = {}) => ({ workspaceDir: ws, policy: p });
+      check('boundary: the workspace is always fine', B.checkBoundary('fs_write', { path: 'notes/a.md' }, pol()) === null && B.checkBoundary('fs_read', { path: path.join(ws, 'x.txt') }, pol()) === null);
+      const out = B.checkBoundary('fs_read', { path: secret }, pol({ level: 'auto' }));
+      check('boundary: a file outside the opened folders asks, whatever the level', out?.decision === 'ask' && out.code === 'FOLDER_NOT_OPEN');
+      check('boundary: "一律不许" refuses instead', B.checkBoundary('fs_read', { path: secret }, pol({ outside: 'deny' }))?.decision === 'deny');
+      const opened = pol({ folders: [{ id: 'd1', path: docs, write: false }] });
+      check('boundary: an opened folder can be read; a read-only one cannot be written', B.checkBoundary('fs_read', { path: path.join(docs, 'r.txt') }, opened) === null && B.checkBoundary('fs_write', { path: path.join(docs, 'w.txt') }, opened)?.code === 'FOLDER_READ_ONLY');
+      check('boundary: a command naming a place outside asks; climbing out with .. too; plain commands do not', B.checkBoundary('shell', { command: `cat "${secret}"` }, pol())?.decision === 'ask' && B.checkBoundary('shell', { command: 'cat ../../x.txt' }, pol())?.decision === 'ask' && B.checkBoundary('shell', { command: 'node -v && git status' }, pol()) === null);
+      check('boundary: sudo / admin asks first unless allowed', B.checkBoundary('shell', { command: 'sudo apt-get install -y htop' }, pol())?.code === 'SUDO_ASKS' && B.checkBoundary('shell', { command: 'Start-Process powershell -Verb RunAs' }, pol())?.code === 'SUDO_ASKS' && B.checkBoundary('shell', { command: 'sudo ls' }, pol({ sudo: 'allow' })) === null);
+      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      check('boundary: applied after the rules, so "直接做" cannot open a folder', agentSrc.indexOf('checkBoundary(name') > agentSrc.indexOf('applyRules(verdict'));
+      const add = await api('/api/policy', { method: 'PUT', body: { addFolder: { path: docs, write: true } } });
+      const bad = await api('/api/policy', { method: 'PUT', body: { addFolder: { path: 'relative/dir' } } });
+      const root = await api('/api/policy', { method: 'PUT', body: { addFolder: { path: path.parse(docs).root } } });
+      const f = add.json?.folders?.find((x) => x.path === path.resolve(docs));
+      check('policy: a folder is opened by full path; relative paths and disk roots are refused', add.status === 200 && f?.write === true && bad.status === 400 && root.status === 400);
+      const sudo = await api('/api/policy', { method: 'PUT', body: { sudo: 'allow', outside: 'deny' } });
+      check('policy: sudo and "everywhere else" are settings of their own', sudo.json?.sudo === 'allow' && sudo.json?.outside === 'deny');
+      await api('/api/policy', { method: 'PUT', body: { removeFolder: f?.id, sudo: 'ask', outside: 'ask' } });
+    }
+    // Small fixes carried into step 8 (Feishu).
+    {
+      const FS = await import('../src/feishu.mjs');
+      const f = FS.createFeishu({ file: 'x', bus: null });
+      const t = f._stripPaths('画好了 🐱\ngenerated/2026-11-08/image-a.png\n橘白小猫蜷在窗台上。', ['generated/2026-11-08/image-a.png']);
+      check('feishu: the picture is sent, its local path is left out of the text', t === '画好了 🐱\n\n橘白小猫蜷在窗台上。');
+      const feishuSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+      check('feishu: saving the same settings again does not drop the connection', /const changed = `\$\{cfg\.appId\}\|\$\{cfg\.appSecret\}\|\$\{cfg\.enabled\}` !== before;/.test(feishuSrc));
+    }
     let none = '';
     try { await MD.generateImages(null, { prompt: 'x' }, { workspaceDir: ws }); } catch (err) { none = err.code; }
     check('generation: not configured says where to set it up', none === 'IMAGE_NOT_CONFIGURED');

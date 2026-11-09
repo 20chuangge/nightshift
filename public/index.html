@@ -2497,6 +2497,8 @@
   .att-video video { width: 100%; border-radius: 10px; background: #000; }
   .att-video-dl { font-size: 11.5px; color: var(--dim); align-self: flex-end; }
 
+  .folder-write { white-space: nowrap; font-size: 12.5px; }
+
   /* feishu ------------------------------------------------------------ */
   .feishu-status { margin: 8px 0; font-size: 13px; }
   .feishu-status.ok { color: #50c878; }
@@ -3025,6 +3027,26 @@
           <button class="btn" id="deny-add-btn" type="button">添加</button>
         </div>
         <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">能访问的文件夹</div>
+        <div class="row-note">机器人只能动工作区和下面开放的文件夹，其他位置不管审批级别是什么都会先问你（或者直接不许）。旧电脑接进来，不等于它的文件都给机器人看。</div>
+        <div class="vault-list" id="folder-list"></div>
+        <div class="deny-add">
+          <input class="field" id="folder-input" placeholder="这台机器上的完整路径" autocomplete="off" spellcheck="false" />
+          <label class="switch-row folder-write" for="folder-write"><input type="checkbox" id="folder-write" /> 允许写入</label>
+          <button class="btn" id="folder-add-btn" type="button">开放</button>
+        </div>
+        <label class="lbl" for="folder-outside">其他位置</label>
+        <select class="field" id="folder-outside">
+          <option value="ask">先问我</option>
+          <option value="deny">一律不许</option>
+        </select>
+        <div class="row-note">文件工具按路径严格检查；命令行里写到其他位置也会先问你，但命令行不是沙箱，一条命令能碰到的比它写出来的多。要彻底隔离，在机器人设置里关掉「执行命令」。</div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">管理员权限（sudo）</div>
+        <select class="field" id="sudo-mode">
+          <option value="ask">先问我</option>
+          <option value="allow">直接用</option>
+        </select>
+        <div class="row-note">用 sudo、以管理员身份运行之类的命令，默认每次都先问你。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
       </section>
 
@@ -8178,7 +8200,14 @@ async function saveFeishu() {
   try {
     renderFeishu(await api('/api/feishu', { method: 'PUT', body }));
     toast(body.enabled ? '已保存，正在连接飞书…' : '已保存');
-    setTimeout(() => loadFeishu().catch(() => {}), 3000);
+    // Keep the status honest until it settles: connected, or a reason it is not.
+    if (body.enabled) {
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const v = await loadFeishu().catch(() => null);
+        if (!v || v.connected || v.error) break;
+      }
+    }
   } catch (err) { toast(`保存失败：${err.message}`, true); }
 }
 
@@ -8415,7 +8444,7 @@ function renderPolicy(policy) {
   if (box) box.checked = level === 'auto';
   if ($('policy-note')) {
     $('policy-note').textContent = policy?.mode === 'remote'
-      ? '这是一台远程机器，默认「放手」：机器人可以装软件、用 sudo，不用逐条问你。'
+      ? '这是一台远程机器，默认「放手」：机器人在工作区里做事不用逐条问你；开放文件夹以外的位置和 sudo 仍然先问你。'
       : '这台电脑上，机器人做事前要不要先问你。每台机器单独设置。';
   }
   const rules = $('rule-list');
@@ -8433,6 +8462,7 @@ function renderPolicy(policy) {
     }
     if (!(policy?.rules || []).length) rules.appendChild(el('div', 'row-note', '还没有规则。'));
   }
+  renderFolders(policy);
   const list = $('deny-list');
   if (list) {
     list.innerHTML = '';
@@ -8446,6 +8476,38 @@ function renderPolicy(policy) {
       list.appendChild(row);
     }
   }
+}
+
+function renderFolders(policy) {
+  const box = $('folder-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const row = (title, sub, actions = []) => {
+    const r = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const t = el('div', 'vault-title');
+    t.appendChild(el('b', '', title));
+    t.appendChild(el('small', '', sub));
+    head.appendChild(t);
+    actions.forEach((a) => head.appendChild(a));
+    r.appendChild(head);
+    box.appendChild(r);
+  };
+  row('工作区', `${policy?.workspace || ''} · 读写`);
+  for (const f of policy?.folders || []) {
+    const mode = el('button', 'btn tiny', f.write ? '改成只读' : '允许写入');
+    mode.type = 'button';
+    mode.addEventListener('click', () => savePolicy({ folderWrite: { id: f.id, write: !f.write } }, '已保存'));
+    const del = el('button', 'btn tiny danger', '移除');
+    del.type = 'button';
+    del.addEventListener('click', () => savePolicy({ removeFolder: f.id }, '已移除'));
+    row(f.path.split(/[\\/]/).filter(Boolean).pop() || f.path, `${f.path} · ${f.write ? '读写' : '只读'}`, [mode, del]);
+  }
+  if ($('folder-input') && !$('folder-input').placeholder.includes('：')) {
+    $('folder-input').placeholder = policy?.platform === 'win32' ? '这台机器上的完整路径，比如：D:/资料' : '这台机器上的完整路径，比如：/home/me/docs';
+  }
+  if ($('folder-outside')) $('folder-outside').value = policy?.outside || 'ask';
+  if ($('sudo-mode')) $('sudo-mode').value = policy?.sudo || 'ask';
 }
 
 async function savePolicy(next, okText = '') {
@@ -9558,6 +9620,13 @@ function wireChrome() {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
+  $('folder-add-btn')?.addEventListener('click', async () => {
+    const p = $('folder-input').value.trim();
+    if (!p) return;
+    if (await savePolicy({ addFolder: { path: p, write: $('folder-write').checked } }, '已开放')) { $('folder-input').value = ''; $('folder-write').checked = false; }
+  });
+  $('folder-outside')?.addEventListener('change', (e) => savePolicy({ outside: e.target.value }, '已保存'));
+  $('sudo-mode')?.addEventListener('change', (e) => savePolicy({ sudo: e.target.value }, '已保存'));
   $('feishu-save')?.addEventListener('click', saveFeishu);
   $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);

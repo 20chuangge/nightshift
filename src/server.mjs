@@ -1530,6 +1530,12 @@ function publicPolicy(policy) {
     // Desktop takeover on this machine: 'control' (see and use) or 'view' (see only).
     takeover: policy?.takeover === 'view' ? 'view' : 'control',
     denyPatterns: eff.denyPatterns.length,
+    // What the bots may touch on this machine (src/boundary.mjs).
+    workspace: P.workspaceDir,
+    folders: (policy?.folders || []).map((f) => ({ id: f.id, path: f.path, write: Boolean(f.write) })),
+    outside: policy?.outside === 'deny' ? 'deny' : 'ask',
+    sudo: policy?.sudo === 'allow' ? 'allow' : 'ask',
+    platform: process.platform,
   };
 }
 
@@ -1569,10 +1575,34 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   if (body?.removeRule !== undefined) {
     next.rules = (next.rules || []).filter((r) => r.id !== body.removeRule);
   }
+  if (body?.addFolder !== undefined) {
+    const raw = String(body.addFolder?.path || '').trim();
+    if (!raw || !path.isAbsolute(raw)) throw httpError(400, 'BAD_FOLDER', '填这台机器上的完整路径，比如 D:\\资料 或 /home/me/docs');
+    const abs = path.resolve(raw);
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st?.isDirectory()) throw httpError(400, 'BAD_FOLDER', `这台机器上没有这个文件夹：${abs}`);
+    if (abs === path.parse(abs).root) throw httpError(400, 'BAD_FOLDER', '不能开放整个磁盘的根目录');
+    if ((next.folders || []).length >= 30) throw httpError(400, 'TOO_MANY_FOLDERS', '最多开放 30 个文件夹');
+    next.folders = [...(next.folders || []).filter((f) => f.path !== abs), { id: uid('dir'), path: abs, write: Boolean(body.addFolder?.write) }];
+  }
+  if (body?.removeFolder !== undefined) {
+    next.folders = (next.folders || []).filter((f) => f.id !== body.removeFolder);
+  }
+  if (body?.folderWrite !== undefined) {
+    next.folders = (next.folders || []).map((f) => (f.id === body.folderWrite?.id ? { ...f, write: Boolean(body.folderWrite?.write) } : f));
+  }
+  if (body?.outside !== undefined) {
+    if (!['ask', 'deny'].includes(body.outside)) throw httpError(400, 'BAD_OUTSIDE', "outside must be 'ask' or 'deny'");
+    next.outside = body.outside;
+  }
+  if (body?.sudo !== undefined) {
+    if (!['ask', 'allow'].includes(body.sudo)) throw httpError(400, 'BAD_SUDO', "sudo must be 'ask' or 'allow'");
+    next.sudo = body.sudo;
+  }
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
   const change = {};
-  for (const k of ['level', 'takeover', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll']) {
+  for (const k of ['level', 'takeover', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo']) {
     if (body?.[k] !== undefined) change[k] = body[k];
   }
   await audit({ kind: 'policy.changed', change });

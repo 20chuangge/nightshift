@@ -32,6 +32,7 @@ import {
 } from './store.mjs';
 import { effectivePolicy, classify, DECISION } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
+import { checkBoundary } from './boundary.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
 const RECOVERY_NOTE =
@@ -814,6 +815,14 @@ export class AgentRuntime {
       }
     }
 
+    // The machine's boundary (opened folders, sudo) comes last: no approval
+    // level or "直接做" rule lets a bot past it without the human.
+    if (verdict.decision !== DECISION.DENY) {
+      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {} });
+      if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
+      else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
+    }
+
     this.bus.emit({
       type: 'tool.call',
       ...baseEvent,
@@ -827,7 +836,7 @@ export class AgentRuntime {
 
     // 1. Hard deny (not granted).
     if (verdict.decision === DECISION.DENY) {
-      const result = { error: { code: 'TOOL_NOT_GRANTED', message: verdict.reason } };
+      const result = { error: { code: verdict.code || 'TOOL_NOT_GRANTED', message: verdict.reason } };
       this.pushToolResult(messages, call, result);
       this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok: false, denied: true, result });
       await this.record(bot.id, { kind: 'tool', name, args, ok: false, denied: true, reason: verdict.reason, output: result, turnId });
