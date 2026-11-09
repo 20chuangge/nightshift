@@ -367,6 +367,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     },
   });
   await refs.videoJobs.load();
+  state.videoJobs = refs.videoJobs;
 
   // Feishu: the assistant in the phone's chat app, over a connection this
   // machine opens (no public address needed). Off until set up in Settings.
@@ -852,13 +853,22 @@ route('GET', /^\/api\/peers\/locate$/, async (_req, _res, { state, query }) => {
   const hit = locateCache.get(p);
   if (hit && Date.now() - hit.at < 5 * 60 * 1000) {
     if (!hit.machine) throw httpError(404, 'NOT_ON_ANY_MACHINE', 'no machine has this file');
-    return { machine: hit.machine };
+    return { machine: hit.machine, ...(hit.title ? { title: hit.title } : {}) };
   }
   for (const peer of state.peers.list()) {
     try {
       const res = await remoteFetch(state, state.peers.find(peer.name), p);
       res.body?.cancel?.().catch?.(() => {});
-      if (res.ok) { locateCache.set(p, { machine: peer.name, at: Date.now() }); return { machine: peer.name }; }
+      if (res.ok) {
+        // A page: its title there, for the card and the viewer.
+        let title = '';
+        const page = peerPagePath(p);
+        if (page) {
+          try { title = ((await state.peers.json(state.peers.find(peer.name), 'GET', '/api/pages', { timeoutMs: 8000 })).pages || []).find((x) => x.name === page)?.title || ''; } catch { /* name only */ }
+        }
+        locateCache.set(p, { machine: peer.name, title, at: Date.now() });
+        return { machine: peer.name, ...(title ? { title } : {}) };
+      }
     } catch { /* away: try the next */ }
   }
   locateCache.set(p, { machine: null, at: Date.now() });
@@ -2085,6 +2095,25 @@ route('DELETE', /^\/api\/routines\/(?<id>[^/]+)$/, async (_req, _res, { params, 
 route('POST', /^\/api\/routines\/(?<id>[^/]+)\/test$/, async (_req, _res, { params, state }) => {
   const result = await state.routines.runNow(params.id, { trigger: 'test' });
   return { routine: publicRoutine(result.routine), run: result.run };
+});
+
+// --- background videos ----------------------------------------------------------
+//   GET /api/media/jobs?botId=&groupId=   -> {jobs:[{id, state, prompt, createdAt, doneAt, path, error}], typicalSec}
+// For the "视频生成中 · 已等 3 分 · 通常约 6 分钟" card in the chat that asked.
+
+route('GET', /^\/api\/media\/jobs$/, async (_req, _res, { query, state }) => {
+  const all = state.videoJobs ? state.videoJobs.list() : [];
+  const botId = query.get('botId') || '';
+  const groupId = query.get('groupId') || '';
+  const mine = all.filter((j) => (groupId ? j.groupId === groupId : (j.botId === botId || j.reportTo === botId) && !j.groupId));
+  // How long videos took here lately (the last ten that finished).
+  const took = all.filter((j) => j.state === 'done' && j.doneAt && j.createdAt).slice(-10).map((j) => (j.doneAt - j.createdAt) / 1000);
+  const typicalSec = took.length ? Math.round(took.sort((a, b) => a - b)[Math.floor(took.length / 2)]) : null;
+  const recent = mine.filter((j) => j.state === 'running' || Date.now() - (j.doneAt || j.createdAt) < 10 * 60 * 1000).slice(-5);
+  return {
+    jobs: recent.map((j) => ({ id: j.id, state: j.state, prompt: j.prompt, createdAt: j.createdAt, doneAt: j.doneAt || null, path: j.path || '', error: j.error || '' })),
+    typicalSec,
+  };
 });
 
 // --- daily briefing -----------------------------------------------------------

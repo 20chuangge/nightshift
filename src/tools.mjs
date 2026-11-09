@@ -1144,23 +1144,31 @@ export function createRegistry(deps) {
 
   add({
     name: 'page_save',
-    description: 'Save a report, dashboard, tracker or any result worth keeping as a web page in the page library (pages/ in the workspace). The human sees it as a card in the chat and can open it again later from the page library. Give a whole HTML document or just the body; inline CSS/JS is fine, images in the workspace are embedded. To update a page, save again with the same name. Write the returned path in your reply.',
+    description: 'Save a report, dashboard, tracker or any result worth keeping as a web page in the page library (pages/ in the workspace). The human sees it as a card in the chat and can open it again later from the page library. Give a whole HTML document or just the body (html), or - for a long page - write it to a workspace file first with fs_write (in parts with mode "append") and pass file. Inline CSS/JS is fine, images in the workspace are embedded. To update a page, save again with the same name. Write the returned path in your reply.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Page title shown in the library.' },
-        html: { type: 'string', description: 'The page: a full HTML document or body HTML.' },
+        html: { type: 'string', description: 'The page: a full HTML document or body HTML. For a long page use file instead.' },
+        file: { type: 'string', description: 'Workspace path of an HTML file you already wrote (for long pages).' },
         name: { type: 'string', description: 'Optional file name (letters, digits, dashes), e.g. "weekly-sales". Same name = update that page.' },
       },
-      required: ['title', 'html'],
+      required: ['title'],
       additionalProperties: false,
     },
     async run(args, ctx) {
       const pages = typeof deps.getPages === 'function' ? deps.getPages() : null;
       if (!pages) throw toolError('PAGES_UNAVAILABLE', 'the page library is not available here');
+      let html = args?.html;
+      if (!html && args?.file) {
+        const r = resolvePath(ctx.workspaceDir, args.file);
+        if (!r.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', 'file must be in the workspace');
+        try { html = await fsp.readFile(r.abs, 'utf8'); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+      }
+      if (!String(html || '').trim()) throw toolError('PAGE_EMPTY', 'the page is empty: give html, or write the page to a workspace file (fs_write, in parts if long) and pass file');
       try {
-        const out = await pages.save({ title: args?.title, html: args?.html, name: args?.name, bot: ctx.bot });
+        const out = await pages.save({ title: args?.title, html, name: args?.name, bot: ctx.bot });
         return { ...out, note: 'Write this path in your reply; it shows as a card the human can open.' };
       } catch (err) { throw toolError(err.code || 'PAGE_FAILED', err.message); }
     },

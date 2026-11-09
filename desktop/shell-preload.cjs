@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('desk', {
   syncConfig: (req) => ipcRenderer.invoke('desk:sync-config', req),
   voiceStart: () => ipcRenderer.invoke('desk:voice-start'),
   localProvision: (req) => ipcRenderer.invoke('desk:local-provision', req),
+  openFile: (rel, reveal = false) => ipcRenderer.invoke('desk:open-file', { rel, reveal }),
   voiceStop: () => ipcRenderer.invoke('desk:voice-stop'),
   voiceCancel: () => ipcRenderer.invoke('desk:voice-cancel'),
 });

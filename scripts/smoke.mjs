@@ -3381,7 +3381,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
     check('other machines: pages from there stay sandboxed; HTML/SVG/XML from there is never served as such', srv.includes('? { ...PAGE_HEADERS }') && srv.includes("/html|svg|xml|javascript/i.test(r.headers.get('content-type') || '') ? 'text/plain; charset=utf-8'"));
     const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
-    check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, null, card.dataset.machine)'));
+    check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
     check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
   }
@@ -3398,6 +3398,43 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('tailscale key: a key that did not reach the machine, or a script that did not start Tailscale, is reported (never skipped silently)', rm.includes('endInput: true, timeoutMs: 15000') && rm.includes("Tailscale 没装：密钥没能交给那台机器") && rm.includes("'Tailscale 没装：安装脚本没有收到密钥'") && rm.includes("if (/没装/.test(job.tailscale) && job.state === 'done') job.state = 'warning';") && rm.includes("tailscale: job.tailscale || ''"));
     const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
     check('tailscale key: the add-machine dialog says how Tailscale went', ui.includes("job.tailscale ? "));
+  }
+  // Step 16: chat fixes (cut-off tool calls, cards, the working hint, new bots, opening files, video progress).
+  {
+    const MD = await import('../src/model.mjs');
+    check('cut-off calls: arguments that do not parse are marked as cut off, never passed on as {}', MD.toolArgs('{"title":"x","html":"<h1>very lo').__truncated === true && MD.toolArgs('{"a":1}').a === 1 && Object.keys(MD.toolArgs('')).length === 0);
+    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    check('cut-off calls: the bot is told it was cut off and how to do it in parts', agentSrc.includes("code: 'ARGS_TRUNCATED'") && agentSrc.includes('fs_write (mode "append" for the next parts)'));
+    const T = await import('../src/tools.mjs');
+    const { createPages } = await import('../src/pages.mjs');
+    const fsx = await import('node:fs');
+    const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'ws16-'));
+    fsx.writeFileSync(path.join(ws, 'long.html'), '<h1>长页面</h1>' + '<p>段落</p>'.repeat(500));
+    const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => null, getPages: () => createPages({ workspaceDir: ws }) });
+    const saved = await reg.get('page_save').run({ title: '长页面', file: 'long.html', name: 'long-page' }, { bot: { id: 'b' }, workspaceDir: ws });
+    let emptyMsg = '';
+    try { await reg.get('page_save').run({ title: 'x' }, { bot: { id: 'b' }, workspaceDir: ws }); } catch (e) { emptyMsg = e.code + ' ' + e.message; }
+    check('pages: a long page can be saved from a workspace file; an empty one says how to do it', saved.path === 'pages/long-page.html' && fsx.readFileSync(path.join(ws, saved.path), 'utf8').includes('长页面') && emptyMsg.startsWith('PAGE_EMPTY') && emptyMsg.includes('pass file'));
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('stuck: three identical calls read as "同一个操作重复了", not as the step limit', page.includes("item.status === 'max_steps' && /^Stopped: repeated /.test(item.summary || '')") && page.includes('同一个操作重复了，先停下了'));
+    check('cards: a takeover/login card follows what the bot said in that turn, in the replies\' column', page.includes('if (last > i) { items.splice(i, 1); items.splice(last, 0, it); }') && page.includes("const row = el('div', 'row assistant card-row');"));
+    check('working hint: always under the newest message, also after the human sends one', page.includes('if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);') && page.includes('keepTypingLast();\n  scrollToBottom(true);'));
+    const ti = page.indexOf('const TOOL_TEXT');
+    const labelled = new Set([...page.slice(ti, page.indexOf('\n};', ti)).matchAll(/^  ([a-z_]+):/gm)].map((m) => m[1]));
+    const toolSrc = await fsp.readFile(new URL('../src/tools.mjs', import.meta.url), 'utf8');
+    const unlabelled = [...toolSrc.matchAll(/name: '([a-z_]+)',\n\s+description/g)].map((m) => m[1]).filter((n) => !labelled.has(n));
+    check('working hint: every tool has a Chinese name (no "正在image_view…")', unlabelled.length === 0, unlabelled.join(','));
+    check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: var\(--text\); color: var\(--bg\);/.test(page));
+    check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
+    const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("ipcMain.handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
+    const jobs = await api('/api/media/jobs?botId=chief');
+    check('video progress: the chat asks how its videos are going, with a typical time from recent ones', jobs.status === 200 && Array.isArray(jobs.json?.jobs) && 'typicalSec' in (jobs.json || {}) && page.includes('async function renderVideoJobs()') && page.includes("'通常 3–15 分钟'"), `status ${jobs.status} ${JSON.stringify(jobs.json).slice(0,160)}`);
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('other machines: a page found there keeps its own title', srv.includes("find((x) => x.name === page)?.title") && page.includes('elsewhereTitles.get(file.path)'));
+    check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  state.messages = messages;'));
+    const fsSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+    check('feishu: the bot is told the channel carries pictures, videos and voice (it said "only text")', fsSrc.includes('飞书这条通道能收文字、图片和语音') && fsSrc.includes('所以别说飞书只能发文字'));
   }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {

@@ -816,6 +816,15 @@ export class AgentRuntime {
     const args = call.arguments || {};
     const tool = this.registry.get(name);
 
+    // The call was cut off (too long for one answer): say how to do it in parts.
+    if (args.__truncated && tool) {
+      const result = { error: { code: 'ARGS_TRUNCATED', message: `your ${name} call was cut off: its arguments (${args.__length} characters so far) were too long for one answer and arrived incomplete. Do it in parts: write the long content to a workspace file with fs_write (mode "append" for the next parts), then pass that file${name === 'page_save' ? ' with page_save\'s file argument' : ''}. Do not send the same long call again.` } };
+      this.pushToolResult(messages, call, result);
+      this.bus.emit({ type: 'tool.result', ...baseEvent, name, ok: false, result });
+      await this.record(bot.id, { kind: 'tool', name, args: { truncated: true }, ok: false, output: result, turnId });
+      return {};
+    }
+
     // Unknown tool: tell the model rather than crashing the turn.
     if (!tool) {
       const result = { error: { code: 'UNKNOWN_TOOL', message: `there is no tool named "${name}"` } };

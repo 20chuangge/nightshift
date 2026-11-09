@@ -770,7 +770,8 @@
     display: none;
     position: fixed; right: 150px; bottom: 16px; z-index: 95;
     border-radius: 10px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-    background: var(--accent); color: #fff; border: 1px solid transparent;
+    background: var(--text); color: var(--bg); border: 1px solid var(--text);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   }
   body.panel-max .pc-done.show { display: inline-flex; }
   .conn-banner {
@@ -2484,6 +2485,12 @@
   .takeover-title { font-weight: 600; margin-bottom: 4px; }
   .takeover-reason { color: var(--text); margin-bottom: 10px; }
   .takeover-card .btn-row { margin: 0 0 6px; }
+  .row.card-row .takeover-card { margin: 0; width: 100%; }
+  .specialist-welcome { padding-top: 12px; }
+  .video-jobs { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+  .video-job { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .specialist-welcome .muted { margin-top: 6px; font-size: 13px; color: var(--dim); }
+  .start-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 
   /* whose screen, in a group --------------------------------------------- */
   .pc-who { display: inline-flex; gap: 4px; margin: 0 auto 0 10px; align-items: center; }
@@ -5163,7 +5170,9 @@ function renderBots() {
   list.innerHTML = '';
   $('bot-count').textContent = String(state.bots.length);
 
-  for (const bot of state.bots) {
+  // The primary bot is always on top; the rest keep their order.
+  const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)));
+  for (const bot of ordered) {
     const active = !isGroupMode() && bot.id === state.botId;
     const row = el('div', `bot${active ? ' active' : ''}`);
     row.dataset.bot = bot.id;
@@ -5279,13 +5288,19 @@ async function selectBot(id) {
 async function loadMessages() {
   if (isGroupMode()) return loadGroupMessages();
   if (!state.botId) return;
+  const botId = state.botId;
+  let messages;
   try {
-    state.messages = await api(`/api/bots/${state.botId}/messages?limit=200`);
+    messages = await api(`/api/bots/${botId}/messages?limit=200`);
   } catch (err) {
     if (err.status === 401) return;
-    toast(`无法加载对话：${err.message}`, true);
+    if (state.botId === botId && !isGroupMode()) toast(`无法加载对话：${err.message}`, true);
     return;
   }
+  // A slow machine can answer after the human moved to another chat: that
+  // answer belongs to a chat no longer on screen.
+  if (state.botId !== botId || isGroupMode()) return;
+  state.messages = messages;
   renderMessages();
 }
 
@@ -5314,6 +5329,15 @@ function renderMessages() {
     }
     items.push({ ...item });
   }
+  // A card the human acts on (takeover, login) comes after what the bot said in
+  // that turn ("点下面的「接管屏幕」"), not before it.
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const it = items[i];
+    if (it.role !== 'tool' || !isActionCard(it.name) || !it.turnId) continue;
+    let last = i;
+    for (let j = i + 1; j < items.length && items[j].turnId === it.turnId; j += 1) last = j;
+    if (last > i) { items.splice(i, 1); items.splice(last, 0, it); }
+  }
 
   messagesEl.innerHTML = '';
 
@@ -5341,7 +5365,40 @@ function renderMessages() {
   }
 
   updateComposerMode();
+  renderVideoJobs();
   scrollToBottom(true);
+}
+
+/* --- videos being made in the background ------------------------------------
+   "视频生成中 · 已等 3 分 · 通常约 6 分钟": shown at the bottom of the chat that
+   asked, updated until the video is there. */
+const videoWatch = { timer: null, data: null, key: '' };
+async function renderVideoJobs() {
+  clearTimeout(videoWatch.timer);
+  const key = currentChatKey();
+  const q = isGroupMode() ? `groupId=${encodeURIComponent(state.groupId)}` : `botId=${encodeURIComponent(state.botId || '')}`;
+  let data;
+  try { data = await api(`/api/media/jobs?${q}`); } catch { return; }
+  if (key !== currentChatKey()) return;
+  messagesEl.querySelector('.video-jobs')?.remove();
+  const running = (data.jobs || []).filter((j) => j.state === 'running');
+  if (!running.length) return;
+  const box = el('div', 'video-jobs');
+  const mins = (s) => (s < 60 ? `${Math.max(1, Math.round(s))} 秒` : `${Math.round(s / 60)} 分钟`);
+  for (const j of running) {
+    const waited = (Date.now() - j.createdAt) / 1000;
+    const typical = data.typicalSec;
+    let eta = typical ? `通常约 ${mins(typical)}` : '通常 3–15 分钟';
+    if (typical && waited > typical * 1.5) eta = '比平时慢，还在等';
+    const line = el('div', 'video-job');
+    line.appendChild(el('span', 'typing-dots', ''));
+    line.firstChild.innerHTML = '<i></i><i></i><i></i>';
+    line.appendChild(el('span', null, `视频生成中：${truncate(j.prompt || '', 40)} · 已等 ${mins(waited)} · ${eta}`));
+    box.appendChild(line);
+  }
+  messagesEl.appendChild(box);
+  keepTypingLast();
+  videoWatch.timer = setTimeout(renderVideoJobs, 15000);
 }
 
 function dayKey(ts) {
@@ -5412,9 +5469,50 @@ function onboardingCard() {
   return wrap;
 }
 
+/**
+ * A specialist bot's empty chat looks like a chat: its own greeting, in its
+ * role, and a few starts taken from that role ("写脚本和分镜" …).
+ */
+function roleStarts(role) {
+  const body = String(role || '').split(/[:：]/).slice(1).join('：') || String(role || '');
+  return body.split(/[、，,；;。]/).map((s) => s.trim()).filter((s) => s.length >= 2 && s.length <= 18).slice(0, 4);
+}
+
+function specialistWelcome(bot) {
+  const wrap = el('div', 'specialist-welcome');
+  const row = el('div', 'row assistant');
+  const bubble = el('div', 'bubble');
+  const pad = padName(bot.name);
+  const role = String(bot.role || '').replace(/[。.]+$/, '');
+  bubble.appendChild(el('div', null, role ? `你好，我是${pad}${bot.name}，${role}。` : `你好，我是${pad}${bot.name}。`));
+  bubble.appendChild(el('div', 'muted', onLocalMachine()
+    ? '把要做的事直接发给我；要动文件或系统时我会先问你。也可以让主助理把活派给我。'
+    : '把要做的事直接发给我，我自己做完。也可以让主助理把活派给我。'));
+  const starts = roleStarts(bot.role);
+  if (starts.length) {
+    const chips = el('div', 'start-chips');
+    for (const s of starts) {
+      const chip = el('button', 'btn tiny', s);
+      chip.type = 'button';
+      chip.addEventListener('click', () => {
+        const composer = $('composer');
+        composer.value = `${s}：`;
+        autoGrow(composer);
+        composer.focus();
+      });
+      chips.appendChild(chip);
+    }
+    bubble.appendChild(chips);
+  }
+  row.appendChild(bubble);
+  wrap.appendChild(row);
+  return wrap;
+}
+
 function welcomeCard() {
-  const wrap = el('div', 'empty');
   const bot = botById(state.botId);
+  if (bot && !bot.primary) return specialistWelcome(bot);
+  const wrap = el('div', 'empty');
   const name = bot ? bot.name : ($('chat-title').textContent || '助手');
   const pad = padName(name);
   const intro = bot && !bot.primary && bot.role
@@ -5455,7 +5553,15 @@ function statusLine(item) {
     cancelled: ['bad', '已取消'],
     max_steps: ['warn', '到达步数上限，先停下了'],
   };
-  const [kind, label] = map[item.status] || ['warn', item.status];
+  // The same call three times is "stuck", not the step limit.
+  const stuck = item.status === 'max_steps' && /^Stopped: repeated /.test(item.summary || '');
+  const [kind, label] = stuck ? ['warn', '同一个操作重复了，先停下了'] : (map[item.status] || ['warn', item.status]);
+  if (stuck) {
+    const line = el('div', 'status-line');
+    line.appendChild(el('span', 'dot warn'));
+    line.appendChild(el('span', null, label));
+    return line;
+  }
   const line = el('div', 'status-line');
   line.appendChild(el('span', `dot ${kind === 'bad' ? 'bad' : 'warn'}`));
   line.appendChild(el('span', null, `${label}${item.summary ? ` - ${item.summary}` : ''}`));
@@ -5586,8 +5692,14 @@ function renderItem(item) {
       return userRow(item);
     case 'assistant':
       return assistantRow(item.text, { system: item.system });
-    case 'tool':
-      return toolChip(item);
+    case 'tool': {
+      const node = toolChip(item);
+      // Action cards sit in the replies' column, like a reply.
+      if (!isActionCard(item.name)) return node;
+      const row = el('div', 'row assistant card-row');
+      row.appendChild(node);
+      return row;
+    }
     case 'approval':
       return buildApprovalCard(item);
     default:
@@ -5609,11 +5721,26 @@ function splitAttachments(text) {
   return { text: body === '（见附件）' ? '' : body, files };
 }
 
+/** The desktop app on this computer can open the bots' files with their usual program. */
+function canOpenLocally() {
+  return Boolean(window.desk?.openFile) && onLocalMachine();
+}
+
+async function openLocalFile(rel, reveal) {
+  if (!rel || !canOpenLocally()) return;
+  const r = await window.desk.openFile(rel, reveal).catch((err) => ({ ok: false, error: err.message }));
+  if (!r?.ok) toast(`打不开：${r?.error || '未知原因'}`, true);
+}
+
 /** A file a reply names that is not on this machine: which machine has it (cached). */
 const elsewhere = new Map(); // path -> Promise<machine|null>
+const elsewhereTitles = new Map(); // page path -> its title on that machine
 function findElsewhere(path) {
   if (!elsewhere.has(path)) {
-    elsewhere.set(path, api(`/api/peers/locate?path=${encodeURIComponent(path)}`).then((r) => r.machine || null).catch(() => null));
+    elsewhere.set(path, api(`/api/peers/locate?path=${encodeURIComponent(path)}`).then((r) => {
+      if (r.title) elsewhereTitles.set(path, r.title);
+      return r.machine || null;
+    }).catch(() => null));
   }
   return elsewhere.get(path);
 }
@@ -5641,13 +5768,14 @@ function attachmentNode(file) {
           if (!machine) { card.querySelector('.att-size').textContent = '页面 · 哪台机器上都找不到'; return; }
           card.querySelector('.att-size').textContent = `页面 · 在「${machine}」上 · 点开查看`;
           card.dataset.machine = machine;
+          if (elsewhereTitles.get(file.path)) name.textContent = elsewhereTitles.get(file.path);
         });
       });
     }
     card.addEventListener('click', (event) => {
       if (!card.dataset.machine) return;
       event.stopImmediatePropagation();
-      openPageViewer(file.page, null, card.dataset.machine);
+      openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine);
     }, true);
     return card;
   }
@@ -5674,6 +5802,12 @@ function attachmentNode(file) {
     dl.href = url;
     dl.setAttribute('download', file.name);
     box.appendChild(dl);
+    if (canOpenLocally()) {
+      const show = el('a', 'att-video-dl', '在文件夹中显示');
+      show.href = '#';
+      show.addEventListener('click', (event) => { event.preventDefault(); openLocalFile(file.path, true); });
+      box.appendChild(show);
+    }
     return box;
   }
   if (file.image) {
@@ -5702,6 +5836,11 @@ function attachmentNode(file) {
   const a = el('a', 'att-file');
   a.href = url;
   a.setAttribute('download', file.name);
+  // On this computer: open it with its program instead of downloading a copy.
+  if (canOpenLocally()) {
+    a.title = '点开用系统程序打开；按住 Ctrl 点击：在文件夹中显示';
+    a.addEventListener('click', (event) => { event.preventDefault(); openLocalFile(file.path, event.ctrlKey || event.metaKey); });
+  }
   a.appendChild(el('span', 'att-icon', '📄'));
   const meta = el('span', 'att-meta');
   meta.appendChild(el('span', 'att-name', file.name));
@@ -6434,13 +6573,21 @@ function openLightbox(url, name) {
   if (!box) {
     box = el('div', 'lightbox');
     box.id = 'lightbox';
-    box.innerHTML = '<img alt=""><div class="lightbox-bar"><span class="lightbox-name"></span><a class="btn tiny" download>下载</a></div>';
+    box.innerHTML = '<img alt=""><div class="lightbox-bar"><span class="lightbox-name"></span><a class="btn tiny" download>下载</a><button class="btn tiny" type="button" data-open hidden>用系统程序打开</button><button class="btn tiny" type="button" data-reveal hidden>在文件夹中显示</button></div>';
+    box.querySelector('[data-open]').addEventListener('click', () => openLocalFile(box.dataset.path, false));
+    box.querySelector('[data-reveal]').addEventListener('click', () => openLocalFile(box.dataset.path, true));
     box.addEventListener('click', (event) => { if (!event.target.closest('.lightbox-bar')) box.classList.remove('show'); });
     document.addEventListener('keydown', (event) => { if (event.key === 'Escape') box.classList.remove('show'); });
     document.body.appendChild(box);
   }
   box.querySelector('img').src = url;
   box.querySelector('img').alt = name;
+  // On this computer, the desktop app can open it or show it in its folder.
+  const rel = /[?&]path=([^&]+)/.exec(url) && url.startsWith('/api/workspace/file') ? decodeURIComponent(/[?&]path=([^&]+)/.exec(url)[1]) : '';
+  box.dataset.path = rel;
+  const can = Boolean(rel && canOpenLocally());
+  box.querySelector('[data-open]').hidden = !can;
+  box.querySelector('[data-reveal]').hidden = !can;
   box.querySelector('.lightbox-name').textContent = name;
   const dl = box.querySelector('a');
   dl.href = url;
@@ -6473,6 +6620,22 @@ function longBlock(label, text, { clampAt = 600, labelIsRaw = false } = {}) {
    not by the model: no `routine_create · 已拒绝` blocks. Unknown names fall
    back to the raw id so a newly added tool is never invisible. */
 const TOOL_TEXT = {
+  vault_list: { label: '查看保险箱', title: '想看看保险箱里有哪些登录信息', impact: '只看名字，看不到密码。' },
+  request_login: { label: '请你登录', title: '需要你填写登录信息', impact: '密码只进保险箱，不进聊天。' },
+  browser_fill_secret: { label: '填入登录信息', title: '想把保险箱里的登录信息填进网页', impact: '机器人看不到密码本身。' },
+  request_takeover: { label: '请你接管屏幕', title: '需要你接管屏幕', impact: '你来操作这一步。' },
+  image_view: { label: '看图片', title: '想看一张图片', impact: '只读取，不改动。' },
+  briefing_collect: { label: '汇总近况', title: '想汇总各台机器的近况', impact: '只读取，不改动。' },
+  page_save: { label: '做页面', title: '想把结果做成一个页面', impact: '页面存进工作区的页面库。' },
+  file_send: { label: '发文件到另一台机器', title: '想把一个文件发到另一台机器', impact: '那台机器的工作区里会多一个文件。' },
+  file_fetch: { label: '从另一台机器取文件', title: '想从另一台机器取回一个文件', impact: '这台机器的工作区里会多一个文件。' },
+  group_list: { label: '查看群', title: '想看看有哪些群', impact: '只读取名单。' },
+  group_update: { label: '修改群', title: '想修改一个群', impact: '群的名字或成员会变。' },
+  group_delete: { label: '删除群', title: '想删除一个群', impact: '群和它的聊天记录会被删掉。' },
+  settings_get: { label: '查看设置', title: '想看看这台机器的设置', impact: '只读取，不改动。' },
+  settings_update: { label: '修改设置', title: '想修改这台机器的设置', impact: '设置会改变，之后的对话按新设置来。' },
+  ui_get: { label: '查看界面状态', title: '想看看界面现在的状态', impact: '只读取，不改动。' },
+  ui_set: { label: '调整界面', title: '想调整界面', impact: '界面显示会变。' },
   image_generate: { label: '生成图片', title: '想生成图片', impact: '会调用生图服务，按张计费（通常几分钱）；图片存进工作区。' },
   video_generate: { label: '生成视频', title: '想生成一段视频', impact: '会调用生视频服务，按条计费，比图片贵；要等几分钟。' },
   shell: { label: '执行命令', title: '想在这台电脑上运行一条命令', impact: '命令会以你当前的用户身份运行，可能出现你没预料到的改动。' },
@@ -6815,6 +6978,7 @@ async function send() {
     ? `${text || '（见附件）'}${ATTACH_MARK}${files.map((f) => `- ${f.path}（${/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? '图片' : '文件'}，…）`).join('\n')}`
     : text;
   messagesEl.appendChild(userRow({ text: shown, ts: new Date().toISOString() }));
+  keepTypingLast();
   scrollToBottom(true);
 
   try {
@@ -7092,10 +7256,17 @@ function showTyping(botId, label = '正在处理…') {
   if (!row) {
     row = el('div', 'typing-row');
     row.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-label"></span>';
-    messagesEl.appendChild(row);
   }
+  // Always under the newest message (a message sent meanwhile goes above it).
+  if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);
   row.querySelector('.typing-label').textContent = label;
   scrollToBottom();
+}
+
+/** Keep the "working…" hint under anything just added to the chat. */
+function keepTypingLast() {
+  const row = messagesEl.querySelector('.typing-row');
+  if (row && messagesEl.lastElementChild !== row) messagesEl.appendChild(row);
 }
 
 function hideTyping() {
@@ -7120,9 +7291,14 @@ function appendLiveChip(chip) {
   if (chip.callId) node.dataset.call = chip.callId;
   if (isGroupMode() && chip.botId) {
     messagesEl.appendChild(groupSenderRow(botById(chip.botId) || { id: chip.botId, name: chip.botId }, node));
+  } else if (card) {
+    const row = el('div', 'row assistant card-row');
+    row.appendChild(node);
+    messagesEl.appendChild(row);
   } else {
     messagesEl.appendChild(node);
   }
+  keepTypingLast();
   scrollToBottom();
 }
 

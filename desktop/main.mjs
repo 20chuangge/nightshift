@@ -904,6 +904,20 @@ ipcMain.handle('desk:voice-cancel', async () => {
  * the window shows: a remote hub would install its own (possibly older) copy,
  * and re-adding a machine from its own page restarts the hub mid-install.
  */
+/**
+ * Open a file the bots made on this computer with its usual program, or show
+ * it in its folder. Only inside this computer's workspace.
+ */
+ipcMain.handle('desk:open-file', async (_event, { rel = '', reveal = false } = {}) => {
+  const root = path.resolve(HOME, 'workspace');
+  const abs = path.resolve(root, String(rel).replace(/^workspace[\\/]/, ''));
+  if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };
+  if (!fs.existsSync(abs)) return { ok: false, error: L('这台电脑上没有这个文件', 'No such file on this computer') };
+  if (reveal) { shell.showItemInFolder(abs); return { ok: true }; }
+  const err = await shell.openPath(abs);
+  return err ? { ok: false, error: err } : { ok: true };
+});
+
 ipcMain.handle('desk:local-provision', async (_event, { method = 'GET', path: apiPath = '', body } = {}) => {
   if (!/^\/api\/remote\/provision(\/[\w-]+)?$/.test(apiPath)) return { status: 400, json: { error: { message: 'bad path' } } };
   try {

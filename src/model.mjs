@@ -248,7 +248,7 @@ async function openAiJson(cfg, body, { signal, timeoutMs } = {}) {
   const toolCalls = (msg.tool_calls || []).map((call) => ({
     id: call.id || `call_${Math.random().toString(36).slice(2, 10)}`,
     name: call.function?.name || '',
-    arguments: safeParseJson(call.function?.arguments, {}),
+    arguments: toolArgs(call.function?.arguments),
   }));
 
   return {
@@ -392,7 +392,7 @@ async function openAiStream(cfg, body, { signal, timeoutMs, onDelta }) {
     .map(([index, entry]) => ({
       id: entry.id || `call_${index}`,
       name: entry.name || '',
-      arguments: safeParseJson(entry.arguments, {}),
+      arguments: toolArgs(entry.arguments),
     }))
     .filter((call) => call.name);
 
@@ -406,6 +406,22 @@ async function openAiStream(cfg, body, { signal, timeoutMs, onDelta }) {
     finishReason,
   });
   return { content, toolCalls, reasoningContent: reasoning, finishReason, usage };
+}
+
+/**
+ * A tool call's arguments. When the text does not parse - the model ran out of
+ * output and the JSON was cut off - say so instead of passing {} (which made a
+ * long page arrive "empty" and the bot retry the same thing).
+ */
+export function toolArgs(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return { __truncated: true, __length: raw.length };
+  }
 }
 
 function safeParseJson(raw, fallback) {
