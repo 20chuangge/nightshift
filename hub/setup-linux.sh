@@ -32,6 +32,7 @@ SETUP_VERSION=1
 PORT=4390
 PKG=""
 NODE_TAR=""
+TS_KEY_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)   PORT="$2"; shift ;;
@@ -40,6 +41,8 @@ while [ $# -gt 0 ]; do
     --pkg=*)  PKG="${1#*=}" ;;
     --node)   NODE_TAR="$2"; shift ;;
     --node=*) NODE_TAR="${1#*=}" ;;
+    --tailscale-key-file)   TS_KEY_FILE="$2"; shift ;;
+    --tailscale-key-file=*) TS_KEY_FILE="${1#*=}" ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "[desk] 未知参数: $1" >&2; exit 1 ;;
   esac
@@ -474,6 +477,36 @@ DESK_DESKTOP_EOF
   else
     setsid nohup /bin/bash "$DESK_SCRIPT" "$PM" "$DESK_STATUS" >/dev/null 2>&1 9>&- < /dev/null &
     say "桌面和浏览器在后台安装（约 3-8 分钟）"
+  fi
+fi
+
+# Optional: join the human's tailnet (reachable from outside), in the
+# background. The auth key arrives in a file only the SSH account can read; it
+# moves to a root-only file, Tailscale reads it from there (never on a command
+# line), and it is removed afterwards.
+if [ -n "$TS_KEY_FILE" ] && [ -s "$TS_KEY_FILE" ]; then
+  TS_KEY_ROOT=/root/.desk-tailscale.key
+  ( umask 077; head -c 400 "$TS_KEY_FILE" | tr -d '\r\n ' > "$TS_KEY_ROOT" )
+  shred -u "$TS_KEY_FILE" 2>/dev/null || rm -f "$TS_KEY_FILE"
+  TS_SCRIPT=/usr/local/lib/desk-tailscale.sh
+  cat > "$TS_SCRIPT" <<'DESK_TS_EOF'
+#!/usr/bin/env bash
+KEY=/root/.desk-tailscale.key
+trap 'shred -u "$KEY" 2>/dev/null || rm -f "$KEY"' EXIT
+if ! command -v tailscale >/dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1; then curl -fsSL https://tailscale.com/install.sh | sh
+  else wget -qO- https://tailscale.com/install.sh | sh; fi
+fi
+command -v tailscale >/dev/null 2>&1 || { echo "Tailscale 没装上"; exit 1; }
+systemctl enable --now tailscaled >/dev/null 2>&1 || true
+tailscale up --auth-key="file:$KEY" && tailscale ip -4
+DESK_TS_EOF
+  chmod 700 "$TS_SCRIPT"
+  if has systemd-run && systemd-run --unit=desk-tailscale-setup --collect --quiet /bin/bash -c "$TS_SCRIPT > /var/log/desk-tailscale.log 2>&1" >/dev/null 2>&1; then
+    say "Tailscale 在后台安装并加入你的网络，装好后在外面也能连上这台机器"
+  else
+    setsid nohup /bin/bash -c "$TS_SCRIPT > /var/log/desk-tailscale.log 2>&1" >/dev/null 2>&1 9>&- < /dev/null &
+    say "Tailscale 在后台安装"
   fi
 fi
 

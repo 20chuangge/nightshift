@@ -2510,6 +2510,17 @@
   /* other models ------------------------------------------------------ */
   .models-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 
+  /* pages (page library) ---------------------------------------------- */
+  .att-page { display: flex; align-items: center; gap: 10px; max-width: 320px; padding: 9px 12px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-soft, transparent); color: inherit; cursor: pointer; text-align: left; font: inherit; }
+  .att-page:hover { border-color: var(--accent); }
+  .att-page .att-icon { font-size: 20px; }
+  .att-page .att-name { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
+  .att-page .att-size { color: var(--dim); font-size: 12px; }
+  .page-viewer { position: fixed; inset: 0; z-index: 90; display: none; flex-direction: column; background: rgba(0,0,0,.55); }
+  .page-viewer.show { display: flex; }
+  .page-viewer-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--panel, #fff); border-bottom: 1px solid var(--border-soft); }
+  .page-viewer-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .page-viewer iframe { flex: 1; width: 100%; border: 0; background: #fff; }
   /* vault ------------------------------------------------------------- */
   .vault-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
   .vault-row { border: 1px solid var(--border-soft); border-radius: 12px; padding: 9px 11px; }
@@ -2839,6 +2850,7 @@
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
       <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
+      <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
       <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
       <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
       <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
@@ -3079,6 +3091,12 @@
         <div class="vault-list" id="feishu-users"></div>
       </section>
 
+      <section class="dsec" id="sec-pages">
+        <div class="dsec-head">页面库</div>
+        <div class="row-note">机器人做的报告、看板、清单等网页都存在这里（工作区的 pages 文件夹），可以随时再打开或下载。让机器人「更新那个页面」，它会在原页面上改。每台机器有自己的页面库。</div>
+        <div class="vault-list" id="pages-list"></div>
+      </section>
+
       <section class="dsec" id="sec-vault">
         <div class="dsec-head">保险箱</div>
         <div class="row-note">网站的账号密码存在这里，机器人登录时直接从这里填，聊天里不出现，机器人自己也看不到。每台机器有自己的保险箱。</div>
@@ -3280,6 +3298,13 @@
 
     <label class="form-label" for="vnc-ssh-pass" style="margin-top:8px">SSH 密码</label>
     <input class="field" id="vnc-ssh-pass" type="password" placeholder="••••••" autocomplete="new-password" />
+
+    <details class="vault-add" id="vnc-ts">
+      <summary>在外面也要连上它（可选，Tailscale）</summary>
+      <div class="row-note">在 Tailscale 后台的 Settings → Keys 里生成一个 Auth key（tskey-auth- 开头），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。目前只支持 Linux。</div>
+      <div class="row-note"><a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">打开 Tailscale 密钥页面</a></div>
+      <input class="field" id="vnc-ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
+    </details>
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：
@@ -5550,6 +5575,27 @@ function splitAttachments(text) {
 }
 
 function attachmentNode(file) {
+  if (file.page) {
+    const card = el('button', 'att-page');
+    card.type = 'button';
+    card.appendChild(el('span', 'att-icon', '📊'));
+    const meta = el('span', 'att-meta');
+    const known = (state.pages || []).find((p) => p.name === file.page);
+    const name = el('span', 'att-name', known?.title || file.page);
+    meta.appendChild(name);
+    meta.appendChild(el('span', 'att-size', '页面 · 点开查看'));
+    card.appendChild(meta);
+    card.addEventListener('click', () => openPageViewer(file.page, known?.title));
+    // The title, once the library is known (the bot may only have written the path).
+    if (!known) {
+      (state.pagesLoading ||= loadPages().catch(() => [])).then((list) => {
+        const hit = (list || []).find((p) => p.name === file.page);
+        if (hit) name.textContent = hit.title;
+        else card.querySelector('.att-size').textContent = '页面 · 这台机器上找不到';
+      });
+    }
+    return card;
+  }
   const url = `/api/workspace/file?path=${encodeURIComponent(file.path)}`;
   if (file.video) {
     const box = el('div', 'att-video');
@@ -6113,7 +6159,80 @@ function mentionedImages(text) {
     out.push({ path: p, image: !video, video, name: p.split('/').pop(), size: '' });
     if (out.length >= 6) break;
   }
+  // Pages from the page library ("已保存到 pages/weekly-sales.html").
+  for (const m of String(text || '').matchAll(/(?:^|[^\w/.-])(?:workspace\/)?pages\/([a-z0-9-]{1,60})\.html\b/g)) {
+    const p = `pages/${m[1]}.html`;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push({ path: p, page: m[1], name: m[1], size: '' });
+    if (out.length >= 8) break;
+  }
   return out;
+}
+
+/** The page library of the machine this window shows. */
+async function loadPages() {
+  const data = await api('/api/pages');
+  state.pages = data.pages || [];
+  renderPages();
+  return state.pages;
+}
+
+function renderPages() {
+  const box = $('pages-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = state.pages || [];
+  if (!list.length) { box.appendChild(el('div', 'row-note', '还没有页面。让机器人「把结果做成一个页面」试试。')); return; }
+  for (const p of list) {
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', p.title));
+    title.appendChild(el('small', '', [p.botName, fmtWhen(p.updatedAt), fmtBytes(p.size)].filter(Boolean).join(' · ')));
+    head.appendChild(title);
+    const open = el('button', 'btn tiny', '打开');
+    open.type = 'button';
+    open.addEventListener('click', () => openPageViewer(p.name, p.title));
+    const dl = el('a', 'btn tiny', '下载');
+    dl.href = `/api/pages/${encodeURIComponent(p.name)}?download=1`;
+    dl.setAttribute('download', `${p.name}.html`);
+    const del = el('button', 'btn tiny danger', '删除');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次删除'; return; }
+      try { await api(`/api/pages/${encodeURIComponent(p.name)}`, { method: 'DELETE' }); toast(`已删除「${p.title}」`); loadPages(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+    });
+    head.appendChild(open);
+    head.appendChild(dl);
+    head.appendChild(del);
+    row.appendChild(head);
+    box.appendChild(row);
+  }
+}
+
+/**
+ * A page opens inside the app. It is the bot's HTML, so it runs sandboxed
+ * (no access to this app or the hub); the hub serves it that way too.
+ */
+function openPageViewer(name, title) {
+  let box = $('page-viewer');
+  if (!box) {
+    box = el('div', 'page-viewer');
+    box.id = 'page-viewer';
+    box.innerHTML = '<div class="page-viewer-bar"><span class="page-viewer-title"></span><a class="btn tiny" data-dl>下载</a><button class="btn tiny" type="button" data-close>关闭</button></div><iframe sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals" referrerpolicy="no-referrer"></iframe>';
+    const close = () => { box.classList.remove('show'); box.querySelector('iframe').src = 'about:blank'; };
+    box.querySelector('[data-close]').addEventListener('click', close);
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && box.classList.contains('show')) close(); });
+    document.body.appendChild(box);
+  }
+  const shown = title || (state.pages || []).find((p) => p.name === name)?.title || name;
+  box.querySelector('.page-viewer-title').textContent = shown;
+  const dl = box.querySelector('[data-dl]');
+  dl.href = `/api/pages/${encodeURIComponent(name)}?download=1`;
+  dl.setAttribute('download', `${name}.html`);
+  box.querySelector('iframe').src = `/api/pages/${encodeURIComponent(name)}`;
+  box.classList.add('show');
 }
 
 /** Text (markdown when it looks like it) plus the images it points at. */
@@ -7803,6 +7922,7 @@ function openSettings(section) {
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
   loadVault().catch(() => {});
+  loadPages().catch(() => {});
   loadFeishu().catch(() => {});
   loadModels().catch(() => {});
   closeSidebar();
@@ -9245,6 +9365,8 @@ function saveMachineFromModal() {
   if (!address) return fail('IP 地址看起来不对，例子：192.168.1.20');
   const password = $('vnc-ssh-pass').value;
   if (!password) return fail('还需要那台机器的 SSH 密码，才能自动配置。');
+  const tsKey = $('vnc-ts-key')?.value.trim() || '';
+  if (tsKey && !/^tskey-/.test(tsKey)) return fail('Tailscale 密钥应该以 tskey- 开头。');
   note.hidden = true;
   startRemoteProvision({
     name: $('vnc-name').value.trim() || address.host,
@@ -9252,6 +9374,7 @@ function saveMachineFromModal() {
     sshPort: Number($('vnc-ssh-port').value) || 22,
     username: $('vnc-ssh-user').value.trim() || 'ubuntu',
     password,
+    ...($('vnc-ts-key')?.value.trim() ? { tailscaleKey: $('vnc-ts-key').value.trim() } : {}),
   });
 }
 

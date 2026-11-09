@@ -1108,10 +1108,34 @@ export function createRegistry(deps) {
       const done = mine.find((m) => m.role === 'status');
       if (!done) continue;
       const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim();
-      return { machine: peer.name, botId: target.id, botName: target.name, status: done.status || 'success', turnId: started.turnId, reply: reply || done.summary || '(no reply)' };
+      return { machine: peer.name, botId: target.id, botName: target.name, status: done.status || 'success', turnId: started.turnId, reply: reply || done.summary || '(no reply)', note: `Files it made are on 「${peer.name}」: file_fetch what the human needs, then tell them the result and where it is now.` };
     }
     throw toolError('PEER_TIMEOUT', `「${peer.name}」上的${target.name} 30 分钟还没做完`);
   }
+
+  add({
+    name: 'page_save',
+    description: 'Save a report, dashboard, tracker or any result worth keeping as a web page in the page library (pages/ in the workspace). The human sees it as a card in the chat and can open it again later from the page library. Give a whole HTML document or just the body; inline CSS/JS is fine, images in the workspace are embedded. To update a page, save again with the same name. Write the returned path in your reply.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Page title shown in the library.' },
+        html: { type: 'string', description: 'The page: a full HTML document or body HTML.' },
+        name: { type: 'string', description: 'Optional file name (letters, digits, dashes), e.g. "weekly-sales". Same name = update that page.' },
+      },
+      required: ['title', 'html'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const pages = typeof deps.getPages === 'function' ? deps.getPages() : null;
+      if (!pages) throw toolError('PAGES_UNAVAILABLE', 'the page library is not available here');
+      try {
+        const out = await pages.save({ title: args?.title, html: args?.html, name: args?.name, bot: ctx.bot });
+        return { ...out, note: 'Write this path in your reply; it shows as a card the human can open.' };
+      } catch (err) { throw toolError(err.code || 'PAGE_FAILED', err.message); }
+    },
+  });
 
   add({
     name: 'file_send',
@@ -1168,7 +1192,7 @@ export function createRegistry(deps) {
       const destRel = path.posix.join('from-machines', String(peer.name).replace(/[\\/:*?"<>|]/g, '_'), day, path.posix.basename(rel));
       await fsp.mkdir(path.join(ctx.workspaceDir, path.posix.dirname(destRel)), { recursive: true });
       await fsp.writeFile(path.join(ctx.workspaceDir, destRel), bytes);
-      return { machine: peer.name, path: destRel, bytes: bytes.length };
+      return { machine: peer.name, path: destRel, bytes: bytes.length, note: 'Now on this machine at this path: tell the human the path (and the content, if short).' };
     },
   });
 
@@ -1768,11 +1792,11 @@ export function createRegistry(deps) {
 
   add({
     name: 'task_finish',
-    description: 'Declare the task complete. Provide a short summary of what you actually did.',
+    description: 'Declare the task complete. If you have not already written your answer this step, the summary IS what the human reads: give the result itself (the key content, the file paths or page where it is), not just "done".',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
-      properties: { summary: { type: 'string', description: 'What changed, in one or two sentences.' } },
+      properties: { summary: { type: 'string', description: 'The result for the human: what was made or changed, the key content, and where it is (paths). Short, but never just "done".' } },
       required: ['summary'],
       additionalProperties: false,
     },
@@ -1803,7 +1827,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      if (name === 'task_finish' || name === 'page_save' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;

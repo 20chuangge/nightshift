@@ -270,7 +270,7 @@ export class AgentRuntime {
       bot.primary
         ? '- You can change the whole app: settings_get/settings_update for model and timezone, ui_get/ui_set for theme, timezone mode and the controlled machine, and group_create/group_update/group_delete for team chats. When the human asks for a change, do it; do not tell them to open Settings.'
         : '',
-      '- When the task is done, call task_finish with a one or two sentence summary of what actually changed.',
+      '- When the task is done, call task_finish. Your last message (or the summary, if you wrote nothing else) must give the human the result itself: what was made, the key content when it is short, and where it is (file paths, page). Never only "done" or a list of steps.',
       '- If you are blocked, say exactly what you need. Do not invent tool output.',
     ]
       .filter((line) => line !== undefined && line !== null)

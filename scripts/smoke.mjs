@@ -3170,6 +3170,57 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const vj = await fsp.readFile(new URL('../src/videojobs.mjs', import.meta.url), 'utf8');
     check('peers: bots are told teammates work on other machines; delegated videos report to the origin bot', agentSrc.includes('function peersLine(peers, canHandOff)') && vj.includes('reportTo') && srv.includes('const tellUpstream = async'));
   }
+  // Step 13: the page library (reports, dashboards a bot makes as web pages).
+  {
+    const fsx = await import('node:fs');
+    const PG = await import('../src/pages.mjs');
+    const T = await import('../src/tools.mjs');
+    const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'pages-'));
+    fsx.mkdirSync(path.join(ws, 'artifacts'));
+    fsx.writeFileSync(path.join(ws, 'artifacts', 'chart.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+    fsx.writeFileSync(path.join(os.tmpdir(), 'outside-secret.png'), 'nope');
+    const pages = PG.createPages({ workspaceDir: ws });
+    const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => null, getPages: () => pages });
+    const bot = { id: 'b1', name: '分析师', tools: [] };
+    const a = await reg.get('page_save').run({ title: 'Weekly Sales 周报', html: '<h1>周报</h1><img src="../artifacts/chart.png"><img src="../../outside-secret.png">' }, { bot, workspaceDir: ws });
+    const html = fsx.readFileSync(path.join(ws, a.path), 'utf8');
+    check('pages: page_save keeps a page under pages/, wrapped into a whole document with its title', a.path === 'pages/weekly-sales.html' && /<!doctype html>/i.test(html) && html.includes('<title>Weekly Sales 周报</title>') && !a.updated);
+    check('pages: workspace images are embedded; files outside the workspace are not', html.includes('data:image/png;base64,') && html.includes('src="../../outside-secret.png"'));
+    const b = await reg.get('page_save').run({ title: 'Weekly Sales 周报', html: '<h1>v2</h1>' }, { bot, workspaceDir: ws });
+    const c = await reg.get('page_save').run({ title: 'Weekly Sales 库存', html: '<p>x</p>' }, { bot, workspaceDir: ws });
+    const d = await reg.get('page_save').run({ title: '客户跟进表', html: '<p>y</p>' }, { bot, workspaceDir: ws });
+    const e = await reg.get('page_save').run({ title: 'anything', html: '<html><head></head><body>z</body></html>', name: 'Weekly Sales' }, { bot, workspaceDir: ws });
+    check('pages: the same title updates its page; a different title never overwrites it; a Chinese title gets a dated name', b.updated && b.name === 'weekly-sales' && c.name !== 'weekly-sales' && /^page-\d{4}-\d\d-\d\d-[a-z0-9]{4}$/.test(d.name));
+    check('pages: an explicit name updates that page, and a full document gets a title added', e.name === 'weekly-sales' && e.updated && fsx.readFileSync(path.join(ws, e.path), 'utf8').includes('<title>anything</title>'));
+    const listed = await pages.list();
+    check('pages: the library lists every page with title and who made it', listed.length === 3 && listed.find((p) => p.name === d.name)?.title === '客户跟进表' && listed.every((p) => p.botName === '分析师'));
+    const err = async (p) => { try { await p; return null; } catch (x) { return x.code; } };
+    check('pages: empty pages are refused; every bot may save pages', (await err(reg.get('page_save').run({ title: 'x', html: '  ' }, { bot, workspaceDir: ws }))) === 'PAGE_EMPTY' && reg.isGranted({ tools: [] }, 'page_save'));
+    check('pages: names are safe file names only', PG.pageName('../../etc/passwd') === 'etc-passwd' && PG.pageName('A b.HTML') === 'a-b' && (await pages.read('../x')) === null);
+    // Routes: listed, served sandboxed (its scripts cannot use the app's login), deleted.
+    const hubPages = (await api('/api/pages'));
+    check('pages: GET /api/pages answers', hubPages.status === 200 && Array.isArray(hubPages.json?.pages));
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('pages: a page is served with a sandbox policy (opaque origin) and can be downloaded or deleted', PG.PAGE_HEADERS['content-security-policy'].startsWith('sandbox allow-scripts') && !PG.PAGE_HEADERS['content-security-policy'].includes('allow-same-origin') && srv.includes("route('DELETE', /^\\/api\\/pages\\/") && srv.includes("query.get('download')"));
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('pages: a page named in a reply becomes a card; it opens in a sandboxed frame; Settings has the library', page.includes("out.push({ path: p, page: m[1]") && /<iframe sandbox="allow-scripts allow-popups[^"]*"/.test(page) && !/<iframe sandbox="[^"]*allow-same-origin/.test(page) && page.includes('id="sec-pages"') && page.includes('data-set-target="sec-pages"'));
+    // Results reach the human, not just "done".
+    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const toolSrc = await fsp.readFile(new URL('../src/tools.mjs', import.meta.url), 'utf8');
+    check('results: the last message must carry the result itself (content, paths), never only "done"', agentSrc.includes('Never only "done"') && toolSrc.includes('the summary IS what the human reads') && toolSrc.includes('file_fetch what the human needs, then tell them'));
+    // Tailscale key when adding a Linux machine.
+    const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
+    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
+    check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && sh.includes('tailscale up --auth-key="file:$KEY"') && sh.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup'));
+    const { createProvisioner } = await import('../src/remote.mjs').catch(() => ({}));
+    if (typeof createProvisioner === 'function') {
+      let code = '';
+      try { createProvisioner({}).start({ host: '10.0.0.5', username: 'u', password: 'p', tailscaleKey: 'not-a-key' }); } catch (x) { code = x.code; }
+      check('tailscale key: a key that is not tskey-… is refused before anything starts', code === 'REMOTE_BAD_TAILSCALE_KEY', code);
+    }
+    check('tailscale key: optional field in the add-machine form', page.includes('id="vnc-ts-key"') && page.includes('tailscaleKey: $(\'vnc-ts-key\').value.trim()'));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

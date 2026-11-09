@@ -71,6 +71,7 @@ import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu } from './feishu.mjs';
 import { createPeers } from './peers.mjs';
+import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -178,6 +179,9 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // Per-bot desktops read the VNC password the installer stored, if any.
   configureDesktops({ dataDir: P.dataDir });
 
+  // Reports and dashboards bots make as web pages (the page library).
+  refs.pages = createPages({ workspaceDir });
+
   const registry = createRegistry({
     workspaceDir,
     config,
@@ -194,6 +198,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getMedia: (kind) => (refs.getMedia ? refs.getMedia(kind) : null),
     getVideoJobs: () => refs.videoJobs || null,
     getPeers: () => refs.peers || null,
+    getPages: () => refs.pages || null,
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -358,6 +363,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.peers = createPeers({ file: path.join(P.dataDir, 'peers.json') });
   await refs.peers.load();
   state.peers = refs.peers;
+  state.pages = refs.pages;
 
   // Badges of bots and groups deleted by an older version (which kept them).
   try {
@@ -731,6 +737,31 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+
+// --- pages (the page library) --------------------------------------------------
+//   GET    /api/pages              -> {pages:[{name, title, path, size, updatedAt, botName}]}
+//   GET    /api/pages/:name        -> the page, sandboxed (?download=1 to save it)
+//   DELETE /api/pages/:name
+
+route('GET', /^\/api\/pages$/, async (_req, _res, { state }) => ({ pages: await state.pages.list() }));
+
+route('GET', /^\/api\/pages\/(?<name>[a-z0-9-]{1,60})$/, async (_req, res, { params, state, query }) => {
+  const html = await state.pages.read(params.name);
+  if (html == null) return errorResponse(res, 404, 'PAGE_NOT_FOUND', 'no such page');
+  const body = Buffer.from(html, 'utf8');
+  res.writeHead(200, {
+    ...PAGE_HEADERS,
+    'content-length': body.length,
+    ...(query.get('download') ? { 'content-disposition': `attachment; filename="${params.name}.html"` } : {}),
+  });
+  res.end(body);
+  return undefined;
+});
+
+route('DELETE', /^\/api\/pages\/(?<name>[a-z0-9-]{1,60})$/, async (_req, _res, { params, state }) => {
+  if (!(await state.pages.remove(params.name))) throw httpError(404, 'PAGE_NOT_FOUND', 'no such page');
+  return { ok: true, name: params.name, deleted: true };
+});
 
 // --- peers (the human's other machines) -----------------------------------------
 //   GET /api/peers   -> {peers:[{name, url, tailnetUrl}]}   never the tokens

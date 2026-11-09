@@ -454,7 +454,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     );
   }
 
-  async function run(job, { host, sshPort, username, password, hubPort }) {
+  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '' }) {
     let client = null;
     try {
       phase(job, '连接 SSH');
@@ -506,10 +506,18 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
             nodeArg = ' --node /tmp/desk-node.tar.gz';
           }
 
+          // Optional Tailscale key: written over the SSH channel into a file only
+          // this account can read (never a local file, never a command line).
+          let tsArg = '';
+          if (tailscaleKey) {
+            const put = await execStream(client, 'umask 077; cat > /tmp/desk-tailscale.key', { stdin: `${tailscaleKey}\n`, timeoutMs: 15000 }).catch(() => ({ code: 1 }));
+            if (put.code === 0) tsArg = ' --tailscale-key-file /tmp/desk-tailscale.key';
+          }
+
           setProgress(job, '安装并启动（首次 3-10 分钟）…');
           result = await execStream(
             client,
-            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}`,
+            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}${tsArg}`,
             {
               stdin: isRoot ? '' : `${password}\n`,
               onLine: (line) => {
@@ -587,6 +595,11 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const hubPort = assertPort(input.hubPort, 4390, 'hubPort');
       const username = assertCredential(input.username, 'SSH username');
       const password = assertCredential(input.password, 'SSH password');
+      // Optional, Linux only: a Tailscale auth key (tskey-auth-…) to join the human's tailnet.
+      const tailscaleKey = String(input.tailscaleKey || '').trim();
+      if (tailscaleKey && !/^tskey-[A-Za-z0-9-]{10,200}$/.test(tailscaleKey)) {
+        throw remoteError('REMOTE_BAD_TAILSCALE_KEY', 'Tailscale 密钥应该以 tskey- 开头（在 Tailscale 后台 Settings → Keys 生成）。');
+      }
 
       const job = {
         id: uid('prov'),
@@ -610,7 +623,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           jobs.delete(id);
         }
       }
-      run(job, { host, sshPort, username, password, hubPort });
+      run(job, { host, sshPort, username, password, hubPort, tailscaleKey });
       return publicJob(job);
     },
     get(id) {
