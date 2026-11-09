@@ -8,7 +8,7 @@
  * Bounds that matter:
  *   - max 12 steps           (config per bot, so a runaway loop costs little)
  *   - 5 minute wall clock    (a stuck tool cannot hold a turn forever)
- *   - one hand-off hop       (enforced in tools.bot_message, not here)
+ *   - bounded hand-offs      (depth, per-task budget, no hand-back: tools.bot_message)
  *
  * Everything observable is emitted on the event bus, which the server forwards
  * over SSE. The same events are appended to the session log, so a browser that
@@ -219,7 +219,7 @@ export class AgentRuntime {
       '## The team',
       bot.primary
         ? 'You are the primary bot. You coordinate: split work, hand tasks to the right teammate with bot_message, and report back to the human.'
-        : 'You are a specialist bot. Do your part of the work and report back concisely.',
+        : 'You are a specialist bot. Do your part of the work and report back concisely. When part of a job belongs to a teammate (see the team below), hand it to them with bot_message - give them the inputs and file paths they need - and put their results together; you get each reply back. Never hand work back to the bot that gave it to you.',
       teamLine,
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
@@ -317,6 +317,9 @@ export class AgentRuntime {
     source = 'chat',
     unattended = false,
     depth = 0,
+    // Hand-offs: the bots waiting above this one, and the task's shared budget.
+    chain = null,
+    handoffBudget = null,
     parentTurnId = null,
     signal = null,
     turnId: providedTurnId = null,
@@ -427,6 +430,8 @@ export class AgentRuntime {
         turnId,
         unattended,
         depth,
+        chain: chain || [bot.id],
+        handoffBudget: handoffBudget || null,
         signal: controller.signal,
         // Long tools (video) report what they are waiting for; the chat shows it.
         progress: (text) => this.bus.emit({ type: 'tool.progress', ...baseEvent, text: String(text || '').slice(0, 120) }),

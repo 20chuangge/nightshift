@@ -2909,6 +2909,25 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('made-up results: taken back from the chat and retried once, only in a turn that ran nothing', /type: 'message\.retract'/.test(agentSrc) && /!trail\.length && !fabricationNudged/.test(agentSrc));
       const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
       check('made-up results: the page drops the retracted bubble', /case 'message\.retract':/.test(page));
+      // Hand-offs: a team works as a chain (chief -> director -> writer), bounded.
+      {
+        const T = await import('../src/tools.mjs');
+        const calls = [];
+        const fakeRuntime = { runTurn: async (o) => { calls.push(o); return { status: 'success', turnId: `t${calls.length}`, summary: `done by ${o.botId}` }; } };
+        const roster = { chief: { id: 'chief', name: '助理' }, director: { id: 'director', name: '导演' }, writer: { id: 'writer', name: '编剧' }, artist: { id: 'artist', name: '美术' } };
+        const reg = T.createRegistry({ workspaceDir: process.cwd(), config: { policy: {} }, getRuntime: () => fakeRuntime });
+        const tool = reg.get('bot_message');
+        const ctxOf = (botId, depth, chain, budget) => ({ bot: roster[botId], depth, chain, handoffBudget: budget, turnId: 'p', bots: { getBot: async (id) => roster[id] || null } });
+        const err = async (p) => { try { await p; return null; } catch (e) { return e.code; } };
+        const budget = { left: T.MAX_HANDOFFS };
+        const r1 = await tool.run({ botId: 'writer', text: '写分镜' }, ctxOf('director', 1, ['chief', 'director'], budget));
+        check('hand-offs: a bot that was handed work can hand parts on (two hops), and gets the reply back', r1.reply === 'done by writer' && calls.at(-1).depth === 2 && calls.at(-1).chain.join('>') === 'chief>director>writer');
+        check('hand-offs: no handing back up the chain (it would deadlock)', (await err(tool.run({ botId: 'director', text: 'x' }, ctxOf('writer', 2, ['chief', 'director', 'writer'], budget)))) === 'BOT_IN_CHAIN');
+        check('hand-offs: at most 3 levels deep', (await err(tool.run({ botId: 'artist', text: 'x' }, ctxOf('writer', T.MAX_HANDOFF_DEPTH, ['chief', 'director', 'x', 'writer'], budget)))) === 'BOT_DEPTH_EXCEEDED');
+        const tight = { left: 1 };
+        await tool.run({ botId: 'artist', text: '画' }, ctxOf('director', 1, ['chief', 'director'], tight));
+        check('hand-offs: one task has a shared budget of hand-offs', (await err(tool.run({ botId: 'writer', text: 'x' }, ctxOf('director', 1, ['chief', 'director'], tight)))) === 'BOT_HANDOFF_BUDGET' && calls.at(-1).handoffBudget === tight);
+      }
       const health = await api('/api/health');
       check('away: the hub reports a Tailscale address field (null when not on a tailnet or loopback-only)', health.status === 200 && 'tailnetUrl' in (health.json || {}));
       const { tailnetAddress } = await import('../src/auth.mjs');

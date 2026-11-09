@@ -20,6 +20,11 @@ import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
 import { describeImage, imageMime } from './vision.mjs';
 import { generateImages, generateVideo, submitVideo } from './media.mjs';
+
+// Bot-to-bot hand-offs (bot_message): how deep a chain may go (chief -> director
+// -> writer -> ...), and how many hand-offs one task may make in total.
+export const MAX_HANDOFF_DEPTH = 3;
+export const MAX_HANDOFFS = 12;
 import { listVault, revealVault } from './vault.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -1051,11 +1056,12 @@ export function createRegistry(deps) {
   add({
     name: 'bot_message',
     description:
-      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary.',
+      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary, and may hand parts on to its own teammates. Give it everything it needs (goal, inputs, file paths, what to deliver). Hand-offs go up to 3 levels deep and 12 per task; you cannot hand work back to a bot that is waiting on you - return your result instead.',
     // LOW: internal coordination between teammates that share one workspace. The
     // "sending messages always asks" rule in the reference product is about
     // outward-facing channels (email, chat to a human); there is no such tool
-    // here. Hand-off depth is capped at one hop in run(), so this cannot spiral.
+    // here. Hand-offs are bounded in run(): depth, a per-task budget, and no
+    // hand-off back up the chain (that bot is waiting on this one: deadlock).
     risk: RISK.LOW,
     parameters: {
       type: 'object',
@@ -1069,11 +1075,22 @@ export function createRegistry(deps) {
     async run(args, ctx) {
       const targetId = String(args?.botId || '');
       if (targetId === ctx.bot.id) throw toolError('BOT_SELF_MESSAGE', 'a bot cannot message itself; just do the work');
-      if ((ctx.depth || 0) >= 1) {
-        throw toolError('BOT_DEPTH_EXCEEDED', 'bot-to-bot hand-off is limited to one hop to keep turns bounded');
+      if ((ctx.depth || 0) >= MAX_HANDOFF_DEPTH) {
+        throw toolError('BOT_DEPTH_EXCEEDED', `hand-offs go at most ${MAX_HANDOFF_DEPTH} levels deep and this is the last one: do this part yourself`);
       }
       const target = await ctx.bots.getBot(targetId);
       if (!target) throw toolError('BOT_NOT_FOUND', `no bot with id "${targetId}"`);
+      // Everyone above this bot on the chain is waiting for it; handing work
+      // back to one of them would make both wait for each other forever.
+      const chain = Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id];
+      if (chain.includes(target.id)) {
+        throw toolError('BOT_IN_CHAIN', `${target.name} is waiting for your result (the work came from them, or through them). Do not hand it back: finish your part and return it as your final answer.`);
+      }
+      const budget = ctx.handoffBudget || { left: MAX_HANDOFFS };
+      if (budget.left <= 0) {
+        throw toolError('BOT_HANDOFF_BUDGET', `this task already used its ${MAX_HANDOFFS} hand-offs: do the rest yourself and report what is left`);
+      }
+      budget.left -= 1;
 
       const runtime = deps.getRuntime();
       const result = await runtime.runTurn({
@@ -1081,6 +1098,8 @@ export function createRegistry(deps) {
         text: String(args?.text || ''),
         source: 'bot',
         depth: (ctx.depth || 0) + 1,
+        chain: [...chain, target.id],
+        handoffBudget: budget,
         unattended: ctx.unattended,
         parentTurnId: ctx.turnId,
         // A hand-off from inside a group hands the group context down too: the
