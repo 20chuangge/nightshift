@@ -15,6 +15,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -384,6 +385,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getBots: () => state.botsCache || [],
     workspaceDir,
     machineName: () => state.uiState?.machine?.name || os.hostname(),
+    // Voice messages in and out, through this machine's voice service.
+    transcribe: (bytes, mime) => voiceModule.transcribe(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), bytes, mime),
+    speak: async (text) => {
+      const tts = voiceModule.ttsFor(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), state.voice);
+      const bytes = await voiceModule.speak(tts, voiceModule.speakableText(text, 500), { format: 'opus' });
+      return { bytes, durationMs: voiceModule.oggDurationMs(bytes) };
+    },
   });
   listBots().then((b) => { state.botsCache = b; }).catch(() => {});
   bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
@@ -783,6 +791,7 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
+//   POST /api/voice/speak        {text, format?:'mp3'|'opus'} -> the reply read aloud (audio bytes)
 
 // --- pages (the page library) --------------------------------------------------
 //   GET    /api/pages              -> {pages:[{name, title, path, size, updatedAt, botName}]}
@@ -818,6 +827,65 @@ route('GET', /^\/api\/peers$/, async (_req, _res, { state }) => ({ peers: state.
 route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
   const peers = await state.peers.set(body?.peers);
   return { peers };
+});
+
+// --- files on the human's other machines -----------------------------------------
+//   GET /api/peers/locate?path=pages/x.html     -> {machine}  (404 when no machine has it)
+//   GET /api/peers/:machine/file?path=...       -> that file, fetched over the peer link
+// A reply (a briefing) can name a page or picture that lives on another machine;
+// the chat finds and shows it from there. Pages stay sandboxed.
+
+const peerPath = (raw) => {
+  const p = String(raw || '').replace(/^\.\//, '').replace(/^workspace\//, '');
+  if (!p || p.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(p) || /^[a-z]:/i.test(p) || p.length > 300) throw httpError(400, 'BAD_PATH', 'a workspace-relative path');
+  return p;
+};
+const peerPagePath = (p) => /^pages\/([a-z0-9-]{1,60})\.html$/.exec(p)?.[1] || null;
+const remoteFetch = (state, peer, p) => {
+  const page = peerPagePath(p);
+  return state.peers.call(peer, 'GET', page ? `/api/pages/${page}` : `/api/workspace/file?path=${encodeURIComponent(p)}`, { timeoutMs: 60000 });
+};
+const locateCache = new Map(); // path -> {machine, at}
+
+route('GET', /^\/api\/peers\/locate$/, async (_req, _res, { state, query }) => {
+  const p = peerPath(query.get('path'));
+  const hit = locateCache.get(p);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) {
+    if (!hit.machine) throw httpError(404, 'NOT_ON_ANY_MACHINE', 'no machine has this file');
+    return { machine: hit.machine };
+  }
+  for (const peer of state.peers.list()) {
+    try {
+      const res = await remoteFetch(state, state.peers.find(peer.name), p);
+      res.body?.cancel?.().catch?.(() => {});
+      if (res.ok) { locateCache.set(p, { machine: peer.name, at: Date.now() }); return { machine: peer.name }; }
+    } catch { /* away: try the next */ }
+  }
+  locateCache.set(p, { machine: null, at: Date.now() });
+  throw httpError(404, 'NOT_ON_ANY_MACHINE', 'no machine has this file');
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (_req, res, { params, state, query }) => {
+  const p = peerPath(query.get('path'));
+  const peer = state.peers.find(decodeURIComponent(params.machine));
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', 'no such machine');
+  let r;
+  try { r = await remoteFetch(state, peer, p); } catch (err) { throw httpError(502, err.code || 'PEER_UNREACHABLE', err.message); }
+  if (!r.ok) return errorResponse(res, 404, 'FILE_NOT_FOUND', `「${peer.name}」上没有这个文件`);
+  const bytes = Buffer.from(await r.arrayBuffer());
+  const headers = peerPagePath(p)
+    ? { ...PAGE_HEADERS }
+    : {
+      // Images and videos inline, everything else a download; never anything
+      // that could run here (HTML, SVG, XML, script), whatever that machine says.
+      'content-type': /html|svg|xml|javascript/i.test(r.headers.get('content-type') || '') ? 'text/plain; charset=utf-8' : (r.headers.get('content-type') || 'application/octet-stream'),
+      'x-content-type-options': 'nosniff',
+      'content-disposition': /^(image\/(png|jpe?g|gif|webp)|video\/)/i.test(r.headers.get('content-type') || '') ? 'inline' : 'attachment',
+      'cache-control': 'private, max-age=600',
+    };
+  res.writeHead(200, { ...headers, 'content-length': bytes.length });
+  res.end(bytes);
+  return undefined;
 });
 
 // --- Feishu --------------------------------------------------------------------
@@ -957,8 +1025,8 @@ route('GET', /^\/api\/voice$/, async (_req, _res, { state }) => voiceModule.publ
 
 route('PUT', /^\/api\/voice$/, async (_req, _res, { body, state }) => {
   const patch = {};
-  for (const k of ['baseUrl', 'model', 'apiKey']) if (body?.[k] !== undefined) patch[k] = body[k];
-  if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {baseUrl?, model?, apiKey?}');
+  for (const k of ['baseUrl', 'model', 'apiKey', 'ttsVoice']) if (body?.[k] !== undefined) patch[k] = body[k];
+  if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {baseUrl?, model?, apiKey?, ttsVoice?}');
   state.voice = await voiceModule.saveVoice(state.voice, patch);
   return voiceModule.publicVoice(state.voice, state.settings, state.apiKey);
 });
@@ -979,6 +1047,26 @@ route(
   },
   { rawBody: true },
 );
+
+// Replies read aloud. The same reply is often played twice (replay, another
+// window): a small cache saves paying for it again.
+const speechCache = new Map(); // hash -> bytes
+route('POST', /^\/api\/voice\/speak$/, async (_req, res, { body, state }) => {
+  const format = body?.format === 'opus' ? 'opus' : 'mp3';
+  const text = voiceModule.speakableText(body?.text, Math.min(Number(body?.max) || 600, 1500));
+  const service = voiceModule.resolveVoice(state.voice, state.settings, state.apiKey);
+  const tts = voiceModule.ttsFor(service, state.voice);
+  const key = crypto.createHash('sha256').update(`${tts?.model}|${tts?.voice}|${format}|${text}`).digest('hex');
+  let bytes = speechCache.get(key);
+  if (!bytes) {
+    bytes = await voiceModule.speak(tts, text, { format });
+    speechCache.set(key, bytes);
+    while (speechCache.size > 40) speechCache.delete(speechCache.keys().next().value);
+  }
+  res.writeHead(200, { 'content-type': format === 'opus' ? 'audio/ogg' : 'audio/mpeg', 'content-length': bytes.length, 'cache-control': 'no-store' });
+  res.end(bytes);
+  return undefined;
+});
 
 route('POST', /^\/api\/settings\/test$/, async (_req, _res, { body, state }) => {
   // Accept optional unsaved overrides so the UI can test before it saves.

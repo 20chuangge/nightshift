@@ -3307,6 +3307,81 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
     check('briefing: the 任务 panel has the switch, time, Feishu and a try-now button; routines get the two options', ['brief-on', 'brief-time', 'brief-feishu', 'brief-try', 'rt-only-changes', 'rt-feishu'].every((id) => page.includes(`id="${id}"`)) && page.includes('没有变化（没打扰你）'));
   }
+  // Step 15: replies read aloud, voice messages in Feishu, files on other machines.
+  {
+    const V = await import('../src/voice.mjs');
+    const said = V.speakableText('## 结果\n已保存到 `pages/a.html`，见 https://x.com/a 。\n- **第一**：好\n```js\nx\n```\n共 3 个文件 artifacts/x.png');
+    check('read aloud: code, links, paths and markdown marks are not read out', !/[#*`]|https?:|pages\/|artifacts\//.test(said) && said.includes('第一：好') && said.includes('（代码略）'));
+    check('read aloud: a long reply is cut at a sentence and says the rest is in the text', V.speakableText('很长的一句话。'.repeat(200), 100).endsWith('……后面的内容请看文字。') && V.speakableText('很长的一句话。'.repeat(200), 100).length < 130);
+    const sf = { baseUrl: 'https://api.siliconflow.cn/v1', apiKey: 'k' };
+    check('read aloud: SiliconFlow offers CosyVoice voices (a chosen one sticks); a service without speech offers none', V.ttsFor(sf, {}).voice.endsWith(':anna') && V.ttsFor(sf, { ttsVoice: 'FunAudioLLM/CosyVoice2-0.5B:alex' }).voice.endsWith(':alex') && V.ttsFor({ baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'k' }, {}) === null && V.ttsFor(null) === null);
+    let sentBody = null;
+    const okFetch = async (url, init) => { sentBody = { url, ...JSON.parse(init.body) }; return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }; };
+    const audio = await V.speak(V.ttsFor(sf, {}), '你好', { format: 'opus', fetchImpl: okFetch });
+    check('read aloud: speech is an OpenAI-style /audio/speech call with model, voice and format', audio.length === 3 && sentBody.url.endsWith('/audio/speech') && sentBody.model === 'FunAudioLLM/CosyVoice2-0.5B' && sentBody.response_format === 'opus' && sentBody.input === '你好');
+    let code = '';
+    try { await V.speak(V.ttsFor(sf, {}), '你好', { fetchImpl: async () => ({ ok: false, status: 401, text: async () => '{"message":"bad key"}' }) }); } catch (e) { code = e.code; }
+    check('read aloud: a bad key says so', code === 'TTS_FAILED');
+    // An Ogg/Opus length: 2 s of 48 kHz granules after a 312-sample pre-skip.
+    const head = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(24), Buffer.from('OpusHead'), Buffer.from([1, 1]), Buffer.from([312 & 255, 312 >> 8])]);
+    const last = Buffer.concat([Buffer.from('OggS'), Buffer.from([0, 0]), Buffer.alloc(8)]);
+    last.writeBigUInt64LE(BigInt(2 * 48000 + 312), 6);
+    check('voice messages: the length of an Opus clip is read from the file', V.oggDurationMs(Buffer.concat([head, Buffer.alloc(50), last])) === 2000 && V.oggDurationMs(Buffer.from('nope')) === 0);
+    const heard = await V.transcribe({ baseUrl: 'x', model: 'm', apiKey: 'k' }, Buffer.from([1]), 'audio/ogg', { fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ text: '<|zh|><|HAPPY|>你好呀😊' }) }) });
+    check('voice input: tags and emotion emoji are taken off the words', heard.text === '你好呀');
+    // Routes: no speech service -> a clear refusal; the voice choice is saved.
+    const spoke = await api('/api/voice/speak', { method: 'POST', body: { text: '你好' } });
+    const vset = await api('/api/voice', { method: 'PUT', body: { ttsVoice: 'FunAudioLLM/CosyVoice2-0.5B:alex' } });
+    check('read aloud: the route refuses clearly without a speech service; the voice choice is accepted', (spoke.status === 409 || spoke.status === 200) && vset.status === 200 && 'tts' in (vset.json || {}));
+    // Feishu: a voice question is transcribed, and answered with text and a voice message.
+    const FS = await import('../src/feishu.mjs');
+    const { EventBus } = await import('../src/store.mjs');
+    const fsx = await import('node:fs');
+    const fdir = fsx.mkdtempSync(path.join(os.tmpdir(), 'feishu-voice-'));
+    const out = [];
+    const uploads = [];
+    const fake = async (url, init = {}) => {
+      const ok = (data) => ({ ok: true, status: 200, json: async () => ({ code: 0, ...data }), arrayBuffer: async () => new Uint8Array([9, 9]).buffer });
+      if (url.includes('tenant_access_token')) return ok({ tenant_access_token: 't', expire: 7200 });
+      if (url.includes('/resources/')) return ok({});
+      if (url.includes('/im/v1/files')) { uploads.push({ type: init.body.get('file_type'), duration: init.body.get('duration') }); return ok({ data: { file_key: 'fk_1' } }); }
+      if (url.includes('/im/v1/messages')) { const b = JSON.parse(init.body); out.push(b.msg_type); return ok({ data: {} }); }
+      return ok({ data: {} });
+    };
+    const fbus = new EventBus();
+    const turns = [];
+    const f2 = FS.createFeishu({
+      file: path.join(fdir, 'feishu.json'), bus: fbus, workspaceDir: fdir, fetchImpl: fake,
+      runtime: { runTurn: async (t) => { turns.push(t); return t; } },
+      approvals: { resolve: () => {} }, getBots: () => [{ id: 'chief', primary: true }], machineName: () => '测试机',
+      transcribe: async (bytes, mime) => ({ text: mime === 'audio/ogg' && bytes.length === 2 ? '明天天气怎么样' : '' }),
+      speak: async (text) => ({ bytes: Buffer.from(text), durationMs: 1500 }),
+    });
+    await f2.load();
+    await f2.update({ appId: 'cli_v', appSecret: 'sec-v' });
+    const frame = (n, type, content) => FS.encodeFrame({ method: 1, headers: [{ key: 'type', value: 'event' }, { key: 'message_id', value: 'v' + n }], payload: Buffer.from(JSON.stringify({ header: { event_id: 've' + n, event_type: 'im.message.receive_v1' }, event: { sender: { sender_id: { open_id: 'ou_v' }, sender_type: 'user' }, message: { message_id: 'vm' + n, chat_id: 'oc_v', chat_type: 'p2p', message_type: type, content: JSON.stringify(content) } } })) });
+    f2._handleFrame(frame(1, 'text', { text: '配对 ' + f2.view().pairCode }));
+    await new Promise((r) => setTimeout(r, 40));
+    f2._handleFrame(frame(2, 'audio', { file_key: 'ak_1', duration: 2000 }));
+    await new Promise((r) => setTimeout(r, 40));
+    const vt = turns.at(-1);
+    check('feishu: a voice message is transcribed and runs a turn', vt && /明天天气怎么样/.test(vt.text) && vt.source === 'feishu');
+    fbus.emit({ type: 'message', turnId: vt.turnId, botId: 'chief', text: '明天晴，25 度。' });
+    fbus.emit({ type: 'turn.end', turnId: vt.turnId, botId: 'chief', summary: '明天晴' });
+    await new Promise((r) => setTimeout(r, 80));
+    check('feishu: asked by voice, answered with the text and a voice message (Opus, with its length)', out.includes('post') && out.includes('audio') && uploads.some((u) => u.type === 'opus' && u.duration === '1500'));
+    f2.stop();
+    // Files on other machines: located and fetched over the peer link, never served as something that runs here.
+    const loc = await api('/api/peers/locate?path=../etc/passwd');
+    const none = await api('/api/peers/locate?path=pages/nowhere.html');
+    check('other machines: a path outside the workspace is refused; a file no machine has is a 404', loc.status === 400 && none.status === 404);
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('other machines: pages from there stay sandboxed; HTML/SVG/XML from there is never served as such', srv.includes('? { ...PAGE_HEADERS }') && srv.includes("/html|svg|xml|javascript/i.test(r.headers.get('content-type') || '') ? 'text/plain; charset=utf-8'"));
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, null, card.dataset.machine)'));
+    check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
+    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

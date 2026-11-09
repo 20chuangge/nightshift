@@ -240,6 +240,31 @@ export function createFeishu(o) {
     return send(to, 'file', { file_key: key });
   }
 
+  /** A voice message the human sent: its bytes (Opus in Ogg). */
+  async function downloadAudio(messageId, fileKey) {
+    const t = await tenantToken();
+    const res = await fetchImpl(`${openUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`, {
+      headers: { authorization: `Bearer ${t}` },
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) throw new Error(`下载飞书语音失败：HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** Answer with a voice message too (the human spoke): Opus upload + audio message. */
+  async function sendVoice(to, text) {
+    if (typeof o.speak !== 'function') return false;
+    const { bytes, durationMs } = await o.speak(text);
+    const form = new FormData();
+    form.append('file_type', 'opus');
+    form.append('file_name', 'reply.opus');
+    if (durationMs) form.append('duration', String(durationMs));
+    form.append('file', new Blob([bytes]), 'reply.opus');
+    const { file_key: key } = await api('POST', '/open-apis/im/v1/files', null, { form });
+    await send(to, 'audio', { file_key: key });
+    return true;
+  }
+
   async function downloadImage(messageId, imageKey) {
     const t = await tenantToken();
     const res = await fetchImpl(`${openUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`, {
@@ -286,7 +311,7 @@ export function createFeishu(o) {
         cfg.pairCode = newPairCode(); // one code, one person
         await saveFeishuFile(o.file, cfg);
         o.bus?.emit({ type: 'feishu.changed' });
-        await sendText(to, `已连接到「${o.machineName?.() || '这台机器'}」的助理。直接发消息给我就行，图片也可以。`);
+        await sendText(to, `已连接到「${o.machineName?.() || '这台机器'}」的助理。直接发消息给我就行，图片和语音也可以。`);
       } else {
         await sendText(to, '还没配对：在电脑上的夜班里打开「设置 → 飞书」，把配对码发给我。');
       }
@@ -318,14 +343,30 @@ export function createFeishu(o) {
         return;
       }
     }
+    let spoken = false;
+    if (message.message_type === 'audio') {
+      let c = {};
+      try { c = JSON.parse(message.content || '{}'); } catch { /* */ }
+      if (typeof o.transcribe !== 'function') { await sendText(to, '这台机器还没配语音服务，先发文字吧（在夜班「设置 → 模型 → 语音输入」里配）。'); return; }
+      try {
+        const bytes = await downloadAudio(message.message_id, c.file_key);
+        const { text: heard } = await o.transcribe(bytes, 'audio/ogg');
+        if (!String(heard || '').trim()) { await sendText(to, '没听清，再说一次？'); return; }
+        full = `（飞书语音，转写成文字）${heard}`;
+        spoken = true;
+      } catch (err) {
+        await sendText(to, `语音没能转成文字：${err.message}`);
+        return;
+      }
+    }
     if (!full) {
-      await sendText(to, '目前能收文字和图片。');
+      await sendText(to, '目前能收文字、图片和语音。');
       return;
     }
 
     const id = botId();
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
-    feishuTurns.set(turnId, { ...to, texts: [] });
+    feishuTurns.set(turnId, { ...to, texts: [], spoken });
     lastChat.set(id, { ...to, at: Date.now() });
     o.runtime.runTurn({ botId: id, text: `${full}\n\n（这条消息来自飞书，用户在手机上；回复会发回飞书。）`, source: 'feishu', turnId })
       .catch(async (err) => {
@@ -376,7 +417,10 @@ export function createFeishu(o) {
         let extra = '';
         if (ev.waitingFor === 'takeover') extra = '\n\n（这一步要在电脑上的夜班里接管屏幕来完成。）';
         if (ev.waitingFor === 'login') extra = '\n\n（需要在电脑上的夜班里填写登录信息，密码不要发在飞书里。）';
-        deliver(turn, turn.texts.concat(extra ? [extra] : []), ev.summary).catch((err) => log('deliver failed:', err.message));
+        deliver(turn, turn.texts.concat(extra ? [extra] : []), ev.summary)
+          // Asked by voice: the answer comes back as a voice message as well.
+          .then(() => (turn.spoken ? sendVoice(turn, turn.texts.join('\n\n').trim() || String(ev.summary || '')).catch((err) => log('voice reply failed:', err.message)) : null))
+          .catch((err) => log('deliver failed:', err.message));
         return;
       }
       // A background job (a finished video) reports to the bot: pass it on to
