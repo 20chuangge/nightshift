@@ -551,9 +551,12 @@ function localUrl() {
   return `http://127.0.0.1:${serverPort}/`;
 }
 
+// The address actually in use for remoteHub (its Tailscale address when away).
+let remoteReach = '';
+
 function showWindow() {
   if (!win) {
-    createWindowFor(remoteHub || localUrl());
+    createWindowFor((remoteHub && remoteReach) || remoteHub || localUrl());
     return;
   }
   if (win.isMinimized()) win.restore();
@@ -577,6 +580,7 @@ async function switchTo(url, message = '') {
     return { ok: false, error: L(`连不上 ${machineLabel(target)}（机器关机了，或网络不通）`, `Can't reach ${machineLabel(target)} (it's off, or the network is down)`) };
   }
   remoteHub = target;
+  remoteReach = reach;
   pendingTask = String(message || '').trim() ? { machine: target, text: String(message).trim().slice(0, 4000) } : null;
   writeHub(target);
   if (target) rememberMachine(target, { lastUsed: new Date().toISOString() });
@@ -1124,14 +1128,17 @@ if (!gotLock) {
       // Reopen the machine used last time. If it does not answer (the VM is
       // asleep), start on this computer; the machine list still has it.
       const candidate = normalizeHub(process.env.DESK_HUB_URL || '') || readHub();
-      if (candidate && !DEV_URL && await probeHub(candidate)) {
+      // Away from home the LAN address does not answer: try its Tailscale address.
+      const reach = candidate && !DEV_URL ? await reachMachine(candidate) : '';
+      if (reach) {
         remoteHub = candidate;
+        remoteReach = reach;
         rememberMachine(candidate);
-        bootLog(`remote → ${candidate}`);
+        bootLog(`remote → ${reach}`);
       } else if (candidate) {
         bootLog(`hub unreachable → local (${candidate})`);
       }
-      createWindowFor(DEV_URL || remoteHub || localUrl());
+      createWindowFor(DEV_URL || reach || localUrl());
       createTray();
       setTimeout(() => autoUpdateMachines().catch(() => {}), 8000);
     } catch (err) {
