@@ -972,7 +972,7 @@ export function createRegistry(deps) {
   add({
     name: 'routine_create',
     description:
-      'Schedule a recurring instruction for a bot. schedule is a 5-field cron expression or "every N minutes"/"every N hours".',
+      'Schedule a recurring instruction for a bot. schedule is a 5-field cron expression or "every N minutes"/"every N hours". For "check X and tell me when it changes" set onlyChanges: runs with nothing new stay quiet. pushFeishu also sends each result to the human\'s Feishu.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
@@ -983,6 +983,8 @@ export function createRegistry(deps) {
         botId: { type: 'string', description: 'Defaults to the calling bot.' },
         timezone: { type: 'string', description: 'IANA timezone, defaults to the assistant timezone.' },
         enabled: { type: 'boolean' },
+        onlyChanges: { type: 'boolean', description: 'Tell the human only when the result changed since the last run.' },
+        pushFeishu: { type: 'boolean', description: 'Also send each (non-quiet) result to the human on Feishu.' },
       },
       required: ['instruction', 'schedule'],
       additionalProperties: false,
@@ -996,6 +998,8 @@ export function createRegistry(deps) {
         schedule: args?.schedule,
         timezone: args?.timezone,
         enabled: args?.enabled !== false,
+        onlyChanges: Boolean(args?.onlyChanges),
+        pushFeishu: Boolean(args?.pushFeishu),
       });
       return { created: true, routine: publicRoutine(routine) };
     },
@@ -1112,6 +1116,31 @@ export function createRegistry(deps) {
     }
     throw toolError('PEER_TIMEOUT', `「${peer.name}」上的${target.name} 30 分钟还没做完`);
   }
+
+  add({
+    name: 'briefing_collect',
+    description: 'Gather what happened in the last hours on this machine and every other machine of the human: per bot the work that ran and how it ended, what is waiting on the human (approvals, logins, takeovers), pages made, background videos, routines. Use it to write a daily briefing or answer "what happened while I was away".',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: { hours: { type: 'number', description: 'How far back, in hours (default 24).' } },
+      additionalProperties: false,
+    },
+    async run(args) {
+      const hours = Math.min(Math.max(Number(args?.hours) || 24, 1), 168);
+      const local = typeof deps.getBriefing === 'function' ? deps.getBriefing() : null;
+      if (!local) throw toolError('BRIEFING_UNAVAILABLE', 'the briefing is not available here');
+      const machines = [await local(hours)];
+      const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+      const unreachable = [];
+      for (const p of peers ? peers.list() : []) {
+        try {
+          machines.push(await peers.json(peers.find(p.name), 'GET', `/api/briefing/data?hours=${hours}`, { timeoutMs: 15000 }));
+        } catch (err) { unreachable.push({ machine: p.name, why: err.message }); }
+      }
+      return { hours, machines, ...(unreachable.length ? { unreachable } : {}) };
+    },
+  });
 
   add({
     name: 'page_save',
@@ -1827,7 +1856,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'page_save' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      if (name === 'task_finish' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
@@ -1870,6 +1899,8 @@ function publicRoutine(routine) {
     nextRun: routine.nextRun,
     lastStatus: routine.lastStatus,
     runs: routine.runs.slice(-5),
+    onlyChanges: Boolean(routine.onlyChanges),
+    pushFeishu: Boolean(routine.pushFeishu),
   };
 }
 

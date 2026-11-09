@@ -72,6 +72,7 @@ import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu } from './feishu.mjs';
 import { createPeers } from './peers.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
+import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -199,6 +200,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getVideoJobs: () => refs.videoJobs || null,
     getPeers: () => refs.peers || null,
     getPages: () => refs.pages || null,
+    getBriefing: () => refs.collectBriefing || null,
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -211,13 +213,42 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     config,
     tickMs: 20000,
     runner: async (routine) => {
-      const result = await refs.runtime.runTurn({
-        botId: routine.botId,
-        text: routine.instruction,
-        source: 'routine',
-        unattended: true,
-      });
-      return result;
+      const NO_CHANGE = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
+      const changeNote = (strict) => (routine.onlyChanges
+        ? `（只在有变化时提醒我。${strict ? '你上一轮没有真的去查就说了没有变化。' : ''}先用工具把这件事重新查一遍，不要凭聊天记录判断；再和上次的结果比较。上次的结果：「${routine.lastReport ? routine.lastReport.slice(0, 1500) : '（第一次运行，没有上次）'}」。如果和上次相比没有值得告诉我的新变化，只回复「没有变化」四个字，别的都不要写。）`
+        : '');
+      // One run; collects what the bot says (to tell "nothing new" apart and to
+      // send it on) and whether it used any tool (a "no change" it did not check is no answer).
+      const once = async (strict) => {
+        const turnId = uid('turn');
+        const texts = [];
+        let tools = 0;
+        const off = bus.subscribe((ev) => {
+          if (ev.turnId !== turnId) return;
+          if (ev.type === 'message' && ev.final && ev.text && !ev.system) texts.push(String(ev.text));
+          if (ev.type === 'tool.call' && ev.name !== 'task_finish') tools += 1;
+        });
+        try {
+          const result = await refs.runtime.runTurn({
+            botId: routine.botId,
+            text: routine.instruction,
+            hiddenNote: changeNote(strict),
+            source: 'routine',
+            unattended: true,
+            turnId,
+          });
+          return { result, tools, report: texts.join('\n\n').trim() || String(result?.summary || '').trim() };
+        } finally { off(); }
+      };
+      let { result, tools, report } = await once(false);
+      if (routine.onlyChanges && NO_CHANGE.test(report) && tools === 0) ({ result, tools, report } = await once(true));
+      const quiet = routine.onlyChanges && result?.status === 'success' && NO_CHANGE.test(report) && tools > 0;
+      if (quiet) {
+        attention.quiet(`bot:${routine.botId}`);
+      } else if (routine.pushFeishu && report && refs.feishu) {
+        await refs.feishu.push(`【${routine.name}】\n${report}`).catch((err) => console.error('[routines] feishu push failed:', err.message));
+      }
+      return { ...result, quiet, report };
     },
   });
   refs.routines = routines;
@@ -357,6 +388,21 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   listBots().then((b) => { state.botsCache = b; }).catch(() => {});
   bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
   await state.feishu.load();
+  refs.feishu = state.feishu;
+
+  // The daily briefing's facts about this machine (other machines answer for themselves).
+  refs.collectBriefing = (hours = 24) => collectBriefing({
+    hours,
+    machine: state.uiState?.machine?.name || os.hostname(),
+    listBots,
+    readSession: (botId) => readJsonl(sessionFile(botId)),
+    approvals,
+    attention,
+    pages: refs.pages,
+    videoJobs: refs.videoJobs,
+    routines: state.routines,
+  });
+  state.collectBriefing = refs.collectBriefing;
 
   // The human's other machines, as the desktop client hands them over: bots
   // here can hand work to bots there and move files, machine to machine.
@@ -1953,6 +1999,51 @@ route('POST', /^\/api\/routines\/(?<id>[^/]+)\/test$/, async (_req, _res, { para
   return { routine: publicRoutine(result.routine), run: result.run };
 });
 
+// --- daily briefing -----------------------------------------------------------
+//   GET /api/briefing           -> {enabled, time, feishu, botId, routineId, lastRun, lastStatus, nextRun}
+//   PUT /api/briefing           {enabled, time:"08:30", feishu, botId}   one routine with preset "briefing"
+//   GET /api/briefing/data?hours=24   this machine's facts (peers ask for these)
+
+function briefingView(state) {
+  const r = state.routines.list().find((x) => x.preset === 'briefing');
+  if (!r) return { enabled: false, time: '08:30', feishu: false, botId: null, routineId: null };
+  const [m, h] = String(r.schedule).split(' ');
+  return {
+    enabled: r.enabled,
+    time: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+    feishu: Boolean(r.pushFeishu),
+    botId: r.botId,
+    routineId: r.id,
+    lastRun: r.lastRun,
+    lastStatus: r.lastStatus,
+    nextRun: r.nextRun,
+  };
+}
+
+route('GET', /^\/api\/briefing$/, async (_req, _res, { state }) => briefingView(state));
+
+route('PUT', /^\/api\/briefing$/, async (_req, _res, { body, state }) => {
+  const time = String(body?.time || '08:30');
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!m) throw httpError(400, 'BRIEFING_BAD_TIME', 'time is HH:MM, e.g. 08:30');
+  const bots = await listBots();
+  const botId = bots.some((b) => b.id === body?.botId) ? body.botId : (bots.find((b) => b.primary)?.id || 'chief');
+  const fields = {
+    name: '每日简报',
+    instruction: briefingInstruction(),
+    schedule: `${Number(m[2])} ${Number(m[1])} * * *`,
+    botId,
+    enabled: Boolean(body?.enabled),
+    pushFeishu: Boolean(body?.feishu),
+  };
+  const existing = state.routines.list().find((x) => x.preset === 'briefing');
+  if (existing) await state.routines.update(existing.id, fields);
+  else await state.routines.create({ ...fields, preset: 'briefing' });
+  return briefingView(state);
+});
+
+route('GET', /^\/api\/briefing\/data$/, async (_req, _res, { query, state }) => state.collectBriefing(Number(query.get('hours')) || 24));
+
 // --- skills ----------------------------------------------------------------
 
 route('GET', /^\/api\/skills$/, async (_req, _res, { query }) => {
@@ -2251,6 +2342,9 @@ function publicRoutine(routine) {
     nextRun: routine.nextRun,
     lastStatus: routine.lastStatus,
     runs: routine.runs.slice(-10),
+    onlyChanges: Boolean(routine.onlyChanges),
+    pushFeishu: Boolean(routine.pushFeishu),
+    preset: routine.preset || null,
   };
 }
 

@@ -338,6 +338,8 @@ export class AgentRuntime {
     groupRole = 'coordinator',
     // Later speakers in one group exchange must not post the human's message again.
     recordUser = true,
+    // Said to the model with the text but not shown in the chat (a routine's "last result").
+    hiddenNote = '',
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -423,7 +425,7 @@ export class AgentRuntime {
       const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
-        { role: 'user', content: String(text) },
+        { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '') },
       ];
 
       await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });

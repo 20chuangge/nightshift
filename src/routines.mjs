@@ -328,6 +328,8 @@ export class RoutineStore {
       nextRun: raw.nextRun || null,
       lastStatus: raw.lastStatus || null,
       runs: Array.isArray(raw.runs) ? raw.runs.slice(-20) : [],
+      ...routineOptions(raw),
+      lastReport: raw.lastReport ? String(raw.lastReport).slice(0, 2000) : '',
     };
     if (routine.enabled && !routine.nextRun) {
       const next = nextRunFor(parsed, Date.now(), timezone);
@@ -373,6 +375,8 @@ export class RoutineStore {
       nextRun: next ? new Date(next).toISOString() : null,
       lastStatus: null,
       runs: [],
+      ...routineOptions(input),
+      lastReport: '',
     };
     this.routines.push(routine);
     await this.persist();
@@ -398,6 +402,8 @@ export class RoutineStore {
     if (patch.instruction !== undefined) routine.instruction = String(patch.instruction);
     if (patch.botId !== undefined) routine.botId = String(patch.botId);
     if (patch.enabled !== undefined) routine.enabled = Boolean(patch.enabled);
+    if (patch.onlyChanges !== undefined) routine.onlyChanges = Boolean(patch.onlyChanges);
+    if (patch.pushFeishu !== undefined) routine.pushFeishu = Boolean(patch.pushFeishu);
 
     // Recompute the next fire time whenever the timing or the enabled flag moves.
     const parsed = parseSchedule(routine.schedule);
@@ -449,6 +455,9 @@ export class RoutineStore {
       run.status = result?.status === 'success' ? 'success' : result?.status === 'needs_approval' ? 'needs_approval' : 'failed';
       run.summary = String(result?.summary || '');
       run.turnId = result?.turnId || null;
+      // "Only tell me when something changed": a run with nothing new stays quiet.
+      if (result?.quiet) run.quiet = true;
+      else if (result?.report) routine.lastReport = String(result.report).slice(0, 2000);
     } catch (err) {
       run.status = 'failed';
       run.summary = `routine crashed: ${err.message}`;
@@ -507,6 +516,15 @@ export class RoutineStore {
     }
     return fired;
   }
+}
+
+/** Options a routine may carry: notify only on change, also send to Feishu, a built-in preset. */
+function routineOptions(raw = {}) {
+  return {
+    onlyChanges: Boolean(raw.onlyChanges),
+    pushFeishu: Boolean(raw.pushFeishu),
+    ...(raw.preset === 'briefing' ? { preset: 'briefing' } : {}),
+  };
 }
 
 function isoOrNull(ms) {

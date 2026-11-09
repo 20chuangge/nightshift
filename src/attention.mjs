@@ -17,6 +17,7 @@ const keyOf = (ev) => (ev.groupId ? `group:${ev.groupId}` : ev.botId ? `bot:${ev
 export function createAttention({ file, bus }) {
   const working = new Map();      // key -> Set(turnId)
   const approvals = new Map();    // approvalId -> key
+  const prevResult = new Map();   // key -> result time before the last turn ended
   let saved = { seen: {}, result: {}, waiting: {} };
   let saveTimer = null;
   let changeTimer = null;
@@ -66,6 +67,7 @@ export function createAttention({ file, bus }) {
         const set = working.get(key);
         if (set) { set.delete(ev.turnId || 'turn'); if (!set.size) working.delete(key); }
         // A turn a teammate handed to another bot is still that bot's result.
+        prevResult.set(key, saved.result[key] || 0);
         saved.result[key] = Date.parse(ev.ts) || Date.now();
         if (ev.waitingFor) saved.waiting[key] = { kind: ev.waitingFor, text: String(ev.summary || '').slice(0, 120) };
         persist();
@@ -133,6 +135,17 @@ export function createAttention({ file, bus }) {
     },
 
     forget,
+
+    /** The last turn there had nothing new (a quiet routine run): no "new result" for it. */
+    quiet(key) {
+      if (!prevResult.has(key)) return false;
+      const before = (saved.result[key] || 0) > (saved.seen[key] || 0);
+      saved.result[key] = prevResult.get(key);
+      if (!saved.result[key]) delete saved.result[key];
+      persist();
+      if (before) changed();
+      return true;
+    },
 
     /** Drop every key that is not a live bot or group (left from older versions). */
     prune(liveKeys) {

@@ -3221,6 +3221,92 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     }
     check('tailscale key: optional field in the add-machine form', page.includes('id="vnc-ts-key"') && page.includes('tailscaleKey: $(\'vnc-ts-key\').value.trim()'));
   }
+  // Step 14: the daily briefing, and routines that only speak up when something changed.
+  {
+    const B = await import('../src/briefing.mjs');
+    const now = Date.parse('2026-11-10T08:30:00Z');
+    const h = (n) => new Date(now - n * 3600 * 1000).toISOString();
+    const sessions = {
+      chief: [
+        { kind: 'user', turnId: 't0', text: B.BRIEFING_TAG + ' 写简报', ts: h(1) }, { kind: 'turn', turnId: 't0', status: 'success', summary: 'old brief', endedAt: h(1) },
+        { kind: 'user', turnId: 't1', text: '查一下快递', source: 'feishu', ts: h(3) }, { kind: 'turn', turnId: 't1', status: 'success', summary: '快递明天到', endedAt: h(3) },
+        { kind: 'user', turnId: 't2', text: '很久以前的事', ts: h(40) }, { kind: 'turn', turnId: 't2', status: 'success', summary: 'old', endedAt: h(40) },
+      ],
+      artist: [
+        { kind: 'user', turnId: 'a1', text: '画封面', ts: h(5) }, { kind: 'turn', turnId: 'a1', status: 'failed', summary: '生图密钥失效', endedAt: h(5) },
+      ],
+      idle: [],
+    };
+    const data = await B.collectBriefing({
+      hours: 24, now, machine: 'pc',
+      listBots: async () => [{ id: 'chief', name: '助理' }, { id: 'artist', name: '美术' }, { id: 'idle', name: '闲着' }],
+      readSession: async (id) => sessions[id] || [],
+      approvals: { list: () => [{ botId: 'artist', toolName: 'shell', reason: '装软件', createdAt: h(2) }] },
+      attention: { snapshot: () => ({ items: { 'bot:chief': { waiting: { kind: 'login', text: '等你登录京东' } } } }) },
+      pages: { list: async () => [{ title: '周报', path: 'pages/weekly.html', botName: '助理', updatedAt: h(2) }, { title: '旧页', path: 'pages/old.html', updatedAt: h(50) }] },
+      videoJobs: { list: () => [{ botId: 'artist', state: 'done', prompt: '小狗', path: 'videos/a.mp4', doneAt: now - 3600e3, createdAt: now - 7200e3 }] },
+      routines: { list: () => [{ name: '每日简报', preset: 'briefing', enabled: true, runs: [] }, { name: '看价格', botId: 'chief', enabled: true, schedule: 'every 60 minutes', runs: [{ status: 'failed', summary: '网页打不开', endedAt: h(1) }] }] },
+    });
+    const chief = data.bots.find((b) => b.id === 'chief');
+    check('briefing: facts cover the window only, and the briefing does not report on itself', chief?.turns === 1 && chief.work[0].result === '快递明天到' && chief.work[0].from === 'feishu' && !data.bots.find((b) => b.id === 'idle'));
+    check('briefing: failures, approvals and waits for a login are listed for the human', data.bots.find((b) => b.id === 'artist')?.failed === 1 && data.waitingOnYou.some((w) => w.kind === 'approval' && w.bot === '美术') && data.waitingOnYou.some((w) => w.kind === 'login' && w.bot === '助理'));
+    check('briefing: new pages, videos and routine failures are in; the briefing routine itself is not', data.pages.length === 1 && data.pages[0].path === 'pages/weekly.html' && data.videos[0]?.path === 'videos/a.mp4' && data.routines.length === 1 && data.routines[0].failed === 1);
+    check('briefing: the instruction starts with the tag and asks for what needs the human first', B.briefingInstruction().startsWith(B.BRIEFING_TAG) && B.briefingInstruction().includes('briefing_collect'));
+    // briefing_collect asks every machine; one that is away is named, not fatal.
+    const T = await import('../src/tools.mjs');
+    const fakePeers = {
+      list: () => [{ name: 'ubuntu' }, { name: 'away' }],
+      find: (n) => ({ name: n }),
+      json: async (p) => { if (p.name === 'away') throw new Error('连不上'); return { machine: 'ubuntu', bots: [{ id: 'w', name: '编剧', turns: 2 }] }; },
+    };
+    const reg = T.createRegistry({ workspaceDir: process.cwd(), config: { policy: {} }, getRuntime: () => null, getBriefing: () => async () => ({ machine: 'pc', bots: [] }), getPeers: () => fakePeers });
+    const all = await reg.get('briefing_collect').run({ hours: 12 }, { bot: { id: 'chief' } });
+    check('briefing: briefing_collect covers this machine and every other one; an unreachable one is named', all.hours === 12 && all.machines.map((m) => m.machine).join(',') === 'pc,ubuntu' && all.unreachable?.[0]?.machine === 'away' && reg.isGranted({ tools: [] }, 'briefing_collect'));
+    // Routines keep their options; a quiet run keeps the last report.
+    const { RoutineStore } = await import('../src/routines.mjs');
+    let next = { status: 'success', report: '价格 99 元' };
+    const store = new RoutineStore({ config: {}, runner: async () => next });
+    store.persist = async () => {};
+    const rt = await store.create({ name: '看价格', instruction: '看一下价格', schedule: 'every 60 minutes', onlyChanges: true, pushFeishu: true });
+    await store.fire(rt, 'test');
+    next = { status: 'success', quiet: true, report: '没有变化' };
+    const quietRun = (await store.fire(rt, 'test')).run;
+    check('change-only: options are kept; a quiet run is marked and the last real result is remembered', rt.onlyChanges && rt.pushFeishu && quietRun.quiet && rt.lastReport === '价格 99 元');
+    await store.update(rt.id, { onlyChanges: false });
+    check('change-only: the option can be turned off', rt.onlyChanges === false && rt.pushFeishu === true);
+    // A quiet run leaves no "new result" badge.
+    const { EventBus } = await import('../src/store.mjs');
+    const { createAttention } = await import('../src/attention.mjs');
+    const fsx = await import('node:fs');
+    const abus = new EventBus();
+    const att = createAttention({ file: path.join(fsx.mkdtempSync(path.join(os.tmpdir(), 'att14-')), 'a.json'), bus: abus });
+    await att.load();
+    abus.emit({ type: 'turn.end', botId: 'chief', turnId: 'r1', summary: '没有变化' });
+    const before = Boolean(att.snapshot().items['bot:chief']?.unread);
+    att.quiet('bot:chief');
+    check('change-only: a quiet run leaves no "new result" badge', before && !att.snapshot().items['bot:chief']);
+    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    check('change-only: the run is told the last result and may answer "没有变化"; then no badge and no Feishu push', srv.includes('只回复「没有变化」四个字') && srv.includes("attention.quiet(") && srv.includes('else if (routine.pushFeishu && report && refs.feishu)'));
+    const agentSrc14 = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    check('change-only: "no change" counts only when the run really checked (used a tool); otherwise it runs once more', srv.includes('NO_CHANGE.test(report) && tools === 0') && srv.includes('NO_CHANGE.test(report) && tools > 0') && srv.includes('不要凭聊天记录判断'));
+    check('change-only: the last result goes to the model only, not into the chat', srv.includes('hiddenNote: changeNote') && agentSrc14.includes("content: String(text) + (hiddenNote ?") && agentSrc14.includes("await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });"));
+    const fsSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+    check('feishu: results can go to every paired person directly (open_id)', fsSrc.includes('receive_id_type=open_id') && fsSrc.includes('async push(text)'));
+    // Routes.
+    const bad = await api('/api/briefing', { method: 'PUT', body: { enabled: true, time: '25:00' } });
+    const on = await api('/api/briefing', { method: 'PUT', body: { enabled: true, time: '7:05', feishu: true } });
+    const list = await api('/api/routines');
+    const briefRoutine = (list.json || []).find((r) => r.preset === 'briefing');
+    check('briefing: one switch makes one routine (07:05 daily, Feishu on); a bad time is refused', bad.status === 400 && on.json?.enabled && on.json.time === '07:05' && on.json.feishu && briefRoutine?.schedule === '5 7 * * *' && briefRoutine.pushFeishu);
+    const again = await api('/api/briefing', { method: 'PUT', body: { enabled: false, time: '08:30' } });
+    const list2 = await api('/api/routines');
+    check('briefing: switching it again updates the same routine, never a second one', !again.json?.enabled && (list2.json || []).filter((r) => r.preset === 'briefing').length === 1);
+    const facts = await api('/api/briefing/data?hours=6');
+    check('briefing: each machine answers with its own facts', facts.status === 200 && Array.isArray(facts.json?.bots) && 'waitingOnYou' in facts.json);
+    await api(`/api/routines/${encodeURIComponent(briefRoutine.id)}`, { method: 'DELETE' });
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('briefing: the 任务 panel has the switch, time, Feishu and a try-now button; routines get the two options', ['brief-on', 'brief-time', 'brief-feishu', 'brief-try', 'rt-only-changes', 'rt-feishu'].every((id) => page.includes(`id="${id}"`)) && page.includes('没有变化（没打扰你）'));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

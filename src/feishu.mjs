@@ -211,6 +211,8 @@ export function createFeishu(o) {
   /** Reply in the thread of the message that asked (falls back to the chat). */
   async function send(to, msgType, content) {
     const body = { msg_type: msgType, content: JSON.stringify(content) };
+    // A message nobody asked for (a routine's result) goes to the person directly.
+    if (to.openId && !to.chatId) return api('POST', '/open-apis/im/v1/messages?receive_id_type=open_id', { ...body, receive_id: to.openId });
     try {
       if (to.messageId) return await api('POST', `/open-apis/im/v1/messages/${encodeURIComponent(to.messageId)}/reply`, body);
     } catch (err) { log('reply failed, sending to chat:', err.message); }
@@ -533,6 +535,15 @@ export function createFeishu(o) {
       };
     },
     stop,
+    /** Send a text (and the pictures/videos it names) to everyone paired. -> how many got it */
+    async push(text) {
+      if (!cfg?.enabled || !cfg.appId || !cfg.appSecret || !cfg.users?.length) return 0;
+      let sent = 0;
+      for (const u of cfg.users) {
+        try { await deliver({ openId: u.openId }, [String(text || '')], ''); sent += 1; } catch (err) { log('push failed:', err.message); }
+      }
+      return sent;
+    },
     // tests
     _handleFrame: handleFrame,
     _onBus: onBus,
