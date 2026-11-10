@@ -76,6 +76,7 @@ import { createFeishu } from './feishu.mjs';
 import { createPeers } from './peers.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
+import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
 import { listVault, putVault, deleteVault } from './vault.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
@@ -386,6 +387,15 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       },
     },
     getBots: () => state.botsCache || [],
+    // "@name" in Feishu also reaches bots on the human's other machines.
+    resolveRemote: (ref) => resolveRemoteMember(refs.peers, ref),
+    listRemote: () => (refs.peers ? refs.peers.rosters() : []),
+    askRemote: ({ machine, botId, text }) => askPeerBot(refs.peers, refs.peers.find(machine), {
+      botId,
+      text: `${text}\n\n（这条消息是用户在手机飞书里发的，由另一台机器转给你；你的回答会发回飞书。做出的图片、视频写出路径，会一起发过去。）`,
+      handoff: { depth: 1, chain: ['feishu', botId], budgetLeft: 6, from: { bot: '飞书里的用户' } },
+      workspaceDir,
+    }),
     workspaceDir,
     machineName: () => state.uiState?.machine?.name || os.hostname(),
     // Voice messages in and out, through this machine's voice service.
@@ -853,6 +863,9 @@ route('DELETE', /^\/api\/pages\/(?<name>[a-z0-9-]{1,60})$/, async (_req, _res, {
 //   PUT /api/peers   {peers:[{name, url, tailnetUrl, token}]}   from the desktop client
 
 route('GET', /^\/api\/peers$/, async (_req, _res, { state }) => ({ peers: state.peers.list() }));
+
+//   GET /api/peers/bots -> {machines:[{machine, bots:[{id,name,role}]}]}   who works on the other machines
+route('GET', /^\/api\/peers\/bots$/, async (_req, _res, { state }) => ({ machines: await state.peers.rosters().catch(() => []) }));
 
 route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
   const peers = await state.peers.set(body?.peers);
@@ -1592,14 +1605,19 @@ async function resolveBotRef(ref, bots = null) {
 }
 
 /** Resolve POST/PATCH members. Unknown references are a 400, not silently dropped. */
-async function resolveMemberIds(input, bots) {
+async function resolveMemberIds(input, bots, peers = null, known = {}) {
   const list = bots || (await listBots());
   const ids = [];
   const unknown = [];
+  // ids.remotes: what is known of the members on other machines ("botId@machine").
+  ids.remotes = {};
   for (const ref of groups.normalizeMemberIds(input)) {
-    const id = await resolveBotRef(ref, list);
-    if (!id) unknown.push(ref);
-    else if (!ids.includes(id)) ids.push(id);
+    const id = isRemoteMember(ref) ? null : await resolveBotRef(ref, list);
+    // Already a member from another machine: stays, also while that machine is off.
+    const far = id ? null : (known[ref] ? { id: ref, info: known[ref] } : await resolveRemoteMember(peers, ref));
+    if (id) { if (!ids.includes(id)) ids.push(id); }
+    else if (far) { if (!ids.includes(far.id)) ids.push(far.id); ids.remotes[far.id] = far.info; }
+    else unknown.push(ref);
   }
   if (unknown.length) {
     throw httpError(400, 'GROUP_UNKNOWN_MEMBER', `no bot matches: ${unknown.join(', ')}`);
@@ -1607,15 +1625,27 @@ async function resolveMemberIds(input, bots) {
   return ids;
 }
 
+/** A group's members as the chat and the runtime need them: local bots, and the ones on other machines. */
+function groupMemberList(group, byId) {
+  const taken = new Set(group.members.map((id) => byId.get(id)?.name).filter(Boolean));
+  return group.members.map((id) => {
+    const bot = byId.get(id);
+    if (bot) return { id, name: bot.name, role: bot.role, avatar: bot.avatar };
+    const far = group.remotes?.[id];
+    if (!far) return null;
+    // Two members of the same name: the far one says where it is.
+    const name = taken.has(far.name) ? `${far.name}@${far.machine}` : far.name;
+    taken.add(name);
+    return { id, name, role: far.role, machine: far.machine, remote: { machine: far.machine, botId: far.botId } };
+  }).filter(Boolean);
+}
+
 async function publicGroup(group, bots) {
   const byId = bots instanceof Map ? bots : await botsById();
   return {
     id: group.id,
     name: group.name,
-    members: group.members
-      .map((id) => byId.get(id))
-      .filter(Boolean)
-      .map((bot) => ({ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar })),
+    members: groupMemberList(group, byId).map(({ remote, ...m }) => m),
     coordinatorId: group.coordinatorId,
     createdAt: group.createdAt,
     updatedAt: group.updatedAt,
@@ -1634,7 +1664,7 @@ route('POST', /^\/api\/groups$/, async (_req, _res, { body, state }) => {
   groups.assertMemberCount(groups.normalizeMemberIds(body?.members));
 
   const bots = await listBots();
-  const memberIds = await resolveMemberIds(body?.members, bots);
+  const memberIds = await resolveMemberIds(body?.members, bots, state.peers);
 
   let coordinatorId;
   if (body?.coordinatorId !== undefined && String(body.coordinatorId ?? '').trim() !== '') {
@@ -1644,7 +1674,7 @@ route('POST', /^\/api\/groups$/, async (_req, _res, { body, state }) => {
     }
   }
 
-  const group = await groups.createGroup({ name: body?.name, members: memberIds, coordinatorId });
+  const group = await groups.createGroup({ name: body?.name, members: memberIds, coordinatorId, remotes: memberIds.remotes });
   state.bus.emit({ type: 'roster.changed', scope: 'groups', action: 'create', groupId: group.id });
   // Members introduce themselves (job, progress, next step) right away.
   state.runtime.kickoffGroup(group.id).catch((err) => console.error('[group] kickoff failed:', err.message));
@@ -1676,9 +1706,7 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   const byId = new Map(bots.map((bot) => [bot.id, bot]));
   const coordinator = byId.get(group.coordinatorId);
   if (!coordinator) throw httpError(409, 'GROUP_NO_COORDINATOR', `"${group.name}" has no coordinator bot`);
-  const members = group.members
-    .filter((id) => byId.has(id))
-    .map((id) => ({ id, name: byId.get(id).name, role: byId.get(id).role }));
+  const members = groupMemberList(group, byId).map(({ avatar, ...m }) => m);
 
   // Answer immediately with the turn id; the turn streams over SSE and its
   // transcript lands in data/groups/<id>.jsonl.
@@ -1705,7 +1733,8 @@ route('PATCH', /^\/api\/groups\/(?<id>[^/]+)$/, async (_req, _res, { params, bod
   if (body?.name !== undefined) patch.name = body.name;
   if (body?.members !== undefined) {
     groups.assertMemberCount(groups.normalizeMemberIds(body.members));
-    patch.members = await resolveMemberIds(body.members, bots);
+    patch.members = await resolveMemberIds(body.members, bots, state.peers, current.remotes || {});
+    patch.remotes = patch.members.remotes;
   }
   if (body?.coordinatorId !== undefined) {
     const coordinatorId = await resolveBotRef(body.coordinatorId, bots);

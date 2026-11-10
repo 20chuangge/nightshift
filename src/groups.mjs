@@ -133,6 +133,25 @@ export async function listGroups() {
   return out;
 }
 
+/** Members on other machines are "botId@machine"; what we know of them (name, role) is kept with the group. */
+export const isRemoteId = (id) => String(id || '').includes('@');
+function keepRemotes(remotes, members) {
+  const out = {};
+  for (const id of members) {
+    if (!isRemoteId(id)) continue;
+    const r = remotes?.[id] || {};
+    const at = id.lastIndexOf('@');
+    out[id] = {
+      botId: String(r.botId || id.slice(0, at)),
+      machine: String(r.machine || id.slice(at + 1)),
+      name: String(r.name || id.slice(0, at)).slice(0, 60),
+      role: String(r.role || '').slice(0, 200),
+    };
+  }
+  return out;
+}
+const firstLocal = (members) => members.find((id) => !isRemoteId(id)) || null;
+
 function normalizeGroup(raw) {
   const members = normalizeMemberIds(raw.members);
   const coordinatorId = raw.coordinatorId && members.includes(raw.coordinatorId) ? String(raw.coordinatorId) : null;
@@ -140,6 +159,7 @@ function normalizeGroup(raw) {
     id: safeId(raw.id),
     name: String(raw.name || raw.id || 'Group'),
     members,
+    remotes: keepRemotes(raw.remotes, members),
     coordinatorId,
     createdAt: raw.createdAt || nowIso(),
     updatedAt: raw.updatedAt || raw.createdAt || nowIso(),
@@ -152,7 +172,7 @@ export async function getGroup(id) {
   return normalizeGroup({ id, ...raw });
 }
 
-export async function createGroup({ name, members, coordinatorId } = {}) {
+export async function createGroup({ name, members, coordinatorId, remotes } = {}) {
   const cleanName = String(name ?? '').trim();
   if (!cleanName) throw groupError(400, 'GROUP_NAME_REQUIRED', 'a group needs a name');
   if (cleanName.length > 80) throw groupError(400, 'GROUP_NAME_TOO_LONG', 'a group name is limited to 80 characters');
@@ -160,10 +180,12 @@ export async function createGroup({ name, members, coordinatorId } = {}) {
   const memberIds = normalizeMemberIds(members);
   assertMemberCount(memberIds);
 
+  // The group runs on this machine, so the bot that speaks first must live here.
+  if (!firstLocal(memberIds)) throw groupError(400, 'GROUP_NEEDS_LOCAL', '群里至少要有一位这台机器上的机器人（由它来协调）');
   const wanted = String(coordinatorId ?? '').trim();
-  const coordinator = wanted || memberIds[0];
-  if (!memberIds.includes(coordinator)) {
-    throw groupError(400, 'GROUP_BAD_COORDINATOR', `coordinator "${coordinator}" must be one of the group members`);
+  const coordinator = wanted || firstLocal(memberIds);
+  if (!memberIds.includes(coordinator) || isRemoteId(coordinator)) {
+    throw groupError(400, 'GROUP_BAD_COORDINATOR', `coordinator "${coordinator}" must be a group member on this machine`);
   }
 
   const id = await uniqueGroupId(cleanName);
@@ -172,6 +194,7 @@ export async function createGroup({ name, members, coordinatorId } = {}) {
     id,
     name: cleanName,
     members: memberIds,
+    remotes: keepRemotes(remotes, memberIds),
     coordinatorId: coordinator,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -195,18 +218,20 @@ export async function updateGroup(id, patch = {}) {
   if (patch.members !== undefined) {
     next.members = normalizeMemberIds(patch.members);
     assertMemberCount(next.members);
+    if (!firstLocal(next.members)) throw groupError(400, 'GROUP_NEEDS_LOCAL', '群里至少要有一位这台机器上的机器人（由它来协调）');
+    next.remotes = keepRemotes({ ...current.remotes, ...(patch.remotes || {}) }, next.members);
   }
 
   if (patch.coordinatorId !== undefined) {
     const coordinator = String(patch.coordinatorId ?? '').trim();
-    if (!next.members.includes(coordinator)) {
-      throw groupError(400, 'GROUP_BAD_COORDINATOR', `coordinator "${coordinator}" must be one of the group members`);
+    if (!next.members.includes(coordinator) || isRemoteId(coordinator)) {
+      throw groupError(400, 'GROUP_BAD_COORDINATOR', `coordinator "${coordinator}" must be a group member on this machine`);
     }
     next.coordinatorId = coordinator;
   } else if (!next.members.includes(next.coordinatorId)) {
     // The patch removed the coordinator from the roster: promote the first
-    // remaining member instead of leaving a dangling id behind.
-    next.coordinatorId = next.members[0] || null;
+    // remaining member on this machine instead of leaving a dangling id behind.
+    next.coordinatorId = firstLocal(next.members);
   }
 
   next.updatedAt = nowIso();
@@ -238,7 +263,7 @@ export async function repairGroupsAfterBotDelete(botId) {
     if (!group.members.includes(botId)) continue;
     const members = group.members.filter((id) => id !== botId);
     const previousCoordinatorId = group.coordinatorId;
-    const nextCoordinatorId = members.includes(group.coordinatorId) ? group.coordinatorId : members[0] || null;
+    const nextCoordinatorId = members.includes(group.coordinatorId) ? group.coordinatorId : firstLocal(members);
     const next = { ...group, members, coordinatorId: nextCoordinatorId, updatedAt: nowIso() };
     await writeJsonAtomic(groupFile(group.id), next);
     repaired.push({

@@ -154,7 +154,8 @@ async function saveFeishuFile(file, cfg) {
  *   bus         event bus (turn / message / approval events)
  *   runtime     {runTurn}
  *   approvals   {pending(), resolve(id, decision)}
- *   getBots     () => bots (to pick the primary when none is set)
+ *   getBots     () => bots (to pick the primary when none is set, and for "@name")
+ *   resolveRemote / askRemote / listRemote   bots on the human's other machines ("@name", "@name@machine")
  *   workspaceDir
  *   machineName () => string
  *   fetchImpl, WebSocketImpl, openUrl   (tests)
@@ -364,7 +365,40 @@ export function createFeishu(o) {
       return;
     }
 
-    const id = botId();
+    // "机器人列表": who can be reached with @name.
+    if (/^(机器人列表|有哪些机器人|\/bots)$/i.test(full.trim())) {
+      const here = (o.getBots?.() || []).map((b) => b.name);
+      const far = typeof o.listRemote === 'function' ? await o.listRemote().catch(() => []) : [];
+      const lines = [`这台机器：${here.join('、') || '（没有）'}`, ...far.map((m) => `「${m.machine}」：${(m.bots || []).map((b) => b.name).join('、') || '（没有）'}`)];
+      await sendText(to, `${lines.join('\n')}\n\n消息开头写「@名字」就直接找它，比如「@${here[1] || here[0] || '助理'} 帮我…」；别的机器上重名时写「@名字@机器名」。不写就找主助理。`);
+      return;
+    }
+
+    // "@编剧 写个开头" goes straight to that bot - on this machine or, when it
+    // is not here (or "@编剧@Ubuntu" says where), on one of the other machines.
+    let id = botId();
+    const at = spoken ? null : /^[@＠]([^\s@＠，,:：]{1,30})(?:[@＠]([^\s，,:：]{1,30}))?[\s，,:：]*/.exec(full);
+    if (at) {
+      const want = at[1].toLowerCase();
+      const local = at[2] ? null : (o.getBots?.() || []).find((b) => b.id.toLowerCase() === want || String(b.name).toLowerCase() === want);
+      const rest = full.slice(at[0].length).trim();
+      if (local && rest) {
+        id = local.id;
+        full = rest;
+      } else if (!local && rest && typeof o.resolveRemote === 'function') {
+        const far = await o.resolveRemote(at[2] ? `${at[1]}@${at[2]}` : at[1]).catch(() => null);
+        if (far) {
+          await sendText(to, `已转给「${far.info.machine}」上的${far.info.name}，做完把结果发给你。`).catch(() => {});
+          try {
+            const r = await o.askRemote({ machine: far.info.machine, botId: far.info.botId, text: rest });
+            await deliver(to, [`${far.info.name}（${far.info.machine}）：${r.reply || '（没有回答）'}`], '', (r.fetched || []).map((f) => f.to));
+          } catch (err) {
+            await sendText(to, `没能联系上「${far.info.machine}」上的${far.info.name}：${err.message}`).catch(() => {});
+          }
+          return;
+        }
+      }
+    }
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
     feishuTurns.set(turnId, { ...to, texts: [], spoken });
     lastChat.set(id, { ...to, at: Date.now() });
@@ -388,9 +422,10 @@ export function createFeishu(o) {
     return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/^[：:，,\s]+|[：:，,\s]+$/g, '').trim();
   }
 
-  async function deliver(to, texts, summary) {
+  async function deliver(to, texts, summary, extraFiles = []) {
     const text = texts.join('\n\n').trim() || String(summary || '').trim();
-    const files = [];
+    // extraFiles: fetched from another machine for this answer (pictures and videos are sent as such).
+    const files = extraFiles.filter((rel) => /\.(png|jpe?g|gif|webp|mp4)$/i.test(rel)).slice(0, 4);
     for (const m of text.matchAll(MEDIA)) {
       const rel = m[1].replace(/^\.\//, '').replace(/^workspace\//, '');
       if (!files.includes(rel) && files.length < 4) files.push(rel);

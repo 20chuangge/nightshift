@@ -52,7 +52,7 @@ function renderGroupSection(bot, group, groupRole) {
   const coordinator = groupRole === 'coordinator';
   const speaker = groupRole === 'speaker';
   const members = (group.members || [])
-    .map((member) => `${member.name} (${member.id}) - ${member.role || 'no role set'}`)
+    .map((member) => `${member.name} (${member.id}) - ${member.role || 'no role set'}${member.remote ? ` [works on the machine "${member.remote.machine}"; @mention it like the others, its files are fetched here when it names them]` : ''}`)
     .join('; ');
   const others = (group.members || []).filter((m) => m.id !== bot.id).map((m) => `@${m.name}`).join(' ');
   const lines = [
@@ -146,6 +146,8 @@ function peersLine(peers, canHandOff) {
   if (!peers.length || !canHandOff) return [];
   return [`Teammates also work on the human's other machines: ${peers.map((p) => p.name).join(', ')}. bot_list shows who is there; hand them work with bot_message and its machine argument. Their files are separate: file_send what they need first, file_fetch what they made.`];
 }
+
+import { askPeerBot, fetchedNote } from './crossmachine.mjs';
 
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
@@ -737,7 +739,7 @@ export class AgentRuntime {
       const { member, role, prompt } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
-      const result = await this.runTurn({
+      const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record }) : await this.runTurn({
         botId: member.id,
         text: prompt || text,
         source: 'group',
@@ -768,6 +770,47 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * A group member that lives on another machine takes its turn there: it gets
+   * the recent group conversation, and its answer is posted here under its name.
+   */
+  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false }) {
+    const id = turnId || uid('turn');
+    if (recordUser) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId: id });
+    const base = { botId: member.id, botName: member.name, turnId: id, source: 'group', groupId: group.id };
+    const startedAt = nowIso();
+    this.bus.emit({ type: 'turn.start', ...base, text });
+    let status = 'success';
+    let summary = '';
+    try {
+      const peers = this.getPeers();
+      const peer = peers?.find(member.remote.machine);
+      if (!peer) throw new Error(`这台机器不认识「${member.remote.machine}」（在夜班客户端里添加那台机器后再试）`);
+      const names = new Map((group.members || []).map((m) => [m.id, m.name]));
+      const recent = (await this.groups.readGroupMessages(group.id, { limit: 14 }).catch(() => []))
+        .filter((m) => (m.kind === 'user' || m.kind === 'assistant') && m.text)
+        .map((m) => `${m.from === 'user' ? '用户' : (names.get(m.from) || m.from)}：${String(m.text).slice(0, 600)}`)
+        .join('\n');
+      const who = (group.members || []).map((m) => `${m.name}（${m.role || '成员'}）`).join('、');
+      const prompt = `（你是群聊「${group.name}」的成员，这个群在另一台机器上；成员：${who}。${role === 'speaker' ? '现在点名请你回答。' : ''}你的回答会以你的名字发到群里：只回答你负责的部分，简短；做出的文件写出路径，会自动取到群所在的机器。）\n\n最近的群聊：\n${recent || '（还没有消息）'}\n\n现在要你回答的话：${text}`;
+      const r = await askPeerBot(peers, peer, {
+        botId: member.remote.botId,
+        text: prompt,
+        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」` } },
+        workspaceDir: this.config.workspaceDir,
+      });
+      status = r.status === 'success' ? 'success' : (r.status || 'failed');
+      summary = r.reply || '';
+      await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: (r.reply || '（没有回答）') + fetchedNote(r.fetched, member.remote.machine), turnId: id });
+    } catch (err) {
+      status = 'failed';
+      summary = err.message;
+      await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: `（没能联系上「${member.remote.machine}」上的${member.name}：${err.message}）`, turnId: id });
+    }
+    this.bus.emit({ type: 'turn.end', ...base, status, summary, steps: 0, startedAt, endedAt: nowIso() });
+    return { turnId: id, status, summary };
+  }
+
   /** Kick off a just-created group by id (resolves member names; skipped in demo mode). */
   async kickoffGroup(groupId) {
     if (!this.groups || this.model?.provider === 'mock') return;
@@ -775,6 +818,8 @@ export class AgentRuntime {
     if (!group) return;
     const members = [];
     for (const id of group.members || []) {
+      const far = group.remotes?.[id];
+      if (far) { members.push({ id, name: far.name, role: far.role, remote: { machine: far.machine, botId: far.botId } }); continue; }
       const bot = await this.bots.getBot(id).catch(() => null);
       if (bot) members.push({ id: bot.id, name: bot.name, role: bot.role });
     }

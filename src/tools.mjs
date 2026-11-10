@@ -29,6 +29,7 @@ export const MAX_HANDOFFS = 12;
 // How this machine marks its own bots in a hand-off chain that crosses machines.
 const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
+import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
 /** Same site: equal hosts, or one is a subdomain of the other's registrable part (passport.jd.com ~ www.jd.com). */
@@ -1091,30 +1092,30 @@ export function createRegistry(deps) {
     // Chain entries from this machine carry this machine's tag, so the other
     // side can tell its own bots from ours.
     const chain = (Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id]).map((c) => (c.includes('@') ? c : `${c}@${SELF_TAG}`));
-    let started;
+    // The files the request names go along; the files the answer names come back.
+    let r;
     try {
-      started = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(target.id)}/message`, {
-        body: {
-          text: String(args.text || ''),
-          handoff: { depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], budgetLeft: budget.left, from: { bot: ctx.bot.name } },
-        },
-        timeoutMs: 20000,
+      r = await askPeerBot(peers, peer, {
+        botId: target.id,
+        text: String(args.text || ''),
+        handoff: { depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], budgetLeft: budget.left, from: { bot: ctx.bot.name } },
+        workspaceDir: ctx.workspaceDir,
+        signal: ctx.signal,
       });
     } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
-    // Wait for that turn to finish over there (up to the turn budget here).
-    const deadline = Date.now() + 30 * 60 * 1000;
-    while (Date.now() < deadline) {
-      if (ctx.signal?.aborted) throw toolError('CANCELLED', 'cancelled');
-      await new Promise((r) => setTimeout(r, 3000));
-      let msgs;
-      try { msgs = await peers.json(peer, 'GET', `/api/bots/${encodeURIComponent(target.id)}/messages?limit=60`, { timeoutMs: 15000, signal: ctx.signal }); } catch { continue; }
-      const mine = (msgs.messages || msgs || []).filter((m) => m.turnId === started.turnId);
-      const done = mine.find((m) => m.role === 'status');
-      if (!done) continue;
-      const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim();
-      return { machine: peer.name, botId: target.id, botName: target.name, status: done.status || 'success', turnId: started.turnId, reply: reply || done.summary || '(no reply)', note: `Files it made are on 「${peer.name}」: file_fetch what the human needs, then tell them the result and where it is now.` };
-    }
-    throw toolError('PEER_TIMEOUT', `「${peer.name}」上的${target.name} 30 分钟还没做完`);
+    return {
+      machine: peer.name,
+      botId: target.id,
+      botName: target.name,
+      status: r.status,
+      turnId: r.turnId,
+      reply: r.reply || '(no reply)',
+      ...(r.sent.length ? { filesSent: r.sent } : {}),
+      ...(r.fetched.length ? { filesFetched: r.fetched } : {}),
+      note: r.fetched.length
+        ? `The files its answer names were fetched to this machine (filesFetched: use the "to" paths). Tell the human the result and where it is now.`
+        : `Files it made stay on 「${peer.name}」 unless its answer named them: file_fetch what the human needs, then tell them the result and where it is now.`,
+    };
   }
 
   add({
@@ -1236,7 +1237,7 @@ export function createRegistry(deps) {
   add({
     name: 'bot_message',
     description:
-      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary, and may hand parts on to its own teammates. Give it everything it needs (goal, inputs, file paths, what to deliver). For a bot on another machine, also give machine (its name from bot_list otherMachines); files there are separate - send what it needs with file_send first, and fetch its results with file_fetch. Hand-offs go up to 3 levels deep and 12 per task; you cannot hand work back to a bot that is waiting on you - return your result instead.',
+      'Send a task to another bot and wait for its reply. This is how work is handed off: the other bot runs its own turn, with its own tools, memory and approval boundary, and may hand parts on to its own teammates. Give it everything it needs (goal, inputs, file paths, what to deliver). For a bot on another machine, also give machine (its name from bot_list otherMachines); workspaces are separate, but workspace files you name by path in the text are sent along automatically and the files its answer names are fetched back (file_send / file_fetch are for anything else). Hand-offs go up to 3 levels deep and 12 per task; you cannot hand work back to a bot that is waiting on you - return your result instead.',
     // LOW: internal coordination between teammates that share one workspace. The
     // "sending messages always asks" rule in the reference product is about
     // outward-facing channels (email, chat to a human); there is no such tool
@@ -1475,7 +1476,7 @@ export function createRegistry(deps) {
         members: {
           type: 'array',
           items: { type: 'string' },
-          description: '2-6 members, by bot id or display name.',
+          description: '2-6 members, by bot id or display name. A bot on another machine: "name@machine" (see bot_list otherMachines).',
         },
         coordinator: { type: 'string', description: 'Bot id or name that runs the group turns. Defaults to the first member.' },
       },
@@ -1502,10 +1503,15 @@ export function createRegistry(deps) {
 
       const members = [];
       const unknown = [];
+      const remotes = {};
+      const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
       for (const ref of Array.isArray(args?.members) ? args.members : []) {
-        const bot = resolve(ref);
-        if (!bot) unknown.push(String(ref));
-        else if (!members.includes(bot.id)) members.push(bot.id);
+        const bot = isRemoteMember(ref) ? null : resolve(ref);
+        // Not here: maybe a bot on one of the human's other machines.
+        const far = bot ? null : await resolveRemoteMember(peers, ref);
+        if (bot) { if (!members.includes(bot.id)) members.push(bot.id); }
+        else if (far) { if (!members.includes(far.id)) members.push(far.id); remotes[far.id] = far.info; }
+        else unknown.push(String(ref));
       }
       if (unknown.length) throw toolError('GROUP_UNKNOWN_MEMBER', `no bot matches: ${unknown.join(', ')}`);
 
@@ -1516,7 +1522,7 @@ export function createRegistry(deps) {
         coordinatorId = bot.id;
       }
 
-      const group = await ctx.groups.createGroup({ name: args?.name, members, coordinatorId });
+      const group = await ctx.groups.createGroup({ name: args?.name, members, coordinatorId, remotes });
       // Members introduce themselves in the new group once this turn has moved on.
       setTimeout(() => {
         try { deps.getRuntime()?.kickoffGroup?.(group.id)?.catch?.(() => {}); } catch { /* no runtime in unit tests */ }
@@ -1641,13 +1647,19 @@ export function createRegistry(deps) {
         }
         const members = [];
         const unknown = [];
+        const remotes = {};
+        const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
         for (const ref of rawMembers) {
-          const bot = resolve(ref);
-          if (!bot) unknown.push(String(ref));
-          else if (!members.includes(bot.id)) members.push(bot.id);
+          const bot = isRemoteMember(ref) ? null : resolve(ref);
+          const kept = current?.remotes?.[ref];
+          const far = bot ? null : (kept ? { id: ref, info: kept } : await resolveRemoteMember(peers, ref));
+          if (bot) { if (!members.includes(bot.id)) members.push(bot.id); }
+          else if (far) { if (!members.includes(far.id)) members.push(far.id); remotes[far.id] = far.info; }
+          else unknown.push(String(ref));
         }
         if (unknown.length) throw toolError('GROUP_UNKNOWN_MEMBER', `no bot matches: ${unknown.join(', ')}`);
         patch.members = members;
+        patch.remotes = remotes;
       }
       if (args?.coordinator !== undefined && String(args.coordinator).trim() !== '') {
         const bot = resolve(args.coordinator);

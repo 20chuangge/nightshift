@@ -3508,6 +3508,117 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const h = await api('/api/health');
     check('busy machines: health reports CPU, cores and memory; the page warns when it stays near 100%', h.json?.load && typeof h.json.load.cores === 'number' && typeof h.json.load.memFreeMB === 'number' && 'busy' in h.json.load && page.includes('async function checkBusy()') && page.includes('id="busy-banner"'));
   }
+  // Step 19: working across machines II (files travel with hand-offs, groups span machines, Feishu reaches any bot).
+  {
+    const fsx = await import('node:fs');
+    const X = await import('../src/crossmachine.mjs');
+    const { createPeers } = await import('../src/peers.mjs');
+    check('carry files: workspace paths in a text are found once each, never outside paths', X.pathsIn('把 notes/分镜.md 和 art/key.png 交给它（notes/分镜.md），别碰 ../x/y.txt').join(',') === 'notes/分镜.md,art/key.png');
+    // A stand-in machine with one bot that answers naming a file it made.
+    const TOKEN = 'peer-token-19-abcdef';
+    const got = { uploads: [], messages: [] };
+    const srv19 = http.createServer(async (req, res) => {
+      const chunks = []; for await (const c of req) chunks.push(c);
+      const body = Buffer.concat(chunks);
+      const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      if (req.headers.authorization !== 'Bearer ' + TOKEN) return send(401, {});
+      if (req.url === '/api/bots') return send(200, [{ id: 'bot-w', name: '编剧', role: '写分镜' }, { id: 'bot-a', name: '美术', role: '画图' }]);
+      if (req.url === '/api/uploads') { const name = decodeURIComponent(req.headers['x-file-name']); got.uploads.push({ name, text: body.toString() }); return send(200, { path: 'uploads/day/' + name }); }
+      if (req.method === 'POST' && req.url === '/api/bots/bot-w/message') { got.messages.push(JSON.parse(body.toString())); return send(200, { turnId: 'turn-19' }); }
+      if (req.url.startsWith('/api/bots/bot-w/messages')) return send(200, [{ turnId: 'turn-19', role: 'assistant', text: '写好了，在 out/synopsis.md，页面在 pages/board.html。' }, { turnId: 'turn-19', role: 'status', status: 'success' }]);
+      if (req.url === '/api/workspace/file?path=' + encodeURIComponent('out/synopsis.md')) { res.writeHead(200); return res.end('梗概正文'); }
+      send(404, {});
+    });
+    await new Promise((r) => srv19.listen(0, '127.0.0.1', r));
+    const pdir = fsx.mkdtempSync(path.join(os.tmpdir(), 'peers19-'));
+    const peers = createPeers({ file: path.join(pdir, 'peers.json') });
+    await peers.set([{ name: 'Ubuntu', url: 'http://127.0.0.1:' + srv19.address().port, token: TOKEN }]);
+    const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'ws19-'));
+    fsx.mkdirSync(path.join(ws, 'notes'));
+    fsx.writeFileSync(path.join(ws, 'notes', 'brief.md'), '主题：小猫');
+    const r = await X.askPeerBot(peers, peers.find('Ubuntu'), { botId: 'bot-w', text: '按 notes/brief.md 写梗概（notes/missing.md 不存在）', workspaceDir: ws, pollMs: 20 });
+    check('carry files: the files a hand-off names go along, and the bot there is told where they landed', got.uploads.length === 1 && got.uploads[0].name === 'brief.md' && got.uploads[0].text === '主题：小猫' && got.messages[0].text.includes('notes/brief.md → uploads/day/brief.md') && r.sent.length === 1);
+    check('carry files: the files its answer names come back (pages stay there, the chat opens them)', r.fetched.length === 1 && r.fetched[0].from === 'out/synopsis.md' && fsx.readFileSync(path.join(ws, r.fetched[0].to), 'utf8') === '梗概正文' && r.fetched[0].to.startsWith('from-machines/Ubuntu/') && r.reply.includes('out/synopsis.md'));
+    const T = await import('../src/tools.mjs');
+    const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => null, getPeers: () => peers });
+    const me = { id: 'chief', name: '助理', tools: ['bot_message'] };
+    const out = await reg.get('bot_message').run({ machine: 'Ubuntu', botId: '编剧', text: '按 notes/brief.md 写梗概' }, { bot: me, depth: 0, chain: ['chief'], handoffBudget: { left: 5 }, workspaceDir: ws, bots: { getBot: async () => null } }).catch((e) => ({ err: e.message }));
+    check('carry files: bot_message to another machine does both by itself and says where the results are', !out.err && out.filesSent?.[0]?.from === 'notes/brief.md' && out.filesFetched?.[0]?.to?.startsWith('from-machines/Ubuntu/') && /filesFetched/.test(out.note), out.err || '');
+    // Members on other machines.
+    const far = await X.resolveRemoteMember(peers, '编剧@ubuntu');
+    const bare = await X.resolveRemoteMember(peers, '美术');
+    check('groups: a bot on another machine is found by "name@machine", by id, or by a name only it has', far?.id === 'bot-w@Ubuntu' && far.info.name === '编剧' && bare?.id === 'bot-a@Ubuntu' && (await X.resolveRemoteMember(peers, 'bot-w@Ubuntu'))?.id === 'bot-w@Ubuntu' && (await X.resolveRemoteMember(peers, '不存在')) === null);
+    const made = await api('/api/groups', { method: 'POST', body: { name: '跨机器测试群', members: ['chief', 'nobody@nowhere'] } });
+    const farOnly = await api('/api/peers/bots');
+    check('groups: an unknown far member is refused; the dialog can list who works on the other machines', made.status === 400 && made.json?.error?.code === 'GROUP_UNKNOWN_MEMBER' && farOnly.status === 200 && Array.isArray(farOnly.json?.machines));
+    const G = await import('../src/groups.mjs');
+    let needsLocal = '';
+    try { await G.createGroup({ name: 'x', members: ['a@M', 'b@M'] }); } catch (e) { needsLocal = e.code; }
+    let farCoord = '';
+    try { await G.createGroup({ name: 'x', members: ['chief', 'a@M'], coordinatorId: 'a@M' }); } catch (e) { farCoord = e.code; }
+    check('groups: the group needs a bot on this machine, and that one coordinates', needsLocal === 'GROUP_NEEDS_LOCAL' && farCoord === 'GROUP_BAD_COORDINATOR');
+    // A far member takes its turn there and its answer is posted here under its name.
+    const A = await import('../src/agent.mjs');
+    const posted = [];
+    const events = [];
+    const fakeRt = {
+      getPeers: () => peers,
+      config: { workspaceDir: ws },
+      groups: { readGroupMessages: async () => [{ kind: 'user', from: 'user', text: '大家进度如何' }, { kind: 'assistant', from: 'chief', text: '我这边好了 @编剧' }] },
+      recordGroupMessage: async (gid, rec) => { posted.push(rec); return rec; },
+      bus: { emit: (e) => events.push(e) },
+    };
+    got.messages.length = 0;
+    const grp = { id: 'g1', name: '动画组', coordinatorId: 'chief', members: [{ id: 'chief', name: '助理', role: '协调' }, { id: 'bot-w@Ubuntu', name: '编剧', role: '写分镜', remote: { machine: 'Ubuntu', botId: 'bot-w' } }] };
+    const origAsk = X.askPeerBot;
+    const turn = await A.AgentRuntime.prototype.runRemoteGroupTurn.call(fakeRt, { group: grp, member: grp.members[1], text: '助理 在群里点名请你回答。用户原话：大家进度如何', role: 'speaker' });
+    void origAsk;
+    check('groups: a member on another machine answers there with the recent group talk, and is posted here under its name', turn.status === 'success' && got.messages[0]?.text.includes('动画组') && got.messages[0].text.includes('助理：我这边好了') && posted.at(-1)?.from === 'bot-w@Ubuntu' && posted.at(-1).kind === 'assistant' && posted.at(-1).text.includes('写好了') && posted.at(-1).text.includes('已经取回这台机器') && events.some((e) => e.type === 'turn.end' && e.groupId === 'g1'));
+    const gone = await A.AgentRuntime.prototype.runRemoteGroupTurn.call({ ...fakeRt, getPeers: () => ({ find: () => null }) }, { group: grp, member: grp.members[1], text: 'x', role: 'speaker' });
+    check('groups: a machine that cannot be reached says so in the group instead of hanging', gone.status === 'failed' && /没能联系上/.test(posted.at(-1).text));
+    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    check('groups: the group loop sends far members their turn; the coordinator is told who works elsewhere', agentSrc.includes('member.remote ? await this.runRemoteGroupTurn(') && agentSrc.includes('works on the machine'));
+    // Feishu: "@name" reaches any bot.
+    const FS = await import('../src/feishu.mjs');
+    const { EventBus } = await import('../src/store.mjs');
+    const fdir = fsx.mkdtempSync(path.join(os.tmpdir(), 'feishu19-'));
+    const sent = [];
+    const fakeFetch = async (url, init = {}) => {
+      const ok = (data) => ({ ok: true, status: 200, json: async () => ({ code: 0, ...data }) });
+      if (url.includes('tenant_access_token')) return ok({ tenant_access_token: 't', expire: 7200 });
+      if (url.includes('/im/v1/messages')) { const c = JSON.parse(JSON.parse(init.body).content); sent.push(c.zh_cn?.content?.[0]?.[0]?.text || ''); return ok({ data: {} }); }
+      return ok({ data: {} });
+    };
+    const turns = [];
+    const asked = [];
+    const fz = FS.createFeishu({
+      file: path.join(fdir, 'feishu.json'), bus: new EventBus(), workspaceDir: fdir, fetchImpl: fakeFetch,
+      runtime: { runTurn: async (t) => { turns.push(t); return t; } },
+      approvals: { resolve: () => {} },
+      getBots: () => [{ id: 'chief', name: '助理', primary: true }, { id: 'bot-ed', name: '剪辑' }],
+      machineName: () => '本机',
+      resolveRemote: (ref) => X.resolveRemoteMember(peers, ref),
+      listRemote: () => peers.rosters(),
+      askRemote: async (q) => { asked.push(q); return { reply: '梗概写好了', fetched: [] }; },
+    });
+    await fz.load();
+    await fz.update({ appId: 'cli_19', appSecret: 'sec-19' });
+    let n = 0;
+    const say = async (text) => { n += 1; fz._handleFrame(FS.encodeFrame({ method: 1, headers: [{ key: 'type', value: 'event' }, { key: 'message_id', value: 'z' + n }], payload: Buffer.from(JSON.stringify({ header: { event_id: 'ze' + n, event_type: 'im.message.receive_v1' }, event: { sender: { sender_id: { open_id: 'ou_19' }, sender_type: 'user' }, message: { message_id: 'zm' + n, chat_id: 'oc_19', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }) } } })) })); await new Promise((r) => setTimeout(r, 60)); };
+    await say('配对 ' + fz.view().pairCode);
+    await say('@剪辑 把片头剪短一点');
+    check('feishu: "@name" goes straight to that bot on this machine, without the @name', turns.at(-1)?.botId === 'bot-ed' && turns.at(-1).text.startsWith('把片头剪短一点'));
+    await say('@编剧 写一个梗概');
+    check('feishu: a name that lives on another machine is asked there, and the answer comes back to Feishu', asked.at(-1)?.machine === 'Ubuntu' && asked.at(-1).botId === 'bot-w' && asked.at(-1).text === '写一个梗概' && sent.some((t) => /已转给「Ubuntu」上的编剧/.test(t)) && sent.some((t) => /编剧（Ubuntu）：梗概写好了/.test(t)) && turns.length === 1);
+    await say('@某个不存在的 你好');
+    check('feishu: an unknown @name is just a message for the main assistant', turns.at(-1)?.botId === 'chief' && turns.at(-1).text.startsWith('@某个不存在的 你好'));
+    await say('机器人列表');
+    check('feishu: "机器人列表" says who can be reached, on which machine', /这台机器：助理、剪辑/.test(sent.at(-1) || '') && /「Ubuntu」：编剧、美术/.test(sent.at(-1)));
+    fz.stop();
+    srv19.close();
+    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));
+  }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
   {
     const R = await import('../src/rules.mjs');

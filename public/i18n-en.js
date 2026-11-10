@@ -1270,4 +1270,7 @@ window.DESK_I18N_EN = {
   "这台机器上没有这个文件": "No such file on this computer",
   "这个系统（Rocky / RHEL 10）去掉了旧的 X11 桌面组件，机器人的屏幕暂时没法装；执行命令、无界面浏览器照常能用": "This system (Rocky / RHEL 10) dropped the old X11 desktop parts, so the bots' screen cannot be installed yet; commands and the headless browser work as usual",
   "安装程序没能启动（密钥已删掉）；再点一次试试，还不行就到那台机器上手动装 Tailscale": "The installer did not start (the key was deleted); try once more, or install Tailscale on that machine by hand",
+  "在「{0}」上{1}": "On \"{0}\"{1}",
+  "至少要有一位这台机器上的机器人来协调。": "At least one bot on this machine must be in the group, to coordinate.",
+  "群里至少要有一位这台机器上的机器人（由它来协调）": "The group needs at least one bot on this machine (it coordinates)",
 };

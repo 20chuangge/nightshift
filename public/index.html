@@ -4071,6 +4071,13 @@ function groupById(id) {
   return state.groups.find((g) => g.id === id) || null;
 }
 
+/** A member of the open group by id - also one that lives on another machine ("botId@machine"). */
+function groupMemberById(id) {
+  const group = groupById(state.groupId);
+  const m = (group?.members || []).find((x) => x && typeof x === 'object' && x.id === id);
+  return m ? { ...m, name: m.name || id } : null;
+}
+
 /** Members arrive as bot-shaped objects, but tolerate a bare id array too. */
 function groupMembers(group) {
   if (!group) return [];
@@ -4338,7 +4345,10 @@ async function loadGroupMessages() {
    --------------------------------------------------------------------- */
 function senderOf(item) {
   if (!item) return null;
-  if (item.from && item.from !== 'user') return botById(item.from) || { id: item.from, name: item.name || item.from };
+  if (item.from && item.from !== 'user') {
+    const far = groupMemberById(item.from);
+    return botById(item.from) || far || { id: item.from, name: item.name || item.from };
+  }
   if (item.botId) return botById(item.botId) || { id: item.botId, name: item.name || item.botId };
   return null;
 }
@@ -4439,6 +4449,12 @@ function openGroupModal(groupId = null) {
     return;
   }
   const group = groupId ? groupById(groupId) : null;
+  // Bots on the human's other machines (they can join; the coordinator stays here).
+  state.remoteBots = state.remoteBots || [];
+  api('/api/peers/bots').then((r) => {
+    state.remoteBots = (r.machines || []).flatMap((m) => (m.bots || []).map((b) => ({ id: `${b.id}@${m.machine}`, name: b.name, role: b.role, machine: m.machine })));
+    if ($('group-modal').classList.contains('open')) renderGroupModal();
+  }).catch(() => {});
   state.groupDraft = group
     ? {
       id: group.id,
@@ -4483,6 +4499,23 @@ function renderGroupModal() {
     card.addEventListener('click', () => toggleGroupMember(bot.id));
     grid.appendChild(card);
   }
+  // Members on other machines: already in this group, or offered by the machines reachable now.
+  const farKnown = new Map((state.remoteBots || []).map((b) => [b.id, b]));
+  for (const m of (groupById(draft.id)?.members || [])) if (m?.machine && !farKnown.has(m.id)) farKnown.set(m.id, m);
+  for (const bot of farKnown.values()) {
+    const on = draft.members.includes(bot.id);
+    const card = el('button', `member-card${on ? ' on' : ''}`);
+    card.type = 'button';
+    card.disabled = !on && draft.members.length >= 6;
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    card.appendChild(avatarNode(bot, 36));
+    const text = el('div', 'mc-text');
+    text.appendChild(el('div', 'mc-name', bot.name));
+    text.appendChild(el('div', 'mc-role', `在「${bot.machine}」上${bot.role ? ` · ${bot.role}` : ''}`));
+    card.appendChild(text);
+    card.addEventListener('click', () => toggleGroupMember(bot.id));
+    grid.appendChild(card);
+  }
 
   $('group-member-count').textContent = `${draft.members.length}/6`;
 
@@ -4504,7 +4537,9 @@ function renderGroupModal() {
     coord.appendChild(chip);
   }
 
-  const valid = draft.name.trim().length > 0 && draft.members.length >= 2;
+  const hasLocal = draft.members.some((id) => !String(id).includes('@'));
+  const valid = draft.name.trim().length > 0 && draft.members.length >= 2 && hasLocal;
+  if (draft.members.length >= 2 && !hasLocal) coord.appendChild(el('span', 'muted tiny', '至少要有一位这台机器上的机器人来协调。'));
   $('group-create').disabled = !valid;
   $('group-name').value = draft.name;
 }
@@ -4514,11 +4549,11 @@ function toggleGroupMember(botId) {
   const index = draft.members.indexOf(botId);
   if (index >= 0) {
     draft.members.splice(index, 1);
-    if (draft.coordinatorId === botId) draft.coordinatorId = draft.members[0] || null;
+    if (draft.coordinatorId === botId) draft.coordinatorId = draft.members.find((id) => !String(id).includes('@')) || null;
   } else {
     if (draft.members.length >= 6) { toast('一个群最多 6 位成员', true); return; }
     draft.members.push(botId);
-    if (!draft.coordinatorId) draft.coordinatorId = botId;
+    if (!draft.coordinatorId && !String(botId).includes('@')) draft.coordinatorId = botId;
   }
   renderGroupModal();
 }
@@ -4534,7 +4569,7 @@ async function createGroup() {
     try {
       await api(`/api/groups/${encodeURIComponent(draft.id)}`, {
         method: 'PATCH',
-        body: { name, members: draft.members, coordinatorId: draft.coordinatorId || draft.members[0] },
+        body: { name, members: draft.members, coordinatorId: draft.coordinatorId || draft.members.find((id) => !String(id).includes('@')) },
       });
       closeGroupModal();
       await loadGroups();
@@ -4553,7 +4588,7 @@ async function createGroup() {
   try {
     const res = await api('/api/groups', {
       method: 'POST',
-      body: { name, members: draft.members, coordinatorId: draft.coordinatorId || draft.members[0] },
+      body: { name, members: draft.members, coordinatorId: draft.coordinatorId || draft.members.find((id) => !String(id).includes('@')) },
     });
     const group = (res && (res.group || res)) || null;
     closeGroupModal();
