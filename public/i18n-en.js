@@ -1315,4 +1315,7 @@ window.DESK_I18N_EN = {
   "这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。": "This computer is only reachable locally right now (Allow phone connections is off), so other devices cannot jump here.",
   "正在过去…": "Switching over…",
   "没有拿到跳转地址": "No switch link came back",
+  "这台手机到不了「{0}」。它的地址是 {1}：{2}": "This phone cannot reach “{0}”. Its address is {1}: {2}",
+  "这是 Tailscale 地址，手机要先装 Tailscale 并登录同一个账号": "this is a Tailscale address, so the phone needs Tailscale signed in to the same account first",
+  "这个地址只有电脑能访问（虚拟机内网），把虚拟机网络改成「桥接」或给手机装 Tailscale": "only the computer can reach this address (VM internal network); switch the VM network to bridged, or install Tailscale on the phone",
 };

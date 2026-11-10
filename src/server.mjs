@@ -1338,7 +1338,6 @@ route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, s
 });
 
 // --- machines, and switching to one ----------------------------------------
-//
 // A phone that is paired with this hub may want to look at another machine.
 // It must NOT receive that machine's credential: instead the hub asks the other
 // machine for a one-time pairing link (it already holds a bearer token there)

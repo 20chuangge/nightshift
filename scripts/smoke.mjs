@@ -3528,6 +3528,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
       if (req.headers.authorization !== 'Bearer ' + TOKEN) return send(401, { error: { code: 'UNPAIRED' } });
       if (req.url === '/api/health') return send(200, { ok: true, version: 'test-peer' });
+      if (req.method === 'POST' && req.url === '/api/pairing/link') {
+        return send(200, { links: [], url: 'http://127.0.0.1:1/?pair=TESTTOKEN', expiresAt: new Date(Date.now() + 600000).toISOString() });
+      }
       if (req.url === '/api/bots') return send(200, [{ id: 'bot-ed', name: '剪辑', role: '剪视频' }]);      if (req.method === 'POST' && req.url === '/api/bots/bot-ed/message') return send(200, { turnId: 'turn-77' });
       if (req.url.startsWith('/api/bots/bot-ed/messages')) return send(200, [{ turnId: 'turn-77', role: 'assistant', text: '剪好了：cut.txt' }, { turnId: 'turn-77', role: 'status', status: 'success' }]);
       if (req.url === '/api/uploads') return send(200, { path: 'uploads/day/' + decodeURIComponent(req.headers['x-file-name']) });
