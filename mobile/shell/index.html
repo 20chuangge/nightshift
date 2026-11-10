@@ -6,14 +6,15 @@
 <meta name="color-scheme" content="dark light" />
 <title>Nightshift</title>
 <script>
-  /* Pick the theme before the first paint: stored choice first, then the
-     device's setting. Kept inline so there is no flash of the wrong theme. */
+  /* Pick the theme before the first paint, using the same choice as the hub's
+     设置 → 外观 (the hub reports it to /api/ui/state and the shell caches it).
+     "system" - or no choice yet - means follow the phone. */
   (() => {
     try {
-      const saved = localStorage.getItem('desk.theme') || 'auto';
-      const dark = saved === 'dark' || (saved === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      const pref = localStorage.getItem('desk.hubTheme') || 'system';
+      const dark = pref === 'dark' || (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-      document.documentElement.dataset.themeChoice = saved;
+      document.documentElement.dataset.themePref = pref;
     } catch {
       document.documentElement.dataset.theme = 'dark';
     }
@@ -182,22 +183,7 @@
   .hint { margin: 14px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.65; }
   .hint code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
-  /* Light / dark / follow-the-device. The button cycles the three. */
-  .theme-btn {
-    position: fixed;
-    top: calc(10px + var(--safe-top));
-    right: 12px;
-    width: 38px; height: 38px;
-    padding: 0;
-    border-radius: 50%;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--text);
-    font-size: 16px;
-    line-height: 1;
-    box-shadow: var(--shadow);
-    z-index: 10;
-  }
+  /* Follows 设置 → 外观 on the hub, or the phone when that is "跟随系统". */
 
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; font-size: 12px; margin: 16px 0 0; }
   .kv dt { color: var(--dim); white-space: nowrap; }
@@ -251,7 +237,6 @@
   the desktop browser. See docs/BUILD-MOBILE.md.
 -->
 <div id="stage">
-  <button id="theme-btn" class="theme-btn" type="button" aria-label="外观">🌗</button>
 
   <!-- 1. first launch / change hub -->
   <section id="connect" class="card" hidden>
