@@ -1,4 +1,4 @@
-﻿# runtime state - created on first boot
+# runtime state - created on first boot
 data/
 workspace/notes/
 workspace/.browser-profile/
@@ -47,3 +47,7 @@ workspace/downloads/
 # scratch
 _*.html
 
+
+
+# screenshots taken by scripts/check-phone-ui.mjs
+.uiv1-shots/

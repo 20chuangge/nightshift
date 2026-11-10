@@ -57,6 +57,10 @@ export const P = {
   secretsFile: path.join(DATA_DIR, 'secrets.json'),
   // Remote-access token + pairing code, generated on first boot.
   securityFile: path.join(DATA_DIR, 'security.json'),
+  // Phones and other devices that paired with this hub (Settings -> 手机和外网).
+  // Each one carries its own session token, so one can be revoked without
+  // logging out everything else.
+  devicesFile: path.join(DATA_DIR, 'devices.json'),
   // Approvals that were still waiting for a human (crash recovery).
   pendingFile: path.join(DATA_DIR, 'pending.json'),
   // One file per turn, so an interrupted process can be explained after a restart.

@@ -29,6 +29,8 @@
   })();
 </script>
 <script src="i18n-en.js"></script>
+<!-- QR codes for phone pairing; vendored (MIT) so Settings works offline. -->
+<script src="vendor/qrcode.js"></script>
 <script>
   /* -------------------------------------------------------------------
      Language. The UI is written in Chinese; English comes from
@@ -1100,6 +1102,30 @@
   .pair-hint { color: var(--muted); font-size: 12px; margin-top: var(--s3); line-height: 1.5; }
   .pair-empty { color: var(--dim); font-size: 12px; line-height: 1.6; }
 
+  /* the QR a phone scans */
+  .qr-box {
+    margin-top: var(--s3); padding: 12px; border-radius: var(--r-sm);
+    background: #fff; display: flex; align-items: center; justify-content: center;
+    min-height: 220px; overflow: hidden;
+  }
+  .qr-box svg { width: 100%; max-width: 260px; height: auto; display: block; }
+  .qr-hint { color: #666; font-size: 12px; text-align: center; padding: 12px; }
+  .qr-url { margin-top: var(--s3); font-size: 11.5px; color: var(--dim); overflow-wrap: anywhere; word-break: break-all; }
+  .qr-count { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .pair-tabs { display: flex; gap: 6px; margin-bottom: var(--s2); flex-wrap: wrap; }
+  .pair-tabs .btn.active { border-color: var(--accent); color: var(--text); }
+
+  /* the paired phones */
+  .device-list { display: flex; flex-direction: column; gap: 8px; margin-top: var(--s2); }
+  .device-item {
+    display: flex; align-items: center; gap: var(--s2);
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    padding: 10px 12px; background: var(--bg-2);
+  }
+  .device-main { flex: 1; min-width: 0; }
+  .device-name { font-size: 13px; color: var(--text); }
+  .device-meta { font-size: 11.5px; color: var(--dim); margin-top: 2px; overflow-wrap: anywhere; }
+
   .kv { display: flex; justify-content: space-between; gap: var(--s3); font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--border-soft); }
   .kv:last-child { border-bottom: none; }
   .kv .k { color: var(--dim); }
@@ -1331,7 +1357,7 @@
   .g-block .chip, .g-block .approval { max-width: 100%; }
 
   /* modal (create group) */
-  #group-scrim, #vnc-scrim, #confirm-scrim { z-index: 96; }
+  #group-scrim, #vnc-scrim, #confirm-scrim, #pair-scrim { z-index: 96; }
   .modal {
     position: fixed; z-index: 97; left: 50%; top: 50%;
     transform: translate(-50%, -48%) scale(0.98);
@@ -1343,6 +1369,7 @@
     opacity: 0; pointer-events: none;
     transition: opacity 180ms var(--ease), transform 180ms var(--ease);
   }
+  .modal-sm { width: min(420px, calc(100vw - 32px)); }
   .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
   .modal-head {
     display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
@@ -3254,7 +3281,21 @@
       <section class="dsec" id="sec-pair">
         <div class="dsec-head">手机和外网</div>
         <div class="pair-card">
-          <div class="pair-label">局域网地址</div>
+          <div id="allow-remote-wrap" hidden>
+            <label class="switch-row" for="allow-remote">
+              <input type="checkbox" id="allow-remote" />
+              <span>允许手机连接</span>
+            </label>
+            <div class="row-note" id="allow-remote-note">打开后，这台电脑的夜班会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
+          </div>
+          <div class="pair-row" style="align-items:center">
+            <div>
+              <div class="pair-label">用手机连接</div>
+              <div class="pair-hint" id="phone-connect-hint">电脑上显示一个二维码，手机扫一下就进去了。</div>
+            </div>
+            <button class="btn" id="phone-connect" type="button">显示二维码</button>
+          </div>
+          <div class="pair-label" style="margin-top:16px">局域网地址</div>
           <div class="pair-row">
             <div class="pair-value mono" id="pair-url">—</div>
             <button class="btn tiny" id="pair-copy-url" type="button">复制</button>
@@ -3271,10 +3312,15 @@
             <div class="pair-code" id="pair-code">—</div>
             <button class="btn tiny" id="pair-copy-code" type="button">复制</button>
           </div>
-          <div class="pair-hint">手机浏览器打开这个地址，输入配对码</div>
+          <div class="pair-hint">没有摄像头或不想扫码时，手机浏览器打开上面的地址，输入这个配对码。</div>
           <div class="pair-empty" id="pair-empty" hidden></div>
         </div>
         <div class="row-note">配对码只用于把手机接进这台电脑上的夜班，不会上传到任何地方。</div>
+
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
+        <div class="device-list" id="device-list"></div>
+        <div class="row-note" id="device-empty">还没有手机连进来。连上来之后会出现在这里，随时可以移除。</div>
+        <div class="row-note">移除一台设备后，那台手机刷新就会回到配对页；其它的设备不受影响。</div>
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外怎么用</div>
         <div class="row-note" id="outside-state">—</div>
         <div class="ts-install" id="ts-install" hidden>
@@ -3296,6 +3342,32 @@
         </details>
         <div class="row-note">不想装软件：在「飞书」里接上飞书应用，出门在外直接在手机飞书里给助理发消息。</div>
       </section>
+
+      <!-- =================================================================
+           the QR code a phone scans: a URL that pairs it once, in ten minutes
+           ================================================================= -->
+      <div class="scrim" id="pair-scrim" aria-hidden="true"></div>
+      <div class="modal modal-sm" id="pair-modal" role="dialog" aria-modal="true" aria-labelledby="pair-modal-title" aria-hidden="true">
+        <div class="modal-head">
+          <span class="modal-title" id="pair-modal-title">用手机连接</span>
+          <button class="icon-btn sm" id="pair-modal-close" type="button" aria-label="关闭">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="pair-tabs" id="pair-tabs" hidden></div>
+          <div class="qr-box" id="qr-box">
+            <div class="qr-hint" id="qr-hint">正在生成二维码…</div>
+          </div>
+          <div class="qr-url mono" id="qr-url"></div>
+          <div class="qr-count" id="qr-count"></div>
+          <div class="btn-row">
+            <button class="btn tiny" id="qr-copy" type="button">复制链接</button>
+            <button class="btn tiny" id="qr-refresh" type="button">换一个</button>
+          </div>
+          <div class="row-note" id="qr-iphone">iPhone 扫码后在 Safari 里打开，点「分享」→「添加到主屏幕」，以后从主屏幕一按就进来。</div>
+          <div class="row-note" id="qr-tailnet-note" hidden>在外面用的时候，手机上也要装 Tailscale 并登录同一个账号，然后扫「在外面」那个码。</div>
+          <div class="row-note" id="qr-error" hidden></div>
+        </div>
+      </div>
 
       <section class="dsec" id="sec-about">
         <div class="dsec-head">关于</div>
@@ -5077,18 +5149,34 @@ async function boot() {
   state.ready = true;
   connectStream();
   loadAttention();
-  setInterval(loadAttention, 60000);
+  setInterval(whenVisible(loadAttention), 60000);
   pollOtherMachines();
-  setInterval(pollOtherMachines, 20000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markSeen(); });
+  setInterval(whenVisible(pollOtherMachines), 20000);
+  // A phone with the screen off used to keep polling (and re-drawing ~1.5 MB
+  // screenshots every 5s). Background tabs now stay quiet until they come back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    markSeen();
+    pollHealth();
+    loadAttention();
+    if (state.tab === 'computer') refreshScreen();
+  });
   window.addEventListener('focus', () => markSeen());
   pollHealth();
-  setInterval(pollHealth, 15000);
+  setInterval(whenVisible(pollHealth), 15000);
   // Keep the server's copy fresh enough for the primary bot to answer
   // "现在是什么主题 / 在控制哪台机器" without a round trip to the browser.
   reportUiState();
-  setInterval(reportUiState, 30000);
+  setInterval(whenVisible(reportUiState), 30000);
   deliverPendingTask();
+}
+
+/** Wrap a polling function so a hidden tab (phone screen off) does not poll. */
+function whenVisible(fn) {
+  return (...args) => {
+    if (document.hidden) return;
+    return fn(...args);
+  };
 }
 
 function showFatal(err) {
@@ -8324,6 +8412,25 @@ function renderPairing() {
   const p = (s.pairing) || state.pairing || {};
   const url = p.url || (s.server && s.server.lanUrl) || '';
   const code = p.code || '';
+  const remoteOn = Boolean(s.server && s.server.lanUrl);
+
+  // The switch only exists in the desktop app: a browser tab cannot rebind the
+  // hub it is already talking to.
+  const deskCanRebind = Boolean(window.desk?.setRemote);
+  const wrap = $('allow-remote-wrap');
+  if (wrap) wrap.hidden = !deskCanRebind;
+  const remoteBox = $('allow-remote');
+  if (remoteBox) remoteBox.checked = remoteOn;
+  const connectBtn = $('phone-connect');
+  if (connectBtn) connectBtn.disabled = false;
+  const hint = $('phone-connect-hint');
+  if (hint) {
+    hint.textContent = remoteOn
+      ? '电脑上显示一个二维码，手机扫一下就进去了。'
+      : (deskCanRebind
+        ? '先打开上面的「允许手机连接」，再点这里出二维码。'
+        : '这台机器现在只监听本机，手机连不进来。在跑夜班的那台电脑上打开「允许手机连接」。');
+  }
 
   $('pair-url').textContent = url || location.origin;
   const tailnet = (s.server && s.server.tailnetUrl) || '';
@@ -8359,6 +8466,7 @@ function renderPairing() {
   } else {
     empty.hidden = true;
   }
+  loadDevices().catch(() => {});
 }
 
 function formatPairCode(code) {
@@ -8368,6 +8476,233 @@ function formatPairCode(code) {
   if (/^\d+$/.test(raw) && raw.length % 3 === 0) return raw.replace(/(\d{3})(?=\d)/g, '$1 ').trim();
   return raw;
 }
+
+// ---------------------------------------------------------------------------
+// 手机和外网: the QR a phone scans, the phones that paired, the remote switch
+// ---------------------------------------------------------------------------
+
+let pairDialogTimer = null;
+
+function pairModalOpen(open) {
+  const modal = $('pair-modal');
+  const scrim = $('pair-scrim');
+  if (!modal || !scrim) return;
+  modal.classList.toggle('open', open);
+  modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+  scrim.classList.toggle('show', open);
+  if (!open) {
+    clearInterval(pairDialogTimer);
+    pairDialogTimer = null;
+  }
+}
+
+function setQrBox(html) {
+  const box = $('qr-box');
+  if (box) box.innerHTML = html;
+}
+
+/** Draw the URL as an inline SVG (offline: the library is vendored, not a CDN). */
+function drawQr(url, note = '') {
+  const box = $('qr-box');
+  if (!box) return;
+  try {
+    const qr = window.qrcode(0, 'M');
+    qr.addData(url);
+    qr.make();
+    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接夜班' });
+  } catch (err) {
+    box.innerHTML = '';
+    const hint = document.createElement('div');
+    hint.className = 'qr-hint';
+    hint.textContent = '二维码没画出来。复制下面的链接到手机浏览器，一样能连。';
+    box.appendChild(hint);
+  }
+}
+
+function pairCountdown(expiresAt) {
+  const end = Date.parse(expiresAt || '');
+  const node = $('qr-count');
+  clearInterval(pairDialogTimer);
+  if (!node || !Number.isFinite(end)) { if (node) node.textContent = ''; return; }
+  const tick = () => {
+    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    if (left <= 0) {
+      clearInterval(pairDialogTimer);
+      pairDialogTimer = null;
+      node.textContent = '这个码过期了，正在换一个新的…';
+      requestPairLink(state.pairLinksPrefer || '').catch(() => {});
+      return;
+    }
+    node.textContent = `这个码 ${Math.floor(left / 60)} 分 ${String(left % 60).padStart(2, '0')} 秒内有效，只能用一次。`;
+  };
+  tick();
+  pairDialogTimer = setInterval(tick, 1000);
+}
+
+function renderPairTabs(links, preferredKind) {
+  const tabs = $('pair-tabs');
+  if (!tabs) return;
+  tabs.innerHTML = '';
+  if (!Array.isArray(links) || links.length === 0) {
+    tabs.hidden = true;
+    return;
+  }
+  tabs.hidden = links.length < 2;
+  const labels = { lan: '在家（局域网）', tailnet: '在外面（Tailscale）' };
+  const chosenKind = preferredKind || links.find((l) => l.kind === 'tailnet')?.kind || links[0].kind;
+  const chosen = links.find((l) => l.kind === chosenKind) || links[0];
+  for (const link of links) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn tiny';
+    btn.classList.toggle('active', link.kind === chosen.kind);
+    btn.textContent = labels[link.kind] || link.kind;
+    btn.addEventListener('click', () => {
+      state.pairLinksPrefer = link.kind;
+      renderPairTabs(links, link.kind);
+    });
+    tabs.appendChild(btn);
+  }
+  drawQr(chosen.url, labels[chosen.kind] || '');
+  $('qr-url').textContent = chosen.url || '';
+  $('qr-copy').disabled = !chosen.url;
+  $('qr-iphone').hidden = chosen.kind === 'tailnet' ? true : false;
+  $('qr-tailnet-note').hidden = chosen.kind !== 'tailnet';
+  pairCountdown(state.pairLinks?.expiresAt);
+}
+
+function showQrError(err) {
+  const box = $('qr-error');
+  if (!box) return;
+  box.hidden = false;
+  const code = err && err.code;
+  let text = (err && err.message) || '生成二维码失败';
+  if (code === 'REMOTE_DISABLED') {
+    text = '这台电脑的夜班现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
+  }
+  box.textContent = text;
+  if (code === 'REMOTE_DISABLED' && window.desk?.setRemote) {
+    const btn = document.createElement('button');
+    btn.className = 'btn tiny';
+    btn.type = 'button';
+    btn.style.marginTop = '8px';
+    btn.textContent = '打开「允许手机连接」';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await window.desk.setRemote(true);
+        await loadSettings();
+        renderPairing();
+        await requestPairLink(state.pairLinksPrefer || '');
+      } catch (e) {
+        toast(e?.message || '打开失败', true);
+        btn.disabled = false;
+      }
+    });
+    box.appendChild(document.createElement('br'));
+    box.appendChild(btn);
+  }
+}
+
+async function requestPairLink(preferredKind = '') {
+  const box = $('qr-error');
+  if (box) box.hidden = true;
+  setQrBox('<div class="qr-hint">正在生成二维码…</div>');
+  if ($('qr-url')) $('qr-url').textContent = '';
+  if ($('qr-count')) $('qr-count').textContent = '';
+  try {
+    const made = await api('/api/pairing/link', { method: 'POST' });
+    state.pairLinks = { links: made?.links || [], expiresAt: made?.expiresAt, url: made?.url };
+    state.pairLinksPrefer = preferredKind;
+    renderPairTabs(state.pairLinks.links, preferredKind);
+  } catch (err) {
+    setQrBox('<div class="qr-hint">还没有二维码</div>');
+    showQrError(err);
+  }
+}
+
+async function showPairDialog() {
+  pairModalOpen(true);
+  await requestPairLink(state.pairLinksPrefer || '');
+}
+
+/** One row per paired phone; removing one ends that phone's session. */
+function renderDevices(devices) {
+  const list = $('device-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const empty = $('device-empty');
+  if (empty) empty.hidden = devices.length > 0;
+
+  for (const device of devices) {
+    const row = document.createElement('div');
+    row.className = 'device-item';
+
+    const main = document.createElement('div');
+    main.className = 'device-main';
+    const name = document.createElement('div');
+    name.className = 'device-name';
+    name.textContent = device.name || '设备';
+    const meta = document.createElement('div');
+    meta.className = 'device-meta';
+    const seen = device.lastSeenAt ? new Date(device.lastSeenAt) : null;
+    const seenText = seen && !Number.isNaN(seen.getTime())
+      ? `最近 ${seen.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+      : '最近用过';
+    meta.textContent = device.ip ? `${seenText} · ${device.ip}` : seenText;
+    main.append(name, meta);
+
+    const remove = document.createElement('button');
+    remove.className = 'btn tiny';
+    remove.type = 'button';
+    remove.textContent = '移除';
+    remove.addEventListener('click', async () => {
+      remove.disabled = true;
+      try {
+        await api(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' });
+        toast('已移除。那台手机刷新就会回到配对页。');
+        await loadDevices();
+      } catch (err) {
+        toast(err?.message || '移除失败', true);
+        remove.disabled = false;
+      }
+    });
+
+    row.append(main, remove);
+    list.appendChild(row);
+  }
+}
+
+async function loadDevices() {
+  const list = $('device-list');
+  if (!list) return;
+  try {
+    const data = await api('/api/devices');
+    renderDevices(Array.isArray(data?.devices) ? data.devices : []);
+  } catch {
+    /* an older server without /api/devices: leave the list empty */
+  }
+}
+
+/** Desktop only: rebind the local hub so phones can reach it. */
+async function applyRemoteSwitch(on) {
+  const box = $('allow-remote');
+  if (!window.desk?.setRemote) return;
+  if (box) box.disabled = true;
+  try {
+    await window.desk.setRemote(Boolean(on));
+    toast(on ? '已打开：手机现在能连进来了。' : '已关闭：手机连不进来了。');
+    await loadSettings();
+    renderPairing();
+    await loadDevices();
+  } catch (err) {
+    toast(err?.message || '切换失败', true);
+    if (box) box.checked = !on;
+  } finally {
+    if (box) box.disabled = false;
+  }
+}
+
 
 /** Settings is a set of pages: the left list picks one, only that one shows. */
 function setSettingsNav(sectionId) {
@@ -10136,6 +10471,9 @@ function stopScreenLoop() {  if (screenTimer) { clearInterval(screenTimer); scre
 function startScreenLoop() {
   stopScreenLoop();
   screenTimer = setInterval(() => {
+    // Hidden = phone in a pocket: a screenshot every 5 s is megabytes over a
+    // Tailscale relay for a picture nobody is looking at.
+    if (document.hidden) return;
     if (state.tab !== 'computer' || !state.panelOpen) return;
     refreshScreen();
     loadComputer();
@@ -10704,6 +11042,17 @@ function wireChrome() {
     const raw = ((state.settings && state.settings.pairing) || state.pairing || {}).code
       || $('pair-code').textContent.replace(/\s+/g, '');
     copyText(raw, '配对码已复制');
+  });
+
+  // 手机和外网: QR dialog, device list, the desktop-only remote switch
+  $('phone-connect')?.addEventListener('click', () => showPairDialog());
+  $('pair-modal-close')?.addEventListener('click', () => pairModalOpen(false));
+  $('pair-scrim')?.addEventListener('click', () => pairModalOpen(false));
+  $('qr-refresh')?.addEventListener('click', () => requestPairLink(state.pairLinksPrefer || ''));
+  $('qr-copy')?.addEventListener('click', () => copyText($('qr-url').textContent.trim(), '链接已复制'));
+  $('allow-remote')?.addEventListener('change', (event) => applyRemoteSwitch(event.target.checked));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && $('pair-modal')?.classList.contains('open')) pairModalOpen(false);
   });
 
   // avatar customizer

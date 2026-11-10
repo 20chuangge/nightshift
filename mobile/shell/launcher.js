@@ -24,8 +24,9 @@
 (() => {
   'use strict';
 
-  const KEYS = { hub: 'desk.hubUrl' };
+  const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs' };
   const PROBE_TIMEOUT_MS = 4500;
+  const LONG_PRESS_MS = 550;
 
   const $ = (id) => document.getElementById(id);
   const dom = {
@@ -41,7 +42,10 @@
     hubUrl: $('hub-url'),
     hubCode: $('hub-code'),
     pasteBtn: $('paste-btn'),
+    scanBtn: $('scan-btn'),
     previewBtn: $('preview-btn'),
+    machines: $('machines'),
+    machineList: $('machine-list'),
     currentHub: $('current-hub'),
     currentStatus: $('current-status'),
     shellVersion: $('shell-version'),
@@ -63,6 +67,7 @@
   const plugins = (cap && cap.Plugins) || {};
   const prefs = plugins.Preferences || null;
   const app = plugins.App || null;
+  const scanner = plugins.BarcodeScanner || null;
   const isNative = Boolean(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform());
 
   /** @capacitor/preferences on device, localStorage when previewing in a browser. */
@@ -167,6 +172,103 @@
     return `${hub}/?pair=${encodeURIComponent(String(code).replace(/\s+/g, ''))}`;
   }
 
+  // ---------------------------------------------------------- saved machines
+  /** This phone only stores hub URLs; the credential stays in the hub's cookie. */
+  function hostLabel(hub) {
+    try {
+      return new URL(hub).host;
+    } catch {
+      return hub;
+    }
+  }
+
+  async function readHubs() {
+    try {
+      const raw = JSON.parse((await store.get(KEYS.hubs)) || '[]');
+      if (Array.isArray(raw)) return raw.filter((h) => h && typeof h.url === 'string');
+    } catch {
+      /* corrupt list: start over rather than never booting */
+    }
+    return [];
+  }
+
+  async function rememberHub(hub) {
+    const hubs = (await readHubs()).filter((h) => h.url !== hub);
+    hubs.unshift({ url: hub, name: hostLabel(hub), lastUsedAt: new Date().toISOString() });
+    await store.set(KEYS.hubs, JSON.stringify(hubs.slice(0, 12)));
+    await store.set(KEYS.hub, hub);
+  }
+
+  async function forgetHub(hub) {
+    const hubs = (await readHubs()).filter((h) => h.url !== hub);
+    await store.set(KEYS.hubs, JSON.stringify(hubs));
+    if ((await store.get(KEYS.hub)) === hub) await store.remove(KEYS.hub);
+  }
+
+  /** Tap opens, long press offers to forget. */
+  async function renderMachines() {
+    if (!dom.machines || !dom.machineList) return;
+    const hubs = await readHubs();
+    dom.machines.hidden = hubs.length === 0;
+    dom.machineList.textContent = '';
+    for (const entry of hubs) {
+      const row = document.createElement('div');
+      row.className = 'machine';
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.dataset.url = entry.url;
+
+      const who = document.createElement('div');
+      who.className = 'who';
+      const name = document.createElement('div');
+      name.className = 'n';
+      name.textContent = entry.name || hostLabel(entry.url);
+      const url = document.createElement('div');
+      url.className = 'u';
+      url.textContent = entry.url;
+      who.append(name, url);
+      row.append(dot, who);
+
+      let timer = null;
+      let longPressed = false;
+      row.addEventListener('pointerdown', () => {
+        longPressed = false;
+        timer = setTimeout(async () => {
+          timer = null;
+          longPressed = true;
+          // eslint-disable-next-line no-alert
+          const ok = window.confirm(`从列表里删掉「${entry.url}」？\n电脑上的 Desk 不受影响。`);
+          if (!ok) return;
+          await forgetHub(entry.url);
+          await renderMachines();
+        }, LONG_PRESS_MS);
+      });
+      const cancel = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
+      row.addEventListener('pointerup', cancel);
+      row.addEventListener('pointercancel', cancel);
+      row.addEventListener('pointerleave', cancel);
+      row.addEventListener('click', () => {
+        if (longPressed) {
+          longPressed = false;
+          return;
+        }
+        void openHub(entry.url, '');
+      });
+
+      dom.machineList.appendChild(row);
+      // Show which ones answer right now, without blocking the render.
+      void probe(entry.url).then((up) => {
+        dot.classList.toggle('up', up);
+      });
+    }
+  }
+
   /**
    * Reachability probe. `no-cors` is deliberate: the hub sends no CORS headers,
    * so a normal fetch could never read a response. An opaque fetch still proves
@@ -264,6 +366,55 @@
     window.location.assign(hubUrlFor(hub, code));
   }
 
+  /** A pair link from the computer's QR code: https://host:port/?pair=TOKEN */
+  async function connectFromScan(raw) {
+    const text = String(raw || '').trim();
+    if (!text) {
+      setError('没扫到内容，再试一次。');
+      return;
+    }
+    let url;
+    try {
+      url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`);
+    } catch {
+      setError(`这个码不是夜班的连接码：${text.slice(0, 80)}`);
+      return;
+    }
+    const hub = url.origin;
+    const token = url.searchParams.get('pair') || '';
+    await rememberHub(hub);
+    await renderMachines();
+    await openHub(hub, token);
+  }
+
+  async function scanToConnect() {
+    setError('');
+    if (!scanner) {
+      setError('这个版本没有扫码模块（例如网页预览）。请手动填地址，或在手机浏览器里打开电脑上的二维码链接。');
+      return;
+    }
+    if (dom.scanBtn) dom.scanBtn.disabled = true;
+    try {
+      const permission = await scanner.requestPermissions().catch(() => null);
+      if (permission && permission.camera !== 'granted' && permission.camera !== 'limited') {
+        setError('没有相机权限，扫不了码。到系统设置里给 Desk 打开「相机」再试一次。');
+        return;
+      }
+      const result = await scanner.scan({ formats: ['QR_CODE'] });
+      const value = result?.barcodes?.[0]?.rawValue || '';
+      await connectFromScan(value);
+    } catch (err) {
+      const message = String(err?.message || err || '');
+      setError(
+        /cancel/i.test(message)
+          ? '扫码已取消。'
+          : `扫码没成功：${message}\n如果一直这样，手动填电脑上显示的地址也能连。`,
+      );
+    } finally {
+      if (dom.scanBtn) dom.scanBtn.disabled = false;
+    }
+  }
+
   async function connectFromForm() {
     setError('');
     let hub;
@@ -286,8 +437,9 @@
         );
         return;
       }
-      await store.set(KEYS.hub, hub);
+      await rememberHub(hub);
       dom.hubCode.value = '';
+      await renderMachines();
       await openHub(hub, code);
     } catch (err) {
       setError(err.message || String(err));
@@ -301,6 +453,10 @@
   dom.connectForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void connectFromForm();
+  });
+
+  dom.scanBtn.addEventListener('click', () => {
+    void scanToConnect();
   });
 
   dom.pasteBtn.addEventListener('click', async () => {
@@ -327,9 +483,11 @@
 
   dom.changeBtn.addEventListener('click', () => showConnect(state.hub));
   dom.forgetBtn.addEventListener('click', async () => {
-    await store.remove(KEYS.hub);
+    if (state.hub) await forgetHub(state.hub);
+    else await store.remove(KEYS.hub);
     state.hub = '';
     dom.connectForm.reset();
+    await renderMachines();
     showConnect('');
   });
 
@@ -348,6 +506,7 @@
   async function boot() {
     await loadInfo();
     dom.foot.textContent = `Desk mobile shell · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
+    if (dom.scanBtn) dom.scanBtn.hidden = false;
 
     const hub = await store.get(KEYS.hub);
     if (hub) {
@@ -357,6 +516,7 @@
         state.hub = '';
       }
     }
+    await renderMachines();
     if (state.hub) {
       showConnected();
       return;
@@ -383,5 +543,4 @@
     plugins: Object.keys(plugins),
     normalizeHub,
     state: () => ({ view: state.view, hub: state.hub, info: state.info }),
-  };
-})();
+  };})();

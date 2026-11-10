@@ -144,11 +144,17 @@ export async function rotatePairingCode(security) {
  * object (that is how the smoke test proves remote clients are gated without
  * actually opening a network port).
  *
+ * Three things are accepted from a remote client, in this order:
+ *   - the bearer token from data/security.json (scripts, curl, other hubs)
+ *   - the same token as a cookie (browsers paired before per-device sessions)
+ *   - a device session token from data/devices.json (what pairing hands out now)
+ *
  * @param {{socket?: {remoteAddress?: string}, headers?: object}} req
  * @param {{token?: string}} security
- * @returns {{required: boolean, authorized: boolean, mode: 'local'|'token'|'cookie'|'none', local: boolean, address: string}}
+ * @param {{findBySession?: (token: string) => object|null, touch?: (id: string) => void}} [devices]
+ * @returns {{required: boolean, authorized: boolean, mode: 'local'|'token'|'cookie'|'none', local: boolean, address: string, deviceId?: string}}
  */
-export function evaluateAuth(req, security) {
+export function evaluateAuth(req, security, devices) {
   const address = clientIp(req);
   if (isLoopbackAddress(address)) {
     return { required: false, authorized: true, mode: 'local', local: true, address };
@@ -163,6 +169,18 @@ export function evaluateAuth(req, security) {
   const cookie = readCookie(req?.headers?.cookie, SESSION_COOKIE);
   if (cookie && security?.token && safeEqual(cookie, security.token)) {
     return { required: true, authorized: true, mode: 'cookie', local: false, address };
+  }
+
+  if (cookie && devices?.findBySession) {
+    const device = devices.findBySession(cookie);
+    if (device) {
+      try {
+        devices.touch?.(device.id);
+      } catch {
+        /* activity tracking must never fail an authenticated request */
+      }
+      return { required: true, authorized: true, mode: 'cookie', local: false, address, deviceId: device.id };
+    }
   }
 
   return { required: true, authorized: false, mode: 'none', local: false, address };
@@ -241,6 +259,58 @@ export function createRateLimiter({ limit = 5, windowMs = 60_000 } = {}) {
     },
     get size() {
       return hits.size;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One-time pairing links (the QR code)
+// ---------------------------------------------------------------------------
+
+/** A QR code is a URL; ten minutes is long enough to pick up a phone. */
+export const PAIR_LINK_TTL_MS = 10 * 60_000;
+
+/**
+ * Short-lived, single-use pairing links. In memory only, on purpose: a restart
+ * invalidates them, and there is nothing to leak on disk. The token is what a
+ * QR code carries in place of the 8-digit code, so the phone never has to type
+ * anything - and it dies the moment it is used.
+ */
+export function createPairLinkStore({ ttlMs = PAIR_LINK_TTL_MS, now = () => Date.now() } = {}) {
+  const links = new Map(); // token -> {expiresAt}
+
+  function prune(at) {
+    for (const [token, link] of links) {
+      if (link.expiresAt <= at) links.delete(token);
+    }
+  }
+
+  return {
+    /** 32 random bytes, URL-safe; safe to put in a query string. */
+    create(ttl = ttlMs) {
+      const at = now();
+      prune(at);
+      const token = crypto.randomBytes(32).toString('base64url');
+      const expiresAt = at + Math.max(1000, Number(ttl) || ttlMs);
+      links.set(token, { expiresAt });
+      return { token, expiresAt };
+    },
+
+    /** Redeem once. Returns null for unknown, used, or expired tokens. */
+    consume(token) {
+      const key = String(token || '').trim();
+      if (!key) return null;
+      const at = now();
+      prune(at);
+      const link = links.get(key);
+      if (!link) return null;
+      links.delete(key);
+      return link.expiresAt > at ? { expiresAt: link.expiresAt } : null;
+    },
+
+    get size() {
+      prune(now());
+      return links.size;
     },
   };
 }

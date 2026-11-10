@@ -74,14 +74,19 @@ function slugifyId(value) {
 }
 
 async function uniqueGroupId(name) {
-  const base = slugifyId(name) || 'group';
+  // A Chinese name slugifies to '' - falling back to the bare word "group"
+  // made every such group collide into group, group-2, ... which is legal but
+  // useless when you are looking at a URL or a log line. Give those a short
+  // random id instead; existing group ids are untouched.
+  const slug = slugifyId(name);
+  const base = slug || `g-${Math.random().toString(36).slice(2, 8)}`;
   let id = base;
   for (let suffix = 2; suffix < 100; suffix += 1) {
     const taken = await fsp.stat(groupFile(id)).then(() => true).catch(() => false);
     if (!taken) return id;
     id = `${base}-${suffix}`;
   }
-  return `${base}-${uid('g').slice(2, 8)}`;
+  return `${slug || 'g'}-${uid('g').slice(2, 8)}`;
 }
 
 /** Dedupe + trim a member list: ["ops", "researcher", "ops"] -> ["ops", "researcher"]. */

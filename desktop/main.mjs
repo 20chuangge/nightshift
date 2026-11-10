@@ -36,6 +36,8 @@ let tray = null;
 let child = null;
 let quitting = false;
 let serverPort = 0;
+/** True while we kill the bundled server on purpose (port/host change). */
+let restarting = false;
 /** When the local server died recently (restart budget: 3 a minute). */
 const crashTimes = [];
 /** The machine the window shows: '' is this computer, otherwise a hub URL. */
@@ -334,13 +336,39 @@ const HUB_HOST = '0.0.0.0';
 const PORT_FILE = path.join(app.getPath('userData'), 'port.json');
 const PORT_CANDIDATES = [4390, 14390, 24390, 34390, 44390, 54390];
 
+/**
+ * "允许手机连接" (Settings → 手机和外网). Off by default: a fresh install only
+ * listens on 127.0.0.1. Turning it on rebinds the bundled server to 0.0.0.0 so
+ * a phone on the home network - or on Tailscale, away from home - can reach it.
+ * Pairing is still required, and only paired devices get in.
+ */
+const REMOTE_FILE = path.join(app.getPath('userData'), 'remote.json');
+
+function savedRemote() {
+  try {
+    return Boolean(JSON.parse(fs.readFileSync(REMOTE_FILE, 'utf8')).allowRemote);
+  } catch {
+    return false;
+  }
+}
+
+function writeRemote(allowRemote) {
+  try {
+    fs.writeFileSync(REMOTE_FILE, `${JSON.stringify({ allowRemote: Boolean(allowRemote) })}\n`);
+  } catch (err) {
+    bootLog(`remote.json write failed: ${err.message}`);
+  }
+}
+
 function savedPort() {
   try { return Number(JSON.parse(fs.readFileSync(PORT_FILE, 'utf8')).port) || 0; } catch { return 0; }
 }
 
-/** Start the local server on the first port that binds. */
-async function startServer({ host = '127.0.0.1' } = {}) {
-  if (host === HUB_HOST || process.env.PORT) return launchServer({ host, port: process.env.PORT || '0' });
+/** Start the local server on the first port that binds.
+ *  `host` decides the network surface: 127.0.0.1 (this computer only) or
+ *  0.0.0.0 (phones on the LAN / Tailscale, Settings → 允许手机连接). */
+async function startServer({ host = '127.0.0.1', pinned = false } = {}) {
+  if (pinned || process.env.PORT) return launchServer({ host, port: process.env.PORT || '0' });
   const tried = [...new Set([savedPort(), ...PORT_CANDIDATES].filter(Boolean))];
   let lastError = null;
   for (const port of tried) {
@@ -410,6 +438,8 @@ function launchServer({ host, port }) {
 
     proc.on('exit', (code, signal) => {
       if (quitting) return;
+      // Deliberate rebind (允许手机连接): this exact process was told to stop.
+      if (restarting || proc.__deliberate) return;
       if (!ready) {
         clearTimeout(timer);
         // Node prints the error object over many lines; keep the one that names it.
@@ -438,6 +468,41 @@ function launchServer({ host, port }) {
 
     proc.on('error', reject);
   });
+}
+
+/**
+ * Rebind the bundled server (127.0.0.1 <-> 0.0.0.0) without restarting the app.
+ * The window keeps its origin as long as the port survives; if the port had to
+ * change, the window is pointed at the new one.
+ */
+async function restartLocalServer(host) {
+  const previous = serverPort;
+  if (child && !child.killed) {
+    restarting = true;
+    const dying = child;
+    dying.__deliberate = true;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 4000);
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      dying.once('exit', done);
+      try {
+        dying.kill();
+      } catch {
+        done();
+      }
+    });
+    restarting = false;
+  }
+  const port = await startServer({ host });
+  serverPort = port;
+  bootLog(`server rebound to ${host}:${port}`);
+  if (win && !win.isDestroyed() && port !== previous) {
+    win.loadURL(`http://127.0.0.1:${port}/`).catch((err) => bootLog(`reload after rebind failed: ${err.message}`));
+  }
+  return { port, host };
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +863,20 @@ ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {})
 
 ipcMain.handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
 ipcMain.handle('desk:use-local', (_event, message) => switchTo('', message));
+
+// Settings → 手机和外网 → 允许手机连接. Rebinds the bundled server so phones on
+// the home network or on Tailscale can reach it; pairing is still required.
+ipcMain.handle('desk:set-remote', async (_event, allowRemote) => {
+  const want = Boolean(allowRemote);
+  if (HUB_MODE) {
+    writeRemote(true);
+    return { ok: true, remote: true, port: serverPort, host: HUB_HOST, hubMode: true };
+  }
+  writeRemote(want);
+  const host = want ? HUB_HOST : '127.0.0.1';
+  const result = await restartLocalServer(host);
+  return { ok: true, remote: want, port: result.port, host };
+});
 // Handed over once, and only to the machine it was meant for.
 ipcMain.handle('desk:take-pending-message', () => {
   if (!pendingTask || pendingTask.machine !== remoteHub) return '';
@@ -1147,7 +1226,7 @@ if (!gotLock) {
       // runs on the idle PC / VM; the other devices connect to it.
       if (HUB_MODE) {
         await prepareHome();
-        const port = await startServer({ host: HUB_HOST });
+        const port = await startServer({ host: HUB_HOST, pinned: true });
         serverPort = port;
         console.log(`[desk] HUB MODE on http://${HUB_HOST}:${port}/ (home: ${HOME})`);
         createTray();
@@ -1163,7 +1242,8 @@ if (!gotLock) {
         console.log('[desk] dev mode, loading', DEV_URL);
       } else {
         await prepareHome();
-        const port = await startServer();
+        // 允许手机连接 was on last time: come back up bound to the network.
+        const port = await startServer({ host: savedRemote() ? HUB_HOST : '127.0.0.1' });
         console.log(`[desk] server ready on http://127.0.0.1:${port}/ (home: ${HOME})`);
       }
 

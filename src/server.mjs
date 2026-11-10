@@ -18,6 +18,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn as spawnChild } from 'node:child_process';
 import fsp from 'node:fs/promises';
+import zlib from 'node:zlib';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
 import {
@@ -91,12 +92,14 @@ import {
   safeEqual,
   sessionCookieHeader,
   createRateLimiter,
+  createPairLinkStore,
   loadOrCreateSecurity,
   listLanAddresses,
   preferredLanAddress,
   lanUrlFor,
   tailnetAddress,
 } from './auth.mjs';
+import { loadDeviceStore, describeAgent } from './devices.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
 const VERSION = (() => {
@@ -143,6 +146,9 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const vision = await visionModule.loadVision();
   const media = await mediaModule.loadMedia();
   const security = await loadOrCreateSecurity();
+  // Phones that paired with this hub, and the single-use links a QR code carries.
+  const devices = await loadDeviceStore();
+  const pairLinks = createPairLinkStore();
 
   const bus = new EventBus();
   const attention = createAttention({ file: path.join(P.dataDir, 'attention.json'), bus });
@@ -309,6 +315,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     vision, // image-understanding config; same rules
     media, // image / video generation config; same rules
     security,
+    devices,
+    pairLinks,
     workspaceDir,
     startedAt: Date.now(),
     host,
@@ -547,7 +555,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     try { pathname = new URL(req.url || '/', 'http://hub').pathname; } catch { return refuse(400, 'Bad Request'); }
     const match = /^\/api\/bots\/([^/]+)\/desktop\/ws$/.exec(pathname);
     if (!match) return refuse(404, 'Not Found');
-    if (!evaluateAuth(req, state.security).authorized) return refuse(401, 'Unauthorized');
+    if (!evaluateAuth(req, state.security, state.devices).authorized) return refuse(401, 'Unauthorized');
     const info = desktopInfo(safeDecode(match[1]));
     if (!info.running) return refuse(404, 'Not Found');
     // Windows: no websockify; the hub speaks WebSocket to the VNC server itself.
@@ -599,7 +607,7 @@ async function handleRequest(req, res, state) {
     // two endpoints that exist precisely so an unauthenticated client can find
     // out it needs to pair and then do it.
     if (!isAuthExemptPath(method, pathname)) {
-      const auth = evaluateAuth(req, state.security);
+      const auth = evaluateAuth(req, state.security, state.devices);
       if (!auth.authorized) {
         return errorResponse(
           res,
@@ -615,7 +623,7 @@ async function handleRequest(req, res, state) {
 
   // Static: the app shell has to load before a client can pair, so those files
   // are public. Anything else in public/ is treated like app data.
-  const auth = evaluateAuth(req, state.security);
+  const auth = evaluateAuth(req, state.security, state.devices);
   if (!auth.authorized && !isPublicShellPath(pathname)) {
     return errorResponse(res, 401, 'AUTH_REQUIRED', 'this device is not paired');
   }
@@ -758,7 +766,16 @@ function pairingInfo(state) {
     state.pairingUrl ||
     state.lanUrl ||
     `http://${isLoopbackHost(state.host) ? '127.0.0.1' : state.host}:${port}`;
-  return { url, code: state.security.code };
+  // Addresses a phone could use. Empty when the hub only listens on loopback:
+  // the UI then says "turn on 允许手机连接" instead of showing a dead link.
+  const urls = [];
+  if (state.lanUrl) {
+    const lanAddress = preferredLanAddress();
+    const tailnetIp = tailnetAddress();
+    if (lanAddress) urls.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
+    if (tailnetIp) urls.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
+  }
+  return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl) };
 }
 
 route('GET', /^\/api\/settings$/, async (_req, _res, { state }) => ({
@@ -1173,7 +1190,7 @@ route('POST', /^\/api\/settings\/test$/, async (_req, _res, { body, state }) => 
 });
 
 route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
-  const auth = evaluateAuth(req, state.security);
+  const auth = evaluateAuth(req, state.security, state.devices);
   return { required: auth.required, authorized: auth.authorized, mode: auth.mode };
 });
 
@@ -1184,17 +1201,62 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
     throw httpError(429, 'PAIR_RATE_LIMITED', 'too many pairing attempts; wait a minute and try again');
   }
 
-  const code = String(body?.code ?? '').trim();
+  // Two ways in, both counted against the same rate limit: the 8-digit code a
+  // human types, and the one-time token a QR code carries.
+  const code = String(body?.code ?? body?.token ?? '').trim();
   if (!code) throw httpError(400, 'PAIR_CODE_REQUIRED', 'body needs { code }');
-  if (!safeEqual(code, state.security.code)) {
+  if (!/^\d{8}$/.test(code)) {
+    const link = state.pairLinks.consume(code);
+    if (!link) throw httpError(401, 'PAIR_INVALID_LINK', 'that code was already used or has expired; scan the code again');
+  } else if (!safeEqual(code, state.security.code)) {
     throw httpError(401, 'PAIR_INVALID_CODE', 'that pairing code is not valid');
   }
 
-  res.setHeader('set-cookie', sessionCookieHeader(state.security.token));
-  return { ok: true };
+  // Every paired client gets its own session, so Settings can list the phones
+  // and remove one without logging the others out.
+  const { device, sessionToken } = state.devices.add({ name: describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
+  res.setHeader('set-cookie', sessionCookieHeader(sessionToken));
+  return { ok: true, device };
 });
 
 route('GET', /^\/api\/pairing$/, async (_req, _res, { state }) => pairingInfo(state));
+
+// A QR code in Settings: a URL that pairs the phone by itself, once, in ten
+// minutes. Only the machine owner (or an already-paired device) can ask.
+route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
+  if (!state.lanUrl) {
+    throw httpError(
+      409,
+      'REMOTE_DISABLED',
+      'this hub only listens on 127.0.0.1 - turn on "允许手机连接" in Settings → 手机和外网 first',
+    );
+  }
+  const port = state.port;
+  const lanAddress = preferredLanAddress();
+  const tailnetIp = tailnetAddress();
+  const links = [];
+  if (lanAddress) links.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
+  if (tailnetIp) links.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
+
+  // One token, both addresses: the phone scans whichever it can reach.
+  const { token, expiresAt } = state.pairLinks.create();
+  const withToken = links.map((link) => ({ ...link, url: `${link.url}/?pair=${token}` }));
+  const preferred = withToken.find((link) => link.kind === 'tailnet') || withToken[0] || null;
+  return {
+    links: withToken,
+    url: preferred?.url || null,
+    expiresAt: new Date(expiresAt).toISOString(),
+    expiresInSec: Math.round((expiresAt - Date.now()) / 1000),
+  };
+});
+
+route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
+
+route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
+  const removed = state.devices.remove(params.id);
+  if (!removed) throw httpError(404, 'DEVICE_NOT_FOUND', 'no such device');
+  return { ok: true };
+});
 
 // --- UI state / remote machines -------------------------------------------
 //
@@ -2448,14 +2510,28 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
 // response helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * A phone on Tailscale away from home goes through a DERP relay, where every
+ * byte and every round trip shows. gzip and an ETag turn the 500 KB shell into
+ * ~90 KB, and a reload into a 304 with no body at all.
+ */
+function acceptsGzip(req) {
+  return /\bgzip\b/i.test(String(req?.headers?.['accept-encoding'] || ''));
+}
+
 function jsonResponse(res, status, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  const gzip = body.length > 1024 && acceptsGzip(res.req);
+  const out = gzip ? zlib.gzipSync(body) : body;
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(body),
+    'content-length': out.length,
     'cache-control': 'no-store',
-  });
-  res.end(body);
+    vary: 'accept-encoding',
+  };
+  if (gzip) headers['content-encoding'] = 'gzip';
+  res.writeHead(status, headers);
+  res.end(out);
 }
 
 function errorResponse(res, status, code, message) {
@@ -2582,15 +2658,46 @@ async function serveStatic(req, res, pathname) {
     throw err;
   }
 
-  const type = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream';
-  res.writeHead(200, {
+  const ext = path.extname(target).toLowerCase();
+  const type = MIME[ext] || 'application/octet-stream';
+  const stamp = await fsp.stat(target).then((s) => `${s.size.toString(16)}-${Math.floor(s.mtimeMs).toString(16)}`).catch(() => '');
+  const etag = stamp ? `W/"${stamp}"` : '';
+
+  // Revalidation is the cheap path over a relayed phone link: no body at all.
+  if (etag && String(req.headers['if-none-match'] || '') === etag) {
+    res.writeHead(304, { etag, 'cache-control': 'no-cache' });
+    return res.end();
+  }
+
+  const compressible = COMPRESSIBLE_TYPES.has(ext) && data.length > 1024 && acceptsGzip(req);
+  let payload = data;
+  if (compressible) {
+    const cached = gzipCache.get(target);
+    if (cached && cached.stamp === stamp) {
+      payload = cached.buffer;
+    } else {
+      payload = zlib.gzipSync(data);
+      gzipCache.set(target, { stamp, buffer: payload });
+      if (gzipCache.size > 40) gzipCache.delete(gzipCache.keys().next().value);
+    }
+  }
+
+  const headers = {
     'content-type': type,
-    'content-length': data.length,
+    'content-length': payload.length,
     'cache-control': 'no-cache',
-  });
+    vary: 'accept-encoding',
+  };
+  if (etag) headers.etag = etag;
+  if (compressible) headers['content-encoding'] = 'gzip';
+  res.writeHead(200, headers);
   if (req.method === 'HEAD') return res.end();
-  return res.end(data);
+  return res.end(payload);
 }
+
+/** One cached gzip buffer per static file, keyed by size+mtime. */
+const gzipCache = new Map();
+const COMPRESSIBLE_TYPES = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.md']);
 
 // ---------------------------------------------------------------------------
 // projections (what the UI is allowed to see)

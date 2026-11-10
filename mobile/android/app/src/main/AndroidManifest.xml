@@ -39,4 +39,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 扫码连接: the launchpad scans the QR the computer shows in
+         Settings → 手机和外网. Optional hardware: tablets without a camera
+         still type the address by hand. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 </manifest>

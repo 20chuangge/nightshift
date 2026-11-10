@@ -97,14 +97,16 @@ async function main() {
   const groupsMod = await import('../src/groups.mjs');
   const storeMod = await import('../src/store.mjs');
   const browserMod = await import('../src/browser.mjs');
+  const devicesMod = await import('../src/devices.mjs');
 
   await bootServer();
 
   try {
     await stage('basics', scenarioBasics);
     await stage('settings', () => scenarioSettings({ settingsMod }));
-    await stage('auth gate', () => scenarioAuth({ auth: authMod }));
+    await stage('auth gate', () => scenarioAuth({ auth: authMod, devicesMod }));
     await stage('pairing', scenarioPairing);
+    await stage('phone pairing link', scenarioPairingLink);
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -182,8 +184,8 @@ function pointEnvAt(target) {
   process.env.PORT = '0';
 }
 
-async function startServerChild(target) {
-  const env = { ...process.env, ASSIST_HOME: target, PORT: '0' };
+async function startServerChild(target, extraEnv = {}) {
+  const env = { ...process.env, ASSIST_HOME: target, PORT: '0', ...extraEnv };
   const proc = spawn(process.execPath, [path.join(REPO, 'src', 'server.mjs')], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -259,7 +261,12 @@ async function stopChild() {
   if (!child) return;
   const proc = child;
   child = null;
-  if (proc.exitCode !== null) return;
+  await stopProcess(proc);
+}
+
+/** Stop a server we started outside `child` (the phone-pairing scenario). */
+async function stopProcess(proc) {
+  if (!proc || proc.exitCode !== null) return;
   const exited = new Promise((resolve) => proc.once('exit', resolve));
   proc.kill('SIGTERM');
   const timedOut = await Promise.race([
@@ -465,6 +472,43 @@ async function scenarioBasics() {
   const html = await index.text();
   check('GET / serves the UI', index.status === 200 && html.includes('<!DOCTYPE html'), `status ${index.status}`);
   check('UI is a single self-contained file (no CDN)', !/https?:\/\/cdn\.|unpkg|jsdelivr/i.test(html));
+
+  // A phone away from home goes through a DERP relay: bytes are the product.
+  // node:http is used, not fetch: fetch transparently un-gzips, which would hide
+  // exactly the thing being asserted.
+  const zlib = await import('node:zlib');
+  const rawGet = (pathname, headers = {}) => new Promise((resolve, reject) => {
+    const req = http.request(`${base}${pathname}`, { headers }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+
+  const gz = await rawGet('/', { 'accept-encoding': 'gzip' });
+  const gunzipped = zlib.gunzipSync(gz.body).toString('utf8');
+  check(
+    'the app shell is gzipped for clients that ask',
+    gz.status === 200 && gz.headers['content-encoding'] === 'gzip' && gunzipped.includes('<!DOCTYPE html'),
+    `${gz.headers['content-encoding']} ${gz.body.length}`,
+  );
+  check(
+    'gzip actually makes the shell much smaller',
+    gz.body.length > 0 && gz.body.length < Buffer.byteLength(html) / 2,
+    `${gz.body.length} of ${Buffer.byteLength(html)}`,
+  );
+  const etag = gz.headers.etag || '';
+  check('static files carry an ETag', /^W\/".+"$/.test(etag), etag);
+  const revalidated = await rawGet('/', { 'if-none-match': etag });
+  check(
+    'a reload revalidates to 304 with no body',
+    revalidated.status === 304 && revalidated.body.length === 0,
+    `${revalidated.status} ${revalidated.body.length}`,
+  );
+  // SSE must never be compressed: it is consumed as it arrives.
+  check('the streaming endpoint is not gzipped', !/gzip/.test(String((await api('/api/health')).headers?.get('content-encoding') || '')), '');
 
   const pkg = JSON.parse(await fsp.readFile(path.join(REPO, 'package.json'), 'utf8'));
   const declared = Object.keys(pkg.dependencies || {});
@@ -1113,6 +1157,21 @@ async function scenarioGroups({ botsMod, groupsMod, toolsMod }) {
     single.status === 200 && single.json?.group?.id === groupId && single.json.group.members.length === 3,
     single.text.slice(0, 200),
   );
+
+  // Chinese group names slugify to nothing; the id still has to be distinct and
+  // readable instead of group / group-2.
+  const cnOne = await api('/api/groups', { method: 'POST', body: { name: '小熊学滑冰', members: ['steward', 'researcher'] } });
+  const cnTwo = await api('/api/groups', { method: 'POST', body: { name: '周末值班', members: ['steward', 'researcher'] } });
+  const cnIdOne = cnOne.json?.group?.id || '';
+  const cnIdTwo = cnTwo.json?.group?.id || '';
+  check(
+    'a group with a Chinese name gets a short random id, not the word "group"',
+    /^g-[a-z0-9]{6}$/.test(cnIdOne) && /^g-[a-z0-9]{6}$/.test(cnIdTwo),
+    `${cnIdOne} / ${cnIdTwo}`,
+  );
+  check('two Chinese-named groups get different ids', cnIdOne && cnIdTwo && cnIdOne !== cnIdTwo, `${cnIdOne} vs ${cnIdTwo}`);
+  await api(`/api/groups/${cnIdOne}`, { method: 'DELETE' });
+  await api(`/api/groups/${cnIdTwo}`, { method: 'DELETE' });
 
   // --- patch ----------------------------------------------------------------
   const renamed = await api(`/api/groups/${groupId}`, { method: 'PATCH', body: { name: 'Release Room 2' } });
@@ -2033,7 +2092,7 @@ async function scenarioSettings({ settingsMod }) {
   check('settings: hasKey is false for an empty string', settingsMod.hasKey('') === false && settingsMod.hasKey('sk-x') === true);
 }
 
-function scenarioAuth({ auth }) {
+function scenarioAuth({ auth, devicesMod }) {
   const security = { token: 'a'.repeat(24), code: 'c0ffee00' };
 
   const local = auth.evaluateAuth({ socket: { remoteAddress: '127.0.0.1' }, headers: {} }, security);
@@ -2079,6 +2138,79 @@ function scenarioAuth({ auth }) {
   check('auth: the rate limiter allows the first attempts', limiter.check('ip').allowed && limiter.check('ip').allowed && limiter.check('ip').allowed);
   check('auth: the rate limiter blocks after the limit', limiter.check('ip').allowed === false);
   check('auth: the rate limiter is per client', limiter.check('other-ip').allowed === true);
+
+  // --- per-device sessions (data/devices.json) -----------------------------
+  const store = devicesMod.createDeviceStore();
+  const first = store.add({ name: 'iPhone', ip: '192.0.2.10' });
+  const second = store.add({ name: 'Android 手机', ip: '192.0.2.11' });
+
+  check(
+    'devices: a paired device gets its own session token, never the master one',
+    Boolean(first.sessionToken) && first.sessionToken !== security.token && first.sessionToken.length >= 32,
+    first.sessionToken,
+  );
+  check(
+    'devices: the list shows metadata but no token',
+    store.list().length === 2 && store.list().every((d) => !('tokenHash' in d) && !('sessionToken' in d) && Boolean(d.name)),
+    JSON.stringify(store.list()),
+  );
+  check('devices: a session token finds its device', store.findBySession(first.sessionToken)?.id === first.device.id);
+  check('devices: an unknown session token finds nothing', store.findBySession('f'.repeat(64)) === null);
+
+  const viaDevice = auth.evaluateAuth(
+    { socket: { remoteAddress: '192.0.2.10' }, headers: { cookie: `desk_session=${first.sessionToken}` } },
+    security,
+    store,
+  );
+  check(
+    'auth: a LAN client holding a device session is authorized as a device',
+    viaDevice.authorized === true && viaDevice.mode === 'cookie' && viaDevice.deviceId === first.device.id,
+    JSON.stringify(viaDevice),
+  );
+
+  check('devices: removing one device succeeds', store.remove(first.device.id) === true);
+  check('devices: removing the same device twice is a no-op', store.remove(first.device.id) === false);
+  const afterRevoke = auth.evaluateAuth(
+    { socket: { remoteAddress: '192.0.2.10' }, headers: { cookie: `desk_session=${first.sessionToken}` } },
+    security,
+    store,
+  );
+  check('auth: a revoked device session stops working at once', afterRevoke.authorized === false, JSON.stringify(afterRevoke));
+  check(
+    'auth: revoking one device leaves the other one paired',
+    auth.evaluateAuth(
+      { socket: { remoteAddress: '192.0.2.11' }, headers: { cookie: `desk_session=${second.sessionToken}` } },
+      security,
+      store,
+    ).authorized === true,
+  );
+
+  check(
+    'devices: names come from the user agent',
+    devicesMod.describeAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)') === 'iPhone' &&
+      devicesMod.describeAgent('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Safari/537.36') === 'Android 手机' &&
+      devicesMod.describeAgent('Mozilla/5.0 (Linux; Android 14; SM-X910) AppleWebKit/537.36') === 'Android 平板' &&
+      devicesMod.describeAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)') === 'Windows 电脑上的浏览器',
+    devicesMod.describeAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
+  );
+
+  // --- one-time pairing links (what the QR code carries) -------------------
+  let clock = 1_000_000;
+  const links = auth.createPairLinkStore({ now: () => clock });
+  const link = links.create();
+  check(
+    'pair links: the token is long, URL-safe and expires in ten minutes',
+    link.token.length >= 40 && /^[A-Za-z0-9_-]+$/.test(link.token) && link.expiresAt - clock === 600_000,
+    `${link.token.length} ${link.expiresAt - clock}`,
+  );
+  check('pair links: a fresh token redeems once', Boolean(links.consume(link.token)));
+  check('pair links: the second redemption fails (single use)', links.consume(link.token) === null);
+  check('pair links: an unknown token fails', links.consume('nope') === null);
+
+  const stale = links.create();
+  clock += 600_001;
+  check('pair links: an expired token fails', links.consume(stale.token) === null);
+  check('pair links: expired links are dropped from memory', links.size === 0, `${links.size}`);
 }
 
 async function scenarioPairing() {
@@ -2086,6 +2218,17 @@ async function scenarioPairing() {
   check('GET /api/pairing returns a url and a code for the local user', pairing.status === 200 && Boolean(pairing.json?.url) && Boolean(pairing.json?.code), pairing.text.slice(0, 200));
   const code = pairing.json.code;
   check('the pairing code is short and random-looking', /^\d{8}$/.test(code), code);
+  check(
+    'a loopback-only hub says it cannot take a phone yet instead of minting a dead link',
+    pairing.json?.remote === false && Array.isArray(pairing.json?.urls) && pairing.json.urls.length === 0,
+    pairing.text.slice(0, 200),
+  );
+  const noLink = await api('/api/pairing/link', { method: 'POST' });
+  check(
+    'asking for a QR link on a loopback-only hub fails with a reason the UI can show',
+    noLink.status === 409 && noLink.json?.error?.code === 'REMOTE_DISABLED',
+    noLink.text.slice(0, 240),
+  );
 
   const wrong = await api('/api/pair', { method: 'POST', body: { code: '00000000' } });
   check('a wrong pairing code is rejected', wrong.status === 401 && wrong.json?.error?.code === 'PAIR_INVALID_CODE', wrong.text.slice(0, 200));
@@ -2098,6 +2241,24 @@ async function scenarioPairing() {
     /desk_session=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie) && /Path=\//.test(setCookie) && /Max-Age=31536000/.test(setCookie),
     setCookie,
   );
+  check(
+    'pairing with the 8-digit code also gives the device its own session',
+    /^desk_session=[0-9a-f]{64};/.test(setCookie) && Boolean(ok.json?.device?.id),
+    `${setCookie} ${JSON.stringify(ok.json?.device)}`,
+  );
+
+  const devices = await api('/api/devices');
+  check(
+    'the paired device is listed with a name and a last-seen time',
+    devices.status === 200 && devices.json?.devices?.length === 1 && Boolean(devices.json.devices[0].name) && Boolean(devices.json.devices[0].lastSeenAt),
+    devices.text.slice(0, 240),
+  );
+  const deviceId = devices.json?.devices?.[0]?.id;
+  const revoked = await api(`/api/devices/${deviceId}`, { method: 'DELETE' });
+  check('a device can be removed from the list', revoked.status === 200 && revoked.json?.ok === true, revoked.text.slice(0, 200));
+  check('the list is empty right after the removal', (await api('/api/devices')).json?.devices?.length === 0);
+  const missing = await api('/api/devices/no-such-device', { method: 'DELETE' });
+  check('removing a device that does not exist is a 404', missing.status === 404 && missing.json?.error?.code === 'DEVICE_NOT_FOUND', missing.text.slice(0, 200));
 
   const authInfo = await api('/api/auth');
   check(
@@ -2110,6 +2271,108 @@ async function scenarioPairing() {
   for (let i = 0; i < 3; i += 1) await api('/api/pair', { method: 'POST', body: { code: 'ffffffff' } });
   const limited = await api('/api/pair', { method: 'POST', body: { code } });
   check('pairing is rate-limited to 5 attempts per minute', limited.status === 429 && limited.json?.error?.code === 'PAIR_RATE_LIMITED', limited.text.slice(0, 200));
+}
+
+/**
+ * The phone flow end to end: a hub that actually listens on the network mints a
+ * QR link, the phone redeems it once, shows up in Settings, and can be removed.
+ * A second server on a throw-away home keeps this away from every other stage.
+ */
+async function scenarioPairingLink() {
+  const remoteHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-phone-'));
+  await seedHome(remoteHome);
+  let started = null;
+  const savedBase = base;
+  try {
+    started = await startServerChild(remoteHome, {
+      HOST: '0.0.0.0',
+      ASSIST_ALLOW_REMOTE: '1',
+      ASSIST_DATA_DIR: path.join(remoteHome, 'data'),
+      ASSIST_WORKSPACE_DIR: path.join(remoteHome, 'workspace'),
+    });
+    base = started.url;
+
+    const info = await api('/api/pairing');
+    check(
+      'a hub listening on the network reports that it can take a phone',
+      info.json?.remote === true && Array.isArray(info.json?.urls) && info.json.urls.length >= 1,
+      info.text.slice(0, 240),
+    );
+    check(
+      'the phone addresses are a LAN one and, when on a tailnet, a Tailscale one',
+      info.json?.urls?.every((u) => /^http:\/\/(\d{1,3}\.){3}\d{1,3}:\d+$/.test(u.url) && (u.kind === 'lan' || u.kind === 'tailnet')),
+      JSON.stringify(info.json?.urls),
+    );
+
+    const made = await api('/api/pairing/link', { method: 'POST' });
+    check(
+      'Settings can mint a QR link',
+      made.status === 200 && Boolean(made.json?.url) && Boolean(made.json?.expiresAt),
+      made.text.slice(0, 240),
+    );
+    check(
+      'the link carries a one-time token in ?pair=',
+      /[?&]pair=[A-Za-z0-9_-]{40,}/.test(made.json?.url || ''),
+      made.json?.url,
+    );
+    check(
+      'the link says how long it lives (ten minutes)',
+      made.json?.expiresInSec > 500 && made.json?.expiresInSec <= 600,
+      String(made.json?.expiresInSec),
+    );
+
+    const token = new URL(made.json.url).searchParams.get('pair');
+    const paired = await api('/api/pair', {
+      method: 'POST',
+      body: { code: token },
+      headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15' },
+    });
+    const setCookie = paired.headers.get('set-cookie') || '';
+    check(
+      'scanning the link pairs the phone without typing anything',
+      paired.status === 200 && /^desk_session=[0-9a-f]{64};/.test(setCookie),
+      `${paired.status} ${setCookie}`,
+    );
+    check(
+      'the new device is named after the phone',
+      paired.json?.device?.name === 'iPhone',
+      JSON.stringify(paired.json?.device),
+    );
+
+    const replayed = await api('/api/pair', { method: 'POST', body: { code: token } });
+    check(
+      'the same link cannot pair a second device',
+      replayed.status === 401 && replayed.json?.error?.code === 'PAIR_INVALID_LINK',
+      replayed.text.slice(0, 240),
+    );
+
+    const list = await api('/api/devices');
+    check(
+      'the phone shows up in the device list once',
+      list.json?.devices?.length === 1 && list.json.devices[0].name === 'iPhone',
+      list.text.slice(0, 240),
+    );
+    check(
+      'the device list never contains a session token or its hash',
+      !/desk_session/.test(list.text) && !/tokenHash/.test(list.text) && !/[0-9a-f]{64}/.test(list.text),
+      list.text.slice(0, 240),
+    );
+
+    const onDisk = JSON.parse(await fsp.readFile(path.join(remoteHome, 'data', 'devices.json'), 'utf8'));
+    check(
+      'devices.json stores only a hash of the session token',
+      Array.isArray(onDisk?.devices) && onDisk.devices.length === 1 && /^[0-9a-f]{64}$/.test(onDisk.devices[0].tokenHash || '') && !('sessionToken' in onDisk.devices[0]),
+      JSON.stringify(onDisk).slice(0, 200),
+    );
+
+    const revoked = await api(`/api/devices/${list.json.devices[0].id}`, { method: 'DELETE' });
+    check('removing the phone succeeds', revoked.status === 200 && revoked.json?.ok === true, revoked.text.slice(0, 200));
+    check('the device list is empty after removing the phone', (await api('/api/devices')).json?.devices?.length === 0);
+  } finally {
+    base = savedBase;
+    if (started) await stopProcess(started.child);
+    await fsp.rm(remoteHome, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function scenarioMockStreaming() {

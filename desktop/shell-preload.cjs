@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('desk', {
   voiceStart: () => ipcRenderer.invoke('desk:voice-start'),
   localProvision: (req) => ipcRenderer.invoke('desk:local-provision', req),
   openFile: (rel, reveal = false) => ipcRenderer.invoke('desk:open-file', { rel, reveal }),
+  // Settings → 手机和外网 → 允许手机连接: rebinds the bundled server to the network.
+  setRemote: (on) => ipcRenderer.invoke('desk:set-remote', Boolean(on)),
   voiceStop: () => ipcRenderer.invoke('desk:voice-stop'),
   voiceCancel: () => ipcRenderer.invoke('desk:voice-cancel'),
 });
