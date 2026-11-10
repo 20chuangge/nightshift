@@ -25,6 +25,12 @@
 
         </activity>
 
+        <service
+            android:name=".NightshiftWatcher"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -39,6 +45,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Background watching: a foreground service keeps one SSE connection open
+         so a finished task or a pending approval can reach the phone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 扫码连接: the launchpad scans the QR the computer shows in
          Settings → 手机和外网. Optional hardware: tablets without a camera
          still type the address by hand. -->

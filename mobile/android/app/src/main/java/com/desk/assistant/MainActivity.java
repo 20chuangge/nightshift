@@ -1,22 +1,90 @@
 package com.desk.assistant;
 
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Bundle;
 import android.webkit.WebView;
 
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 
 /**
- * Desk's Android shell.
+ * Nightshift's Android shell.
  *
  * The WebView loads the hub's own UI at the top level (that is what makes the
  * hub's HttpOnly SameSite=Lax session cookie work), so the Android back button
- * would otherwise close the app while the user is looking at the hub — with no
+ * would otherwise close the app while the user is looking at the hub - with no
  * way back to "change hub".
  *
  * Rule: if the WebView is showing anything other than the local shell, back goes
  * back to the shell. On the shell itself, back behaves normally (exits the app).
+ *
+ * It also starts the background watcher: once this phone is paired, a foreground
+ * service holds the hub's event stream so notifications arrive with the screen
+ * off (see NightshiftWatcher).
  */
 public class MainActivity extends BridgeActivity {
+
+    private static final int REQ_NOTIFICATIONS = 71;
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        startWatcher();
+        askForNotifications();
+        openFromNotification(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        openFromNotification(intent);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // BridgeActivity keeps the lifecycle hooks final, and focus is exactly
+        // what matters here: the user is looking at this window right now.
+        NightshiftWatcher.appVisible = hasFocus;
+    }
+
+    /** A notification tap carries the hub to open; land in it, not on the picker. */
+    private void openFromNotification(Intent intent) {
+        if (intent == null) return;
+        String hub = intent.getStringExtra("desk.openHub");
+        if (hub == null || hub.isEmpty()) return;
+        intent.removeExtra("desk.openHub");
+        Bridge bridge = getBridge();
+        if (bridge == null || bridge.getWebView() == null) return;
+        final String url = hub.endsWith("/") ? hub : hub + "/";
+        bridge.getWebView().postDelayed(() -> {
+            String current = bridge.getWebView().getUrl();
+            if (current == null || !current.startsWith(url)) bridge.getWebView().loadUrl(url);
+        }, 350);
+    }
+
+    /** Ask once (Android 13+); a denial just means quiet, never a crash. */
+    private void askForNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, REQ_NOTIFICATIONS);
+    }
+
+    private void startWatcher() {
+        if (!NightshiftWatcher.hasPairing(this)) return;
+        Intent intent = new Intent(this, NightshiftWatcher.class);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
+            else startService(intent);
+        } catch (Exception err) {
+            // A blocked start (battery saver, OEM restrictions) must not take the
+            // app down: the UI still works, it just will not wake the user.
+            android.util.Log.w("nightshift", "watcher not started: " + err.getMessage());
+        }
+    }
 
     @Override
     @SuppressWarnings("deprecation") // onBackPressed is still the supported hook for API < 33
