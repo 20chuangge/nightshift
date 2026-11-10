@@ -1318,4 +1318,6 @@ window.DESK_I18N_EN = {
   "这台手机到不了「{0}」。它的地址是 {1}：{2}": "This phone cannot reach “{0}”. Its address is {1}: {2}",
   "这是 Tailscale 地址，手机要先装 Tailscale 并登录同一个账号": "this is a Tailscale address, so the phone needs Tailscale signed in to the same account first",
   "这个地址只有电脑能访问（虚拟机内网），把虚拟机网络改成「桥接」或给手机装 Tailscale": "only the computer can reach this address (VM internal network); switch the VM network to bridged, or install Tailscale on the phone",
+  "← 返回 {0}": "← Back to {0}",
+  "回到 {0}": "Back to {0}",
 };

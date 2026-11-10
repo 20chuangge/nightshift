@@ -527,16 +527,23 @@
   .bubble.md .md-code {
     margin: 8px 0; padding: 10px 12px; border-radius: 10px;
     background: #0d1017; border: 1px solid var(--border-soft);
-    overflow-x: auto; white-space: pre;
+    overflow-x: auto; white-space: pre; max-width: 100%;
   }
   .bubble.md .md-code code { background: none; padding: 0; font-size: 12px; line-height: 1.5; }
-  .bubble.md .md-table { margin: 8px 0; overflow-x: auto; }
-  .bubble.md .md-table table { border-collapse: collapse; font-size: 13px; width: 100%; }
+  /* On a phone the bubble is ~330px wide: a 4-column table cannot fit, so let it
+     take its natural width and scroll sideways instead of squeezing every cell
+     into two characters ("Rock|y"). */
+  .bubble.md .md-table {
+    margin: 8px 0; overflow-x: auto; overscroll-behavior-x: contain;
+    max-width: 100%; -webkit-overflow-scrolling: touch;
+  }
+  .bubble.md .md-table table { border-collapse: collapse; font-size: 13px; width: max-content; min-width: 100%; }
   .bubble.md .md-table th,
   .bubble.md .md-table td {
     border: 1px solid var(--border-soft); padding: 5px 9px; text-align: left; vertical-align: top;
+    max-width: 22em; overflow-wrap: anywhere;
   }
-  .bubble.md .md-table th { background: rgba(255,255,255,.04); font-weight: 650; }
+  .bubble.md .md-table th { background: rgba(255,255,255,.04); font-weight: 650; white-space: nowrap; }
   .bubble.md .md-quote {
     margin: 8px 0; padding: 2px 0 2px 10px;
     border-left: 2px solid var(--border); color: var(--muted);
@@ -1840,6 +1847,13 @@
     padding: 14px 10px 8px 14px; flex: none;
   }
   .side-brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+  /* "back to the machine you came from" - only when this page was reached by
+     switching machines (the app appends ?from=). The phone is still paired
+     there, so one tap is enough - no credential travels between machines. */
+  .back-machine {
+    display: block; width: calc(100% - 28px); margin: 0 14px 8px;
+    text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   /* the machine switcher: the brand row IS the current machine */
   .machine-switch {
     position: relative; padding: 4px 6px; margin: -4px -6px; border-radius: 9px;
@@ -2713,6 +2727,7 @@
           <span class="machine-badge" id="machine-badge" hidden></span>
         </button>
         <div class="menu" id="machine-menu" role="menu" hidden></div>
+        <button class="btn tiny back-machine" id="back-machine" type="button" hidden></button>
         <div class="new-bot">
           <button class="round-btn" id="new-bot-btn" type="button" aria-label="新建助手或群组" title="新建" aria-haspopup="menu" aria-expanded="false">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -5041,6 +5056,38 @@ function normalizeCode(raw) {
   return String(raw || '').replace(/\s+/g, '').trim();
 }
 
+/**
+ * "← 返回「Ubuntu」" when this page was reached by switching machines.
+ * The phone keeps a session per origin, so going back needs no credential:
+ * just navigate to the origin it came from.
+ */
+function showBackToMachine() {
+  const button = $('back-machine');
+  if (!button) return;
+  let from = '';
+  try {
+    from = new URL(location.href).searchParams.get('from') || '';
+  } catch {
+    return;
+  }
+  if (!from) return;
+  let target;
+  try {
+    target = new URL(from);
+  } catch {
+    return;
+  }
+  if (target.origin === location.origin) return;
+  const label = target.host;
+  button.textContent = `← 返回 ${label}`;
+  button.title = `回到 ${target.origin}`;
+  button.hidden = false;
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    location.assign(target.origin);
+  });
+}
+
 async function connectDevice() {
   const code = normalizeCode($('auth-code').value);
   const rawUrl = $('auth-url').value.trim() || location.origin;
@@ -5116,6 +5163,8 @@ async function boot() {
   }
 
   if (await consumePairParam()) return; // navigated away, pairing done
+
+  showBackToMachine();
 
   try {
     const [health, config, bots] = await Promise.all([
@@ -9913,6 +9962,8 @@ function wireChromeResizers() {
 let viewerUrl = '';
 /** {current, local, machines:[{url,name}]} from the desktop shell, or null. */
 let machineBridge = null;
+/** This hub's own hostname (browser / phone, where there is no bridge). */
+let selfMachineName = '';
 
 function onLocalMachine() {
   return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(location.origin);
@@ -9921,7 +9972,7 @@ function onLocalMachine() {
 function machineDisplayName() {
   if (onLocalMachine()) return '本机';
   const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin);
-  return row?.name || state.computer?.host?.hostname || location.hostname;
+  return row?.name || selfMachineName || state.computer?.host?.hostname || location.hostname;
 }
 
 /** Everything that names "where am I": switcher, account chip, About. */
@@ -9979,6 +10030,17 @@ async function deliverPendingTask() {
 
 async function refreshMachines() {
   try { machineBridge = (await window.desk?.listMachines?.()) || null; } catch { machineBridge = null; }
+  // Browser / phone: no desktop bridge, but the hub knows its own hostname, so
+  // the sidebar can say "ubuntu" instead of "100.92.177.91".
+  if (!machineBridge) {
+    try {
+      const data = await api('/api/machines');
+      const mine = (data?.machines || []).find((m) => m.self);
+      if (mine?.name) selfMachineName = mine.name;
+    } catch {
+      /* offline: keep whatever we had */
+    }
+  }
   if (state.ready) reportUiState();
   syncMachineBranding();
   renderMachineMenu();
@@ -10104,7 +10166,11 @@ async function handoffToMachine(name, button) {
         }：${/^100\./.test(new URL(res.url).hostname) ? '这是 Tailscale 地址，手机要先装 Tailscale 并登录同一个账号' : '这个地址只有电脑能访问（虚拟机内网），把虚拟机网络改成「桥接」或给手机装 Tailscale'}`,
       );
     }
-    location.assign(res.url);
+    // `from` gives the other machine a one-tap way back: it points at this
+    // origin, where this phone is already paired.
+    const next = new URL(res.url);
+    next.searchParams.set('from', location.origin);
+    location.assign(next.toString());
   } catch (err) {
     toast(err?.message || '切换失败', true);
     if (button) {

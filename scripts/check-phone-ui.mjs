@@ -238,6 +238,36 @@ const main = async () => {
     console.log('machines:', JSON.stringify(machines));
     await page.shot(path.join(OUT, 'machines.png'));
 
+    // Arriving with ?from= shows a one-tap way back to the machine you left.
+    await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?from=http%3A%2F%2F192.0.2.9%3A4390` });
+    await sleep(2500);
+    const back = await page.evaluate(`(() => {
+      const b = document.getElementById('back-machine');
+      return { hidden: b ? b.hidden : null, text: b ? b.textContent.trim() : '' };
+    })()`);
+    console.log('back button:', JSON.stringify(back));
+
+    // A wide table must scroll sideways instead of squeezing every cell.
+    // (mdToHtml lives in the page's closure, so this builds the same markup.)
+    const table = await page.evaluate(`(() => {
+      const box = document.createElement('div');
+      box.className = 'bubble md';
+      box.style.maxWidth = '330px';
+      box.innerHTML = '<div class="md-table"><table><thead><tr><th>机器</th><th>机器人</th><th>能干什么</th></tr></thead><tbody>'
+        + '<tr><td>Rocky</td><td>助理、编剧、美术、动画师</td><td>唯一能独立出片的一条线</td></tr>'
+        + '<tr><td>win11</td><td>助理、动画师</td><td>单个片段最合适</td></tr></tbody></table></div>';
+      document.body.appendChild(box);
+      const wrap = box.querySelector('.md-table');
+      const firstCell = box.querySelector('td');
+      const out = {
+        scrollable: wrap.scrollWidth > wrap.clientWidth,
+        cellLines: Math.round(firstCell.getBoundingClientRect().height / 18),
+      };
+      box.remove();
+      return out;
+    })()`);
+    console.log('table:', JSON.stringify(table));
+
     // A phone-shaped viewport must not scroll sideways.
     await page.send('Emulation.setDeviceMetricsOverride', {
       width: 375, height: 812, deviceScaleFactor: 2, mobile: true,
