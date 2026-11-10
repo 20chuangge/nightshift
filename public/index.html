@@ -5049,17 +5049,21 @@ function normalizeCode(raw) {
 }
 
 /**
- * The machine this page was switched away from (?from=), or ''. The phone keeps
- * a session per origin, so going back is one navigation and no credential.
+ * The machine this page was switched away from: `{ origin, name }` or null.
+ * The phone keeps a session per origin, so going back is one navigation and no
+ * credential. `fromName` is what the other side called it (hostname), so the
+ * list can say "← LAPTOP-7UEABBTT" instead of an IP address.
  */
 function cameFromMachine() {
   try {
-    const raw = new URL(location.href).searchParams.get('from') || '';
-    if (!raw) return '';
+    const params = new URL(location.href).searchParams;
+    const raw = params.get('from') || '';
+    if (!raw) return null;
     const target = new URL(raw);
-    return target.origin === location.origin ? '' : target.origin;
+    if (target.origin === location.origin) return null;
+    return { origin: target.origin, name: (params.get('fromName') || '').trim() };
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -10044,9 +10048,12 @@ function renderMachineMenu() {
     // instead of a separate button.
     const list = (state.machinesCache && state.machinesCache.machines) || [];
     const back = cameFromMachine();
+    // The way back is a normal row in the same list, labelled with the name the
+    // other machine goes by (an IP address means nothing to a person).
+    const backLabel = back ? (back.name || back.origin.replace(/^https?:\/\//, '')) : '';
     const backRow = back
-      ? `<button type="button" role="menuitem" class="mm-item" data-back-origin="${escapeHtml(back)}">
-           <b>← ${escapeHtml(back.replace(/^https?:\/\//, ''))}</b><small>刚才那台</small>
+      ? `<button type="button" role="menuitem" class="mm-item" data-back-origin="${escapeHtml(back.origin)}">
+           <b>← ${escapeHtml(backLabel)}</b>
          </button><div class="menu-sep"></div>`
       : '';
     if (!list.length && !backRow) {
@@ -10162,9 +10169,12 @@ async function handoffToMachine(name, button) {
       );
     }
     // `from` gives the other machine a one-tap way back: it points at this
-    // origin, where this phone is already paired.
+    // origin, where this phone is already paired. `fromName` labels it in the
+    // other machine's list with the name instead of the address.
     const next = new URL(res.url);
     next.searchParams.set('from', location.origin);
+    const label = machineDisplayName();
+    if (label) next.searchParams.set('fromName', label);
     location.assign(next.toString());
   } catch (err) {
     toast(err?.message || '切换失败', true);

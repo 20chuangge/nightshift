@@ -238,14 +238,19 @@ const main = async () => {
     console.log('machines:', JSON.stringify(machines));
     await page.shot(path.join(OUT, 'machines.png'));
 
-    // Arriving with ?from= shows a one-tap way back to the machine you left.
-    await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?from=http%3A%2F%2F192.0.2.9%3A4390` });
+    // Arriving with ?from=&fromName= puts the way back as the first row of the
+    // machine switcher, labelled with the name (not the address).
+    await page.send('Page.navigate', {
+      url: `http://127.0.0.1:${PORT}/?from=http%3A%2F%2F192.0.2.9%3A4390&fromName=LAPTOP-TEST`,
+    });
     await sleep(2500);
-    const back = await page.evaluate(`(() => {
-      const b = document.getElementById('back-machine');
-      return { hidden: b ? b.hidden : null, text: b ? b.textContent.trim() : '' };
+    const back = await page.evaluate(`(async () => {
+      document.getElementById('machine-btn').click();
+      await new Promise((r) => setTimeout(r, 900));
+      const items = [...document.querySelectorAll('#machine-menu button')].map((b) => b.textContent.replace(/\\s+/g, ' ').trim());
+      return { first: items[0] || '', count: items.length };
     })()`);
-    console.log('back button:', JSON.stringify(back));
+    console.log('back row:', JSON.stringify(back));
 
     // A wide table must scroll sideways instead of squeezing every cell.
     // (mdToHtml lives in the page's closure, so this builds the same markup.)
