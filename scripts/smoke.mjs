@@ -2271,6 +2271,31 @@ function scenarioAuth({ auth, devicesMod }) {
       { trustProxy: true },
     ).authorized === false,
   );
+
+  // --- the native app's Bearer token ---------------------------------------
+  const appStore = devicesMod.createDeviceStore();
+  const appDevice = appStore.add({ name: 'Nightshift/1.2.42 (Android)', ip: '192.0.2.60' });
+  check(
+    'app: a device session token works as a Bearer credential',
+    auth.evaluateAuth(
+      { socket: { remoteAddress: '192.0.2.60' }, headers: { authorization: `Bearer ${appDevice.sessionToken}` } },
+      security,
+      appStore,
+    ).authorized === true,
+  );
+  check(
+    'app: that Bearer token is not the master token',
+    appDevice.sessionToken !== security.token,
+  );
+  appStore.remove(appDevice.device.id);
+  check(
+    'app: removing the device kills its Bearer token too',
+    auth.evaluateAuth(
+      { socket: { remoteAddress: '192.0.2.60' }, headers: { authorization: `Bearer ${appDevice.sessionToken}` } },
+      security,
+      appStore,
+    ).authorized === false,
+  );
 }
 
 async function scenarioPairing() {
@@ -2339,6 +2364,50 @@ async function scenarioPairing() {
     unknownHandoff.status === 404 && unknownHandoff.json?.error?.code === 'MACHINE_NOT_FOUND',
     unknownHandoff.text.slice(0, 200),
   );
+
+  // --- the native app (its own origin, Bearer token, no cookies) --------------
+  const fromApp = await api('/api/bots', { headers: { origin: 'https://localhost' } });
+  check(
+    'an app origin is allowed to call the API',
+    fromApp.headers.get('access-control-allow-origin') === 'https://localhost',
+    fromApp.headers.get('access-control-allow-origin') || 'no ACAO',
+  );
+  const fromWeb = await api('/api/bots', { headers: { origin: 'https://evil.example' } });
+  check(
+    'any other origin gets no CORS permission',
+    !fromWeb.headers.get('access-control-allow-origin'),
+    fromWeb.headers.get('access-control-allow-origin') || 'none',
+  );
+  const preflight = await fetch(`${base}/api/pair`, {
+    method: 'OPTIONS',
+    headers: { origin: 'https://localhost', 'access-control-request-headers': 'authorization,content-type' },
+  });
+  check(
+    'the app preflight answers 204 and allows the Authorization header',
+    preflight.status === 204 && /authorization/i.test(preflight.headers.get('access-control-allow-headers') || ''),
+    `${preflight.status} ${preflight.headers.get('access-control-allow-headers')}`,
+  );
+  const appPair = await api('/api/pair', {
+    method: 'POST',
+    body: { code: pairing.json.code, client: 'app' },
+    headers: { origin: 'https://localhost', 'user-agent': 'Nightshift/1.2.42 (Android)' },
+  });
+  check(
+    'an app that says so gets its own session token in the body',
+    appPair.status === 200 && /^[0-9a-f]{64}$/.test(appPair.json?.token || '') && Boolean(appPair.json?.device?.id),
+    appPair.text.slice(0, 200),
+  );
+  const withToken = await api('/api/settings', {
+    headers: { origin: 'https://localhost', authorization: `Bearer ${appPair.json?.token}` },
+  });
+  check(
+    'that token works as a Bearer credential',
+    withToken.status === 200 && Boolean(withToken.json?.app?.version),
+    withToken.text.slice(0, 200),
+  );
+  await api(`/api/devices/${appPair.json?.device?.id}`, { method: 'DELETE' });
+  // Revocation itself is checked at unit level (scenarioAuth): every request in
+  // this suite comes from loopback, which is authorized whatever it carries.
 
   const authInfo = await api('/api/auth');
   check(

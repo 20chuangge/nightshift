@@ -120,6 +120,20 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const REQUIRE_HTTPS = /^(1|true|yes)$/i.test(String(process.env.ASSIST_REQUIRE_HTTPS || ''));
 
 /**
+ * Origins a native app is allowed to call this hub from. A Capacitor WebView
+ * serves the app from https://localhost (Android) or capacitor://localhost
+ * (iOS), which is a different origin from the hub, so the app needs CORS. Only
+ * these fixed origins are allowed, and only with `Authorization: Bearer` - no
+ * cookies, so `Access-Control-Allow-Credentials` is never sent.
+ */
+const APP_ORIGINS = new Set(
+  String(process.env.ASSIST_APP_ORIGINS || 'https://localhost,http://localhost,capacitor://localhost')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+/**
  * A certificate the owner put there. Two ways: the env pair (ASSIST_TLS_CERT /
  * ASSIST_TLS_KEY, full paths) or data/tls/cert.pem + data/tls/key.pem. Nothing
  * is generated: a self-signed cert that the browser has never met is worse than
@@ -635,6 +649,23 @@ async function handleRequest(req, res, state) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const pathname = safeDecode(url.pathname);
   const method = (req.method || 'GET').toUpperCase();
+
+  // The native app lives on its own origin (https://localhost in a Capacitor
+  // WebView). It authenticates with a Bearer token, never a cookie, so the
+  // cross-origin rules are simple: echo an allowed origin, allow the header.
+  const origin = String(req.headers.origin || '').toLowerCase();
+  const appOrigin = origin && APP_ORIGINS.has(origin) ? origin : '';
+  if (appOrigin) {
+    res.setHeader('access-control-allow-origin', appOrigin);
+    res.setHeader('vary', 'origin');
+    res.setHeader('access-control-allow-headers', 'authorization, content-type');
+    res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('access-control-max-age', '600');
+    if (method === 'OPTIONS') {
+      res.writeHead(204);
+      return res.end();
+    }
+  }
 
   // ASSIST_REQUIRE_HTTPS=1: from anywhere but this computer, plain HTTP is
   // refused. The shell still has to be reachable so the message can be read.
@@ -1261,6 +1292,9 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   // and remove one without logging the others out.
   const { device, sessionToken } = state.devices.add({ name: describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
   res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) }));
+  // A native app has no cookie jar it trusts across origins: when it says so, it
+  // gets the per-device token in the body and sends it as `Authorization`.
+  if (String(body?.client || '') === 'app') return { ok: true, device, token: sessionToken };
   return { ok: true, device };
 });
 

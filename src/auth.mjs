@@ -200,6 +200,19 @@ export function evaluateAuth(req, security, devices, proxy = {}) {
   if (bearer && security?.token && safeEqual(bearer, security.token)) {
     return { required: true, authorized: true, mode: 'token', local: false, address };
   }
+  // A native app holds its own device session and sends it as a Bearer token:
+  // no cookie, no cross-site cookie rules, and revocable per device.
+  if (bearer && devices?.findBySession) {
+    const device = devices.findBySession(bearer);
+    if (device) {
+      try {
+        devices.touch?.(device.id);
+      } catch {
+        /* activity tracking must never fail an authenticated request */
+      }
+      return { required: true, authorized: true, mode: 'token', local: false, address, deviceId: device.id };
+    }
+  }
 
   const cookie = readCookie(req?.headers?.cookie, SESSION_COOKIE);
   if (cookie && security?.token && safeEqual(cookie, security.token)) {
