@@ -28,13 +28,13 @@
     } catch { /* private mode: keep the dark default */ }
   })();
 
-  /* iOS: when the platform reports no safe-area inset, the top bar sits under
-     the clock / Dynamic Island and nothing up there can be tapped. That happens
-     in installed home-screen apps on some iOS versions, and in Chrome for iOS
-     (its own toolbar floats over the page). Measure env(safe-area-inset-top);
-     if it is 0 in either case, use the device's known inset instead.
-     Safari (the browser, not an installed app) accounts for its own chrome, so
-     it is left alone. */
+  /* iOS: the header pads itself by env(safe-area-inset-top), but the value the
+     device reports cannot be trusted in every context - installed home-screen
+     apps report 0 on some iOS versions, Chrome for iOS floats its own toolbar
+     over the page, and a value smaller than the real Dynamic Island height still
+     leaves a dead strip under the clock. So: in an installed app or Chrome iOS,
+     take the larger of "what the platform says" and "what this phone has".
+     Safari-the-browser accounts for its own chrome and is left alone. */
   (() => {
     try {
       const ua = navigator.userAgent || '';
@@ -48,13 +48,13 @@
       const reported = probe.getBoundingClientRect().height;
       document.documentElement.removeChild(probe);
       document.documentElement.dataset.safeTop = String(Math.round(reported));
-      if (reported > 0) return;
       if (!isIphone) return;
       if (!standalone && !isChromeIos) return;
       const h = window.screen?.height || 0;
-      const guess = h >= 900 ? 59 : h >= 800 ? 47 : 20;
-      document.documentElement.style.setProperty('--safe-t', `${guess}px`);
-      document.documentElement.dataset.safeFallback = String(guess);
+      const estimate = h >= 900 ? 59 : h >= 800 ? 47 : 20;
+      if (reported >= estimate) return;
+      document.documentElement.style.setProperty('--safe-t', `${estimate}px`);
+      document.documentElement.dataset.safeFallback = String(estimate);
     } catch { /* nothing to do */ }
   })();
 </script>
@@ -11348,8 +11348,11 @@ window.__desk = {
    reports. iOS has no remote inspector from Windows, so this panel is how the
    numbers travel back. English labels on purpose (it is a developer tool). */
 (() => {
-  const params = new URLSearchParams(location.search);
-  if (!params.has('diag')) return;
+  // Reachable with ?diag=1, or by tapping the brand five times: an installed app
+  // always opens "/", so the query string cannot be typed there.
+  const wanted = new URLSearchParams(location.search).has('diag');
+  let taps = 0;
+  let lastTap = 0;
   const add = () => {
     const box = document.createElement('div');
     box.dataset.diagPanel = '1';
@@ -11391,8 +11394,21 @@ window.__desk = {
     probe.onclick = () => { taps += 1; probe.textContent = 'tapped x' + taps; };
     document.body.appendChild(probe);
   };
-  if (document.body) add();
-  else document.addEventListener('DOMContentLoaded', add);
+  if (wanted) {
+    if (document.body) add();
+    else document.addEventListener('DOMContentLoaded', add);
+    return;
+  }
+  // Five quick taps on the brand open the same panel inside an installed app.
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest || !event.target.closest('.brand')) return;
+    const now = Date.now();
+    taps = now - lastTap < 800 ? taps + 1 : 1;
+    lastTap = now;
+    if (taps < 5) return;
+    taps = 0;
+    if (!document.querySelector('[data-diag-panel]')) add();
+  }, true);
 })();
 </script>
 </body>
