@@ -1847,13 +1847,6 @@
     padding: 14px 10px 8px 14px; flex: none;
   }
   .side-brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
-  /* "back to the machine you came from" - only when this page was reached by
-     switching machines (the app appends ?from=). The phone is still paired
-     there, so one tap is enough - no credential travels between machines. */
-  .back-machine {
-    display: block; width: calc(100% - 28px); margin: 0 14px 8px;
-    text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
   /* the machine switcher: the brand row IS the current machine */
   .machine-switch {
     position: relative; padding: 4px 6px; margin: -4px -6px; border-radius: 9px;
@@ -2727,7 +2720,6 @@
           <span class="machine-badge" id="machine-badge" hidden></span>
         </button>
         <div class="menu" id="machine-menu" role="menu" hidden></div>
-        <button class="btn tiny back-machine" id="back-machine" type="button" hidden></button>
         <div class="new-bot">
           <button class="round-btn" id="new-bot-btn" type="button" aria-label="新建助手或群组" title="新建" aria-haspopup="menu" aria-expanded="false">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -5057,35 +5049,18 @@ function normalizeCode(raw) {
 }
 
 /**
- * "← 返回「Ubuntu」" when this page was reached by switching machines.
- * The phone keeps a session per origin, so going back needs no credential:
- * just navigate to the origin it came from.
+ * The machine this page was switched away from (?from=), or ''. The phone keeps
+ * a session per origin, so going back is one navigation and no credential.
  */
-function showBackToMachine() {
-  const button = $('back-machine');
-  if (!button) return;
-  let from = '';
+function cameFromMachine() {
   try {
-    from = new URL(location.href).searchParams.get('from') || '';
+    const raw = new URL(location.href).searchParams.get('from') || '';
+    if (!raw) return '';
+    const target = new URL(raw);
+    return target.origin === location.origin ? '' : target.origin;
   } catch {
-    return;
+    return '';
   }
-  if (!from) return;
-  let target;
-  try {
-    target = new URL(from);
-  } catch {
-    return;
-  }
-  if (target.origin === location.origin) return;
-  const label = target.host;
-  button.textContent = `← 返回 ${label}`;
-  button.title = `回到 ${target.origin}`;
-  button.hidden = false;
-  button.addEventListener('click', () => {
-    button.disabled = true;
-    location.assign(target.origin);
-  });
 }
 
 async function connectDevice() {
@@ -5164,7 +5139,6 @@ async function boot() {
 
   if (await consumePairParam()) return; // navigated away, pairing done
 
-  showBackToMachine();
 
   try {
     const [health, config, bots] = await Promise.all([
@@ -10065,13 +10039,21 @@ function renderMachineMenu() {
   if (!menu) return;
   if (!machineBridge) {
     // Browser / phone: the hub knows the machines, and can hand out a one-time
-    // link into one of them. Same list as Settings → 机器, one line each.
+    // link into one of them. Same list as Settings → 机器, one line each - plus
+    // the machine we were switched away from, so the way back is the same list
+    // instead of a separate button.
     const list = (state.machinesCache && state.machinesCache.machines) || [];
-    if (!list.length) {
+    const back = cameFromMachine();
+    const backRow = back
+      ? `<button type="button" role="menuitem" class="mm-item" data-back-origin="${escapeHtml(back)}">
+           <b>← ${escapeHtml(back.replace(/^https?:\/\//, ''))}</b><small>刚才那台</small>
+         </button><div class="menu-sep"></div>`
+      : '';
+    if (!list.length && !backRow) {
       menu.innerHTML = '<button type="button" disabled>正在读取机器列表…</button>';
       return;
     }
-    menu.innerHTML = list.map((m) => `
+    menu.innerHTML = backRow + list.map((m) => `
       <button type="button" role="menuitem" class="mm-item ${m.self ? 'current' : ''}"
               ${m.self ? '' : `data-handoff-menu="${escapeHtml(m.name)}"`}>
         <b>${escapeHtml(m.name)}</b>${m.self ? '' : (m.online ? '' : '<small class="off">离线</small>')}
@@ -10867,6 +10849,7 @@ function wireChrome() {
     if (!item || item.disabled) return;
     closeMenus();
     if (item.dataset.machineAdd) { openMachineModal(); return; }
+    if (item.dataset.backOrigin) { location.assign(item.dataset.backOrigin); return; }
     if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
     if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);
   });

@@ -1320,4 +1320,5 @@ window.DESK_I18N_EN = {
   "这个地址只有电脑能访问（虚拟机内网），把虚拟机网络改成「桥接」或给手机装 Tailscale": "only the computer can reach this address (VM internal network); switch the VM network to bridged, or install Tailscale on the phone",
   "← 返回 {0}": "← Back to {0}",
   "回到 {0}": "Back to {0}",
+  "刚才那台": "the machine you came from",
 };

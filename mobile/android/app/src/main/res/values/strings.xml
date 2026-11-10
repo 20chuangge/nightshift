@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Desk</string>
-    <string name="title_activity_main">Desk</string>
+    <string name="app_name">Nightshift</string>
+    <string name="title_activity_main">Nightshift</string>
     <string name="package_name">com.desk.assistant</string>
     <string name="custom_url_scheme">com.desk.assistant</string>
 </resources>

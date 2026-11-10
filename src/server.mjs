@@ -1355,8 +1355,11 @@ route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const peers = state.peers.list();
   // This machine's own row: the hostname, not the product name - every hub is
   // called "Nightshift", which made the list say "Nightshift / you are using
-  // this one" on every machine.
-  const self = { name: os.hostname(), url: state.pairingUrl || null, online: true, self: true };
+  // this one" on every machine. A VM hostname like
+  // "ubuntu-VMware-Virtual-Platform" is cut down to "ubuntu".
+  const hostname = os.hostname();
+  const shortHost = /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(hostname)?.[1] || hostname;
+  const self = { name: shortHost, url: state.pairingUrl || null, online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it

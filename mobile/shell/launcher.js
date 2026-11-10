@@ -238,7 +238,7 @@
           timer = null;
           longPressed = true;
           // eslint-disable-next-line no-alert
-          const ok = window.confirm(`从列表里删掉「${entry.url}」？\n电脑上的 Desk 不受影响。`);
+          const ok = window.confirm(`从列表里删掉「${entry.url}」？\n电脑上的夜班不受影响。`);
           if (!ok) return;
           await forgetHub(entry.url);
           await renderMachines();
@@ -353,7 +353,7 @@
   /** Leave the shell and show the hub's own UI (first-party, cookie-friendly). */
   async function openHub(hub, code) {
     show('booting');
-    dom.bootingText.textContent = code ? '正在配对并打开…' : '正在打开 Desk…';
+    dom.bootingText.textContent = code ? '正在配对并打开…' : '正在打开夜班…';
     dom.bootingUrl.textContent = hub;
     state.hub = hub;
     const up = await probe(hub);
@@ -424,7 +424,7 @@
     try {
       const permission = await scanner.requestPermissions().catch(() => null);
       if (permission && permission.camera !== 'granted' && permission.camera !== 'limited') {
-        setError('没有相机权限，扫不了码。到系统设置里给 Desk 打开「相机」再试一次。');
+        setError('没有相机权限，扫不了码。到系统设置里给夜班打开「相机」再试一次。');
         return;
       }
       if (!(await ensureBarcodeModule())) {
@@ -475,7 +475,7 @@
       if (!up) {
         state.hub = hub;
         showOffline(
-          `${hub} 没有响应。\n确认那边 Desk 是用 ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 起的，` +
+          `${hub} 没有响应。\n确认那边夜班是用 ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 起的，` +
             '手机和电脑在同一个网络，防火墙放行了这个端口。',
         );
         return;
@@ -548,7 +548,7 @@
   // -------------------------------------------------------------------- boot
   async function boot() {
     await loadInfo();
-    dom.foot.textContent = `Desk mobile shell · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
+    dom.foot.textContent = `Nightshift mobile · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
     if (dom.scanBtn) dom.scanBtn.hidden = false;
 
     const hub = await store.get(KEYS.hub);

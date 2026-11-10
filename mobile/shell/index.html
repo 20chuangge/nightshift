@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
-<title>Desk</title>
+<title>Nightshift</title>
 <style>
   /* Same palette as public/index.html: near-black surfaces, one accent. */
   :root {
@@ -195,14 +195,14 @@
   <!-- 1. first launch / change hub -->
   <section id="connect" class="card" hidden>
     <div class="brand">
-      <div class="mark">D</div>
+      <div class="mark">N</div>
       <div>
-        <div class="name">Desk</div>
+        <div class="name">Nightshift</div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
 
-    <h1>连接你的 Desk<span class="en">Connect to your Desk</span></h1>
+    <h1>连接你的 Nightshift<span class="en">Connect to your Nightshift</span></h1>
     <p class="lede">手机上用的是电脑端同一份界面。填上你电脑正在跑的那个 Hub 地址就行。</p>
 
     <div id="connect-error" class="err"></div>
@@ -226,7 +226,7 @@
     <p class="hint">
       电脑上要用 <code>ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 npm start</code> 启动（默认只监听本机，
       手机看不到）。手机和电脑在同一局域网，端口默认 <code>4390</code>。
-      配对码留空也行：打开后 Desk 自己会显示配对页。
+      配对码留空也行：打开后夜班自己会显示配对页。
     </p>
     <div class="row">
       <button id="scan-btn" class="primary" type="button">扫码连接</button>
@@ -247,14 +247,14 @@
   <!-- 2. a hub is remembered -->
   <section id="connected" class="card" hidden>
     <div class="brand">
-      <div class="mark">D</div>
+      <div class="mark">N</div>
       <div>
-        <div class="name">Desk</div>
+        <div class="name">Nightshift</div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
 
-    <h1>已记住你的 Desk<span class="en">Ready to open</span></h1>
+    <h1>已记住你的 Nightshift<span class="en">Ready to open</span></h1>
     <p class="lede">数据一直在电脑上，手机只是那台电脑的一块屏幕。</p>
 
     <dl class="kv">
@@ -264,7 +264,7 @@
     </dl>
 
     <div class="row" style="margin-top:18px">
-      <button id="open-btn" class="primary" type="button">打开 Desk</button>
+      <button id="open-btn" class="primary" type="button">打开 Nightshift</button>
     </div>
     <div class="row">
       <button id="change-btn" class="ghost" type="button">更换 Hub</button>
@@ -272,7 +272,7 @@
     </div>
 
     <p class="hint">
-      想改地址或重新配对：Android 在 Desk 里按返回键就回到这一屏；iOS 退出 App 再打开，
+      想改地址或重新配对：Android 在夜班里按返回键就回到这一屏；iOS 退出 App 再打开，
       这一屏永远是启动页。
     </p>
   </section>
@@ -289,7 +289,7 @@
 
   <!-- 4. hub not reachable -->
   <section id="offline" class="card" hidden>
-    <h1>连不上你的 Desk<span class="en">Hub not reachable</span></h1>
+    <h1>连不上你的 Nightshift<span class="en">Hub not reachable</span></h1>
     <p class="lede" id="offline-detail">Hub 没有响应。</p>
     <dl class="kv">
       <dt>Hub</dt><dd id="offline-url">—</dd>
@@ -299,12 +299,12 @@
       <button id="offline-change" class="ghost" type="button">换一个 Hub</button>
     </div>
     <p class="hint">
-      依次检查：电脑上 Desk 还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
+      依次检查：电脑上夜班还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
       <code>HOST=0.0.0.0</code> 吗？手机和电脑在同一个 Wi-Fi 吗？系统防火墙放行端口了吗？
     </p>
   </section>
 
-  <div class="foot" id="foot">Desk mobile shell</div>
+  <div class="foot" id="foot">Nightshift mobile</div>
 </div>
 <script src="launcher.js"></script>
 </body>
