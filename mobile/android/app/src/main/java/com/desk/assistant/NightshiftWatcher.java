@@ -139,9 +139,152 @@ public class NightshiftWatcher extends Service {
     private final Map<String, Thread> workers = new java.util.concurrent.ConcurrentHashMap<>();
 
     private void supervise() {
+        long lastSync = 0;
         while (running) {
-            for (String hub : hubsWithToken(prefs(this))) ensureWorker(hub);
+            java.util.List<String> hubs = hubsWithToken(prefs(this));
+            for (String hub : hubs) ensureWorker(hub);
+            // Every five minutes, ask a hub we know for the machines it knows and
+            // pair this phone with any that answer. That is what makes a machine
+            // added later (or one that boots later) notify without anyone
+            // touching the app - the phone just needs one live hub to learn from.
+            if (!hubs.isEmpty() && System.currentTimeMillis() - lastSync > 300000L) {
+                lastSync = System.currentTimeMillis();
+                for (String hub : hubs) {
+                    if (!running) break;
+                    syncFleet(hub);
+                }
+            }
             sleep(30000);
+        }
+    }
+
+    /**
+     * One machine's peer list, turned into device tokens.
+     *
+     * The hub that knows a machine can hand out a one-time door for it; spending
+     * that door on `client:"app"` pairing is exactly what the watcher needs.
+     * Nothing is copied between machines: each pairing is its own credential.
+     */
+    private void syncFleet(String hub) {
+        String token = prefs(this).getString("desk.token:" + hub, null);
+        if (token == null) return;
+        try {
+            JSONObject list = new JSONObject(get(hub + "/api/machines", token));
+            org.json.JSONArray machines = list.optJSONArray("machines");
+            if (machines == null) return;
+            for (int i = 0; i < machines.length(); i += 1) {
+                JSONObject machine = machines.optJSONObject(i);
+                if (machine == null || machine.optBoolean("self")) continue;
+                String name = machine.optString("name", "");
+                if (name.isEmpty()) continue;
+                // A machine has up to two addresses (tailnet, LAN); the phone can
+                // usually reach only one, so try them in turn.
+                java.util.List<String> targets = new java.util.ArrayList<>();
+                String tailnet = machine.optString("tailnetUrl", "").replaceAll("/+$", "");
+                String lan = machine.optString("url", "").replaceAll("/+$", "");
+                if (!tailnet.isEmpty()) targets.add(tailnet);
+                if (!lan.isEmpty() && !lan.equals(tailnet)) targets.add(lan);
+                for (String target : targets) {
+                    if (prefs(this).getString("desk.token:" + target, null) != null) break;
+                    String door = handoff(hub, token, name);
+                    if (door.isEmpty()) break; // the machine is off or has no address
+                    String code = pairCode(door);
+                    if (code.isEmpty()) break;
+                    String fresh = pair(target, code);
+                    if (!fresh.isEmpty()) {
+                        prefs(this).edit().putString("desk.token:" + target, fresh).apply();
+                        Log.i(TAG, "paired with " + name + " at " + target);
+                        break;
+                    }
+                }
+            }
+        } catch (Exception err) {
+            Log.d(TAG, "fleet sync from " + hub + " failed: " + err.getClass().getSimpleName());
+        }
+    }
+
+    /** POST /api/machines/<name>/handoff -> one-time URL (or "" when it cannot). */
+    private String handoff(String hub, String token, String name) {
+        try {
+            return postJson(hub + "/api/machines/" + java.net.URLEncoder.encode(name, "UTF-8") + "/handoff", token, null)
+                    .optString("url", "");
+        } catch (Exception err) {
+            return "";
+        }
+    }
+
+    /** Pair from a one-time link token; returns the device token or "". */
+    private String pair(String hub, String code) {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("code", code);
+            body.put("client", "app");
+            JSONObject made = postJson(hub + "/api/pair", null, body);
+            return made.optString("token", "");
+        } catch (Exception err) {
+            return "";
+        }
+    }
+
+    private String pairCode(String door) {
+        try {
+            java.net.URI uri = java.net.URI.create(door);
+            String query = uri.getQuery();
+            if (query == null) return "";
+            for (String part : query.split("&")) {
+                if (part.startsWith("pair=")) return java.net.URLDecoder.decode(part.substring(5), "UTF-8");
+            }
+        } catch (Exception ignored) {
+            // not a URL we understand
+        }
+        return "";
+    }
+
+    private String get(String url, String token) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(15000);
+            if (conn.getResponseCode() != 200) throw new IllegalStateException("HTTP " + conn.getResponseCode());
+            java.io.InputStream in = conn.getInputStream();
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) out.write(buffer, 0, read);
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private JSONObject postJson(String url, String token, JSONObject body) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(20000);
+            if (token != null) conn.setRequestProperty("Authorization", "Bearer " + token);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            byte[] payload = body == null ? new byte[0] : body.toString().getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(payload.length);
+            java.io.OutputStream out = conn.getOutputStream();
+            out.write(payload);
+            out.close();
+            int status = conn.getResponseCode();
+            java.io.InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+            if (in != null) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = in.read(buffer)) > 0) sink.write(buffer, 0, read);
+            }
+            String text = new String(sink.toByteArray(), StandardCharsets.UTF_8);
+            if (status >= 400) throw new IllegalStateException("HTTP " + status);
+            return text.isEmpty() ? new JSONObject() : new JSONObject(text);
+        } finally {
+            conn.disconnect();
         }
     }
 
