@@ -1348,7 +1348,10 @@ route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, s
 
 route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const peers = state.peers.list();
-  const self = { name: state.config.name || '本机', url: state.pairingUrl || null, online: true, self: true };
+  // This machine's own row: the hostname, not the product name - every hub is
+  // called "Nightshift", which made the list say "Nightshift / you are using
+  // this one" on every machine.
+  const self = { name: os.hostname(), url: state.pairingUrl || null, online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it

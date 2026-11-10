@@ -126,8 +126,10 @@ const main = async () => {
   }
 
   const js = arg('js');
-  if (js) {
-    console.log(JSON.stringify(await page.evaluate(js), null, 2));
+  const jsFile = arg('jsfile');
+  const script = jsFile ? await fs.readFile(path.isAbsolute(jsFile) ? jsFile : path.join(REPO, jsFile), 'utf8') : js;
+  if (script) {
+    console.log(JSON.stringify(await page.evaluate(script), null, 2));
   } else {
     const state = await page.evaluate(`JSON.stringify({
       url: location.href,

@@ -387,6 +387,33 @@
     await openHub(hub, token);
   }
 
+  /**
+   * The MLKit scanner ships as a Google module that the OS downloads on demand.
+   * On phones without Google Play services (very common in China) that download
+   * never succeeds, so check first and say so instead of throwing an English
+   * stack at the user.
+   */
+  async function ensureBarcodeModule() {
+    if (!scanner) return false;
+    try {
+      const check = scanner.isGoogleBarcodeScannerModuleAvailable;
+      if (typeof check === 'function') {
+        const state = await check.call(scanner);
+        if (state && state.available) return true;
+      } else {
+        return true; // older plugin: no module split, just scan
+      }
+      if (typeof scanner.installGoogleBarcodeScannerModule === 'function') {
+        await scanner.installGoogleBarcodeScannerModule.call(scanner);
+        const again = typeof check === 'function' ? await check.call(scanner) : null;
+        return Boolean(again && again.available);
+      }
+    } catch (err) {
+      console.warn('[desk] barcode module unavailable', err);
+    }
+    return false;
+  }
+
   async function scanToConnect() {
     setError('');
     if (!scanner) {
@@ -400,11 +427,27 @@
         setError('没有相机权限，扫不了码。到系统设置里给 Desk 打开「相机」再试一次。');
         return;
       }
+      if (!(await ensureBarcodeModule())) {
+        setError(
+          '这台手机的扫码组件还没装好（需要 Google 条码扫描模块，国内机型通常下载不到）。\n' +
+            '下面直接填地址也能连，或者在手机浏览器里打开电脑上那个二维码链接。',
+        );
+        dom.hubUrl?.focus();
+        return;
+      }
       const result = await scanner.scan({ formats: ['QR_CODE'] });
       const value = result?.barcodes?.[0]?.rawValue || '';
       await connectFromScan(value);
     } catch (err) {
       const message = String(err?.message || err || '');
+      if (/barcode scanner module/i.test(message)) {
+        setError(
+          '这台手机的扫码组件还没装好（需要 Google 条码扫描模块，国内机型通常下载不到）。\n' +
+            '下面直接填地址也能连，或者在手机浏览器里打开电脑上那个二维码链接。',
+        );
+        dom.hubUrl?.focus();
+        return;
+      }
       setError(
         /cancel/i.test(message)
           ? '扫码已取消。'
