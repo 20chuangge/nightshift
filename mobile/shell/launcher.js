@@ -449,7 +449,7 @@
         if (res.ok) {
           const made = await res.json();
           const links = Array.isArray(made?.links) ? made.links : [];
-          const target = links[0]?.url || made?.url;
+          const target = (await pickReachableLink(links)) || made?.url;
           if (target) {
             await store.set(KEYS.hub, hub);
             window.location.assign(withOrigin(target, origin));
@@ -462,6 +462,9 @@
     } else if (entry.via) {
       // Never paired with this machine directly: the hub that told us about it
       // can hand out a one-time door (its own credential never leaves the hub).
+      // The door is single-use, so spend it on the *app* pairing first (that is
+      // what the background watcher needs), then mint a fresh link for the
+      // WebView's own cookie.
       try {
         const res = await fetch(`${entry.via}/api/machines/${encodeURIComponent(entry.name || '')}/handoff`, {
           method: 'POST',
@@ -469,9 +472,35 @@
         });
         if (res.ok) {
           const made = await res.json();
-          if (made?.url) {
+          const door = made?.url ? new URL(made.url) : null;
+          const code = door?.searchParams.get('pair') || '';
+          if (door && code) {
+            let token = '';
+            try {
+              const paired = await pairWithHub(hub, code);
+              token = paired.token || '';
+              if (token) await store.set(KEYS.tokenFor(hub), token);
+            } catch {
+              /* fall back to the door itself for the WebView */
+            }
+            let target = made.url;
+            if (token) {
+              try {
+                const minted = await fetch(`${hub}/api/pairing/link`, {
+                  method: 'POST',
+                  headers: { authorization: `Bearer ${token}` },
+                });
+                if (minted.ok) {
+                  const fresh = await minted.json();
+                  const links = Array.isArray(fresh?.links) ? fresh.links : [];
+                  target = (await pickReachableLink(links)) || fresh?.url || target;
+                }
+              } catch {
+                /* keep the original door */
+              }
+            }
             await store.set(KEYS.hub, hub);
-            window.location.assign(withOrigin(made.url, origin));
+            window.location.assign(withOrigin(target, origin));
             return;
           }
         }
@@ -592,6 +621,25 @@
       throw new Error((data && data.error && data.error.message) || `配对失败（${res.status}）`);
     }
     return data;
+  }
+
+  /**
+   * A hub hands out one link per address (LAN + Tailscale); the phone can often
+   * reach only one of them (a VMware LAN address is not routable from the phone).
+   * Probing beats guessing: take the first link that answers.
+   */
+  async function pickReachableLink(links) {
+    const usable = (links || []).filter((l) => l && typeof l.url === 'string');
+    for (const link of usable) {
+      let origin;
+      try {
+        origin = new URL(link.url).origin;
+      } catch {
+        continue;
+      }
+      if (await probe(origin)) return link.url;
+    }
+    return usable[0]?.url || '';
   }
 
   /** Pair (when a code came with it) and go into that machine's full UI. */

@@ -49,7 +49,9 @@ public class NightshiftWatcher extends Service {
 
     private volatile boolean running = false;
     private Thread worker;
-    private HttpURLConnection connection;
+    /** Every open stream, so onDestroy can drop them all. */
+    private final java.util.Set<HttpURLConnection> connections =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
     /** Set by MainActivity: the user is looking at the app right now. */
     static volatile boolean appVisible = false;
@@ -106,7 +108,7 @@ public class NightshiftWatcher extends Service {
         startForeground(ID_SERVICE, serviceNotification(this));
         if (!running) {
             running = true;
-            worker = new Thread(this::loop, "nightshift-sse");
+            worker = new Thread(this::supervise, "nightshift-supervisor");
             worker.setDaemon(true);
             worker.start();
         }
@@ -116,38 +118,64 @@ public class NightshiftWatcher extends Service {
     @Override
     public void onDestroy() {
         running = false;
-        try {
-            if (connection != null) connection.disconnect();
-        } catch (Exception ignored) {
-            // already gone
+        for (HttpURLConnection conn : connections) {
+            try {
+                conn.disconnect();
+            } catch (Exception ignored) {
+                // already gone
+            }
         }
+        connections.clear();
         super.onDestroy();
     }
 
-    // ------------------------------------------------------------------ SSE loop
-    private void loop() {
+    // ------------------------------------------------------------- supervisors
+    /*
+     * One thread per hub the phone holds a token for: a notification must arrive
+     * whichever machine ran the turn, and each machine has its own event stream.
+     * A supervisor re-reads the tokens every 30 s so a machine paired later (or
+     * one whose token was removed) is picked up without restarting the app.
+     */
+    private final Map<String, Thread> workers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void supervise() {
+        while (running) {
+            for (String hub : hubsWithToken(prefs(this))) ensureWorker(hub);
+            sleep(30000);
+        }
+    }
+
+    private void ensureWorker(String hub) {
+        Thread alive = workers.get(hub);
+        if (alive != null && alive.isAlive()) return;
+        Thread worker = new Thread(() -> {
+            try {
+                watchHub(hub);
+            } finally {
+                workers.remove(hub);
+            }
+        }, "nightshift:" + hub);
+        worker.setDaemon(true);
+        workers.put(hub, worker);
+        worker.start();
+    }
+
+    /** Keep one hub's stream open, retrying with a backoff. */
+    private void watchHub(String hub) {
         int attempt = 0;
         while (running) {
             SharedPreferences p = prefs(this);
-            java.util.List<String> hubs = hubsWithToken(p);
-            if (hubs.isEmpty()) {
-                sleep(15000);
-                continue;
-            }
-            boolean connectedOnce = false;
-            for (String hub : hubs) {
+            String token = p.getString("desk.token:" + hub, null);
+            if (token == null) return; // unpaired or revoked: the supervisor decides
+            boolean established = false;
+            try {
+                established = connectAndRead(hub, token);
+            } catch (Exception err) {
                 if (!running) return;
-                String token = p.getString("desk.token:" + hub, null);
-                if (token == null) continue;
-                try {
-                    connectedOnce = connectAndRead(hub, token) || connectedOnce;
-                } catch (Exception err) {
-                    if (!running) return;
-                    Log.i(TAG, "stream from " + hub + " ended: " + err.getClass().getSimpleName());
-                }
+                Log.i(TAG, "stream from " + hub + " ended: " + err.getClass().getSimpleName());
             }
             if (!running) return;
-            attempt = connectedOnce ? 1 : Math.min(attempt + 1, 6);
+            attempt = established ? 1 : Math.min(attempt + 1, 6);
             sleep(Math.min(30000L, 1500L * attempt));
         }
     }
@@ -156,7 +184,7 @@ public class NightshiftWatcher extends Service {
     private boolean connectAndRead(String hub, String token) throws Exception {
         String url = hub + "/api/stream";
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        connection = conn;
+        connections.add(conn);
         try {
             conn.setRequestProperty("Authorization", "Bearer " + token);
             conn.setRequestProperty("Accept", "text/event-stream");
@@ -184,7 +212,7 @@ public class NightshiftWatcher extends Service {
             } catch (Exception ignored) {
                 // nothing to do
             }
-            connection = null;
+            connections.remove(conn);
         }
     }
 
