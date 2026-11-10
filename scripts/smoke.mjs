@@ -3527,8 +3527,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
       const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
       if (req.headers.authorization !== 'Bearer ' + TOKEN) return send(401, { error: { code: 'UNPAIRED' } });
-      if (req.url === '/api/bots') return send(200, [{ id: 'bot-ed', name: '剪辑', role: '剪视频' }]);
-      if (req.method === 'POST' && req.url === '/api/bots/bot-ed/message') return send(200, { turnId: 'turn-77' });
+      if (req.url === '/api/health') return send(200, { ok: true, version: 'test-peer' });
+      if (req.url === '/api/bots') return send(200, [{ id: 'bot-ed', name: '剪辑', role: '剪视频' }]);      if (req.method === 'POST' && req.url === '/api/bots/bot-ed/message') return send(200, { turnId: 'turn-77' });
       if (req.url.startsWith('/api/bots/bot-ed/messages')) return send(200, [{ turnId: 'turn-77', role: 'assistant', text: '剪好了：cut.txt' }, { turnId: 'turn-77', role: 'status', status: 'success' }]);
       if (req.url === '/api/uploads') return send(200, { path: 'uploads/day/' + decodeURIComponent(req.headers['x-file-name']) });
       if (req.url.startsWith('/api/workspace/file')) { res.writeHead(200); return res.end(fsx.readFileSync(path.join(peerWs, 'cut.txt'))); }
@@ -3579,6 +3579,17 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const e3 = await err(reg.get('file_send').run({ machine: 'ubuntu', path: 'script.md' }, ctx));
     check('peers: unknown machine, depth limit and a wrong token are refused clearly', e1 === 'PEER_NOT_FOUND' && e2 === 'BOT_DEPTH_EXCEEDED' && e3 === 'PEER_UNAUTHORIZED', [e1, e2, e3].join(','));
     check('peers: file tools come with bot_message', reg.isGranted(me, 'file_send') && reg.isGranted(me, 'file_fetch') && !reg.isGranted({ tools: [] }, 'file_fetch'));
+    // The hub's machine list has to authenticate its probe with the peer token.
+    // (peers.list() hides tokens; using it for the probe reported everything offline.)
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'ubuntu', url: peerUrl, tailnetUrl: peerUrl, token: TOKEN }] } });
+    const live = await api('/api/machines');
+    const ubuntuRow = (live.json?.machines || []).find((m) => m.name === 'ubuntu');
+    check(
+      'machines: a peer that answers is listed online (the probe authenticates)',
+      Boolean(ubuntuRow) && ubuntuRow.online === true,
+      JSON.stringify(live.json?.machines),
+    );
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } });
     peerSrv.close();
     // The hub routes: the list goes in, tokens never come out.
     const put = await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'box', url: 'http://10.0.0.9:4390', token: 'secret-peer-token-1' }] } });

@@ -31,9 +31,13 @@ function arg(name, fallback = '') {
   return index === -1 ? fallback : process.argv[index + 1] || '';
 }
 
+/** The device to talk to: --serial, or ADB_SERIAL, or the only one attached. */
+const SERIAL = arg('serial') || process.env.ADB_SERIAL || '';
+
 function adb(args) {
+  const full = SERIAL ? ['-s', SERIAL, ...args] : args;
   return new Promise((resolve) => {
-    const proc = spawn(ADB, args, { windowsHide: true });
+    const proc = spawn(ADB, full, { windowsHide: true });
     let out = '';
     proc.stdout.on('data', (c) => (out += c.toString()));
     proc.stderr.on('data', (c) => (out += c.toString()));
@@ -76,8 +80,14 @@ class Cdp {
 
 const main = async () => {
   const devices = await adb(['devices']);
-  if (!/device\s*$/m.test(devices.replace(/List of devices attached/, ''))) {
-    throw new Error(`no emulator/device attached:\n${devices}`);
+  const attached = devices
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts) => parts.length === 2 && parts[1] === 'device')
+    .map((parts) => parts[0]);
+  if (!attached.length) throw new Error(`no emulator/device attached:\n${devices}`);
+  if (!SERIAL && attached.length > 1) {
+    throw new Error(`more than one device attached (${attached.join(', ')}); pass --serial <id>`);
   }
   const pid = (await adb(['shell', 'pidof', PACKAGE])) || '';
   if (!pid) throw new Error(`${PACKAGE} is not running (install it, or start it with adb shell am start -n ${PACKAGE}/.MainActivity)`);

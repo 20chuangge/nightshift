@@ -1352,12 +1352,15 @@ route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const self = { name: state.config.name || '本机', url: state.pairingUrl || null, online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
+      // list() deliberately hides tokens; the probe needs the real record, or it
+      // would authenticate with nothing and report every machine as offline.
+      const full = state.peers.find(peer.name) || peer;
       // Both addresses at once: a LAN address that hangs must not hide a
       // Tailscale address that answers.
       const probe = (base) =>
         base
           ? state.peers
-              .call(peer, 'GET', '/api/health', { timeoutMs: 2500, base })
+              .call(full, 'GET', '/api/health', { timeoutMs: 2500, base })
               .then((res) => res.ok)
               .catch(() => false)
           : Promise.resolve(false);
