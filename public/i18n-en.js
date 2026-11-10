@@ -1307,4 +1307,12 @@ window.DESK_I18N_EN = {
   "已打开：手机现在能连进来了。": "On: a phone can connect now.",
   "已关闭：手机连不进来了。": "Off: phones can no longer connect.",
   "链接已复制": "Link copied",
+  "正在读取机器列表…": "Loading machines…",
+  "当前：{0}。这台机器离线时读不到机器列表；添加机器请在夜班客户端里操作。": "Now: {0}. The machine list cannot be read while this machine is offline; add machines from the Nightshift app.",
+  "你正在用的这台": "The one you are using",
+  "切到这": "Switch here",
+  "还没有别的机器。在夜班客户端里「添加机器」，它们就会出现在这里。": "No other machines yet. Add one in the Nightshift app and it shows up here.",
+  "这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。": "This computer is only reachable locally right now (Allow phone connections is off), so other devices cannot jump here.",
+  "正在过去…": "Switching over…",
+  "没有拿到跳转地址": "No switch link came back",
 };

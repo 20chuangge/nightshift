@@ -52,8 +52,43 @@ export function isLoopbackHost(value) {
   return host.startsWith('127.');
 }
 
-export function clientIp(req) {
-  return normalizeAddress(req?.socket?.remoteAddress) || 'unknown';
+/**
+ * Reverse proxies. A hub that only listens on 127.0.0.1 and puts Caddy / nginx /
+ * a tunnel in front would otherwise see *every* request as loopback - and
+ * loopback means "the owner is sitting at the computer", i.e. no authentication
+ * at all. So proxying is opt-in, and only a request that really came from the
+ * local proxy is allowed to name its own client address:
+ *
+ *   ASSIST_TRUST_PROXY=1        believe X-Forwarded-For from a loopback peer
+ *   ASSIST_PROXY_SECRET=...     also believe it from a non-loopback peer that
+ *                               presents this header (docker bridge, another box)
+ *
+ * Fail closed: a spoofed X-Forwarded-For from anywhere else is ignored and the
+ * real socket address is used, so the request still has to authenticate.
+ */
+export const TRUST_PROXY = /^(1|true|yes)$/i.test(String(process.env.ASSIST_TRUST_PROXY || ''));
+const PROXY_SECRET = String(process.env.ASSIST_PROXY_SECRET || '').trim();
+
+export function clientIp(req, { trustProxy = TRUST_PROXY, proxySecret = PROXY_SECRET } = {}) {
+  const remote = normalizeAddress(req?.socket?.remoteAddress) || 'unknown';
+  if (!trustProxy) return remote;
+
+  const forwarded = String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+  if (!forwarded) return remote;
+
+  const presented = String(req?.headers?.['x-nightshift-proxy'] || '').trim();
+  const trusted = isLoopbackAddress(remote) || (proxySecret && safeEqual(presented, proxySecret));
+  return trusted ? normalizeAddress(forwarded) || 'unknown' : remote;
+}
+
+/** True when this request reached us over TLS, directly or through a trusted proxy. */
+export function isSecureRequest(req, { trustProxy = TRUST_PROXY, proxySecret = PROXY_SECRET } = {}) {
+  if (req?.socket?.encrypted) return true;
+  if (!trustProxy) return false;
+  const remote = normalizeAddress(req?.socket?.remoteAddress) || '';
+  const presented = String(req?.headers?.['x-nightshift-proxy'] || '').trim();
+  const trusted = isLoopbackAddress(remote) || (proxySecret && safeEqual(presented, proxySecret));
+  return Boolean(trusted) && /^https$/i.test(String(req?.headers?.['x-forwarded-proto'] || '').trim());
 }
 
 /** Constant-time comparison. Hashing first hides the length difference too. */
@@ -154,8 +189,8 @@ export async function rotatePairingCode(security) {
  * @param {{findBySession?: (token: string) => object|null, touch?: (id: string) => void}} [devices]
  * @returns {{required: boolean, authorized: boolean, mode: 'local'|'token'|'cookie'|'none', local: boolean, address: string, deviceId?: string}}
  */
-export function evaluateAuth(req, security, devices) {
-  const address = clientIp(req);
+export function evaluateAuth(req, security, devices, proxy = {}) {
+  const address = clientIp(req, proxy);
   if (isLoopbackAddress(address)) {
     return { required: false, authorized: true, mode: 'local', local: true, address };
   }
@@ -220,10 +255,14 @@ export function isAuthExemptPath(method, pathname) {
   return false;
 }
 
-export function sessionCookieHeader(token) {
-  // No `Secure`: this server speaks plain HTTP on a LAN. HttpOnly keeps the
+export function sessionCookieHeader(token, { secure = false } = {}) {
+  // On plain HTTP (a LAN) there is no `Secure`, because the browser would drop
+  // the cookie entirely. Over HTTPS - directly or through a trusted proxy - it
+  // is added so the cookie can never travel in the clear. HttpOnly keeps the
   // token away from page scripts, SameSite=Lax blocks cross-site sends.
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+  const flags = ['HttpOnly', 'SameSite=Lax', 'Path=/', `Max-Age=${SESSION_MAX_AGE_SECONDS}`];
+  if (secure) flags.splice(1, 0, 'Secure');
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${flags.join('; ')}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -10020,7 +10020,12 @@ function renderMachinesList() {
   const box = $('set-machines-list');
   if (!box) return;
   if (!machineBridge) {
-    box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。在浏览器或手机里打开时只能用当前这台；添加和切换机器请在夜班客户端里操作。</div>`;
+    // Browser / phone: no desktop bridge, but this hub knows the other machines
+    // and can hand out a one-time link into any of them.
+    box.innerHTML = '<div class="machine-empty">正在读取机器列表…</div>';
+    renderBrowserMachines().catch(() => {
+      box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。这台机器离线时读不到机器列表；添加机器请在夜班客户端里操作。</div>`;
+    });
     return;
   }
   const row = (m) => `
@@ -10045,7 +10050,67 @@ function renderMachinesList() {
   box.innerHTML = rows.join('');
 }
 
+/**
+ * Browser / phone version of the same list. This hub already knows the other
+ * machines (data/peers.json) and can mint a one-time pairing link into one of
+ * them, so switching needs no credential on this device.
+ */
+async function renderBrowserMachines() {
+  const box = $('set-machines-list');
+  if (!box) return;
+  const data = await api('/api/machines');
+  const machines = Array.isArray(data?.machines) ? data.machines : [];
+  const mine = machines.find((m) => m.self);
+  const others = machines.filter((m) => !m.self);
+  const row = (m) => `
+    <div class="machine-row ${m.self ? 'current' : ''}">
+      <div class="machine-avatar">${escapeHtml((m.name || '?').slice(0, 1).toUpperCase())}</div>
+      <div class="machine-meta">
+        <div class="machine-name">${escapeHtml(m.name)}${m.self ? '' : (m.online ? '' : ' <span class="machine-tag">离线</span>')}</div>
+        <div class="machine-sub">${escapeHtml(m.self ? '你正在用的这台' : (m.tailnetUrl || m.url || ''))}</div>
+      </div>
+      <div class="machine-actions">
+        ${m.self
+          ? '<span class="machine-tag">当前</span>'
+          : `<button class="btn tiny" data-handoff="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>切到这</button>`}
+      </div>
+    </div>`;
+  const rows = machines.map(row);
+  if (!others.length) {
+    rows.push('<div class="machine-empty">还没有别的机器。在夜班客户端里「添加机器」，它们就会出现在这里。</div>');
+  }
+  if (mine && !mine.url) {
+    rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
+  }
+  box.innerHTML = rows.join('');
+}
+
+/** Switch by asking this hub for a one-time link into the other machine. */
+async function handoffToMachine(name, button) {
+  if (button) {
+    button.disabled = true;
+    button.textContent = '正在过去…';
+  }
+  try {
+    const res = await api(`/api/machines/${encodeURIComponent(name)}/handoff`, { method: 'POST' });
+    if (!res?.url) throw new Error('没有拿到跳转地址');
+    // The link pairs this phone with the other machine, then redirects.
+    location.assign(res.url);
+  } catch (err) {
+    toast(err?.message || '切换失败', true);
+    if (button) {
+      button.disabled = false;
+      button.textContent = '切到这';
+    }
+  }
+}
+
 async function onMachineListClick(event) {
+  const handoff = event.target.closest('[data-handoff]');
+  if (handoff) {
+    await handoffToMachine(handoff.dataset.handoff, handoff);
+    return;
+  }
   const btn = event.target.closest('[data-switch],[data-rename],[data-remove]');
   if (!btn || !window.desk) return;
   if (btn.dataset.switch !== undefined) {

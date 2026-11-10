@@ -224,6 +224,20 @@ const main = async () => {
     console.log('devices:', JSON.stringify(devices));
     await page.shot(path.join(OUT, 'phone-settings.png'));
 
+    // Settings → 机器 in a browser: the hub's own machine list, not a dead end.
+    await page.evaluate("document.querySelector('[data-set-target=\"sec-machines\"]').click()");
+    await sleep(1200);
+    const machines = await page.evaluate(`(() => {
+      const box = document.getElementById('set-machines-list');
+      return {
+        rows: box?.querySelectorAll('.machine-row').length || 0,
+        current: box?.querySelector('.machine-tag')?.textContent || '',
+        text: (box?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160),
+      };
+    })()`);
+    console.log('machines:', JSON.stringify(machines));
+    await page.shot(path.join(OUT, 'machines.png'));
+
     // A phone-shaped viewport must not scroll sideways.
     await page.send('Emulation.setDeviceMetricsOverride', {
       width: 375, height: 812, deviceScaleFactor: 2, mobile: true,

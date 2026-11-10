@@ -11,6 +11,7 @@
  */
 
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -88,6 +89,8 @@ import {
   isAuthExemptPath,
   isPublicShellPath,
   isLoopbackHost,
+  isSecureRequest,
+  isLoopbackAddress,
   clientIp,
   safeEqual,
   sessionCookieHeader,
@@ -112,6 +115,30 @@ const VERSION = (() => {
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_PORT = Number(process.env.PORT ?? 4390);
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/** ASSIST_REQUIRE_HTTPS=1 refuses plain HTTP from anything but loopback. */
+const REQUIRE_HTTPS = /^(1|true|yes)$/i.test(String(process.env.ASSIST_REQUIRE_HTTPS || ''));
+
+/**
+ * A certificate the owner put there. Two ways: the env pair (ASSIST_TLS_CERT /
+ * ASSIST_TLS_KEY, full paths) or data/tls/cert.pem + data/tls/key.pem. Nothing
+ * is generated: a self-signed cert that the browser has never met is worse than
+ * saying "put Caddy in front", and docs/HTTPS.md explains both.
+ */
+function loadTls() {
+  const fromEnvCert = process.env.ASSIST_TLS_CERT;
+  const fromEnvKey = process.env.ASSIST_TLS_KEY;
+  const dir = path.join(P.dataDir, 'tls');
+  const certPath = fromEnvCert ? path.resolve(fromEnvCert) : path.join(dir, 'cert.pem');
+  const keyPath = fromEnvKey ? path.resolve(fromEnvKey) : path.join(dir, 'key.pem');
+  try {
+    if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) return null;
+    return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
+  } catch (err) {
+    console.error(`[assistant] TLS files could not be read (${err.message}); staying on http`);
+    return null;
+  }
+}
 
 /** ASSIST_ALLOW_REMOTE=1 is the only way to expose this beyond loopback. */
 function remoteAccessAllowed() {
@@ -535,14 +562,21 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   };
   refs.app = state;
 
-  const server = http.createServer((req, res) => {
+  // TLS: a cert/key pair is optional and never generated behind the owner's
+  // back. With it the hub speaks https itself (ASSIST_TLS_CERT / ASSIST_TLS_KEY,
+  // or data/tls/cert.pem + key.pem); without it, run a reverse proxy or use a
+  // tunnel - see docs/HTTPS.md.
+  const tls = loadTls();
+  const onRequest = (req, res) => {
     handleRequest(req, res, state).catch((err) => {
       // Last-resort guard: no route may ever produce an unhandled rejection.
       console.error('[assistant] unhandled request error:', err);
       if (!res.headersSent) errorResponse(res, 500, 'INTERNAL', 'unexpected server error');
       else res.end();
     });
-  });
+  };
+  const server = tls ? https.createServer(tls, onRequest) : http.createServer(onRequest);
+  if (tls) console.error('[assistant] TLS is on (HSTS + Secure cookies)');
 
   // Bot desktops: websockify listens on 127.0.0.1 only; a viewer reaches it
   // through this relay, which applies the same pairing check as the API.
@@ -601,6 +635,17 @@ async function handleRequest(req, res, state) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const pathname = safeDecode(url.pathname);
   const method = (req.method || 'GET').toUpperCase();
+
+  // ASSIST_REQUIRE_HTTPS=1: from anywhere but this computer, plain HTTP is
+  // refused. The shell still has to be reachable so the message can be read.
+  if (REQUIRE_HTTPS && !isSecureRequest(req) && !isLoopbackAddress(clientIp(req)) && !isPublicShellPath(pathname)) {
+    return errorResponse(
+      res,
+      426,
+      'HTTPS_REQUIRED',
+      'this server only accepts https; open it through your https address (or turn ASSIST_REQUIRE_HTTPS off)',
+    );
+  }
 
   if (pathname === '/api' || pathname.startsWith('/api/')) {
     // Loopback is the local user. Everything else has to pair first - except the
@@ -1215,7 +1260,7 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   // Every paired client gets its own session, so Settings can list the phones
   // and remove one without logging the others out.
   const { device, sessionToken } = state.devices.add({ name: describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
-  res.setHeader('set-cookie', sessionCookieHeader(sessionToken));
+  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) }));
   return { ok: true, device };
 });
 
@@ -1256,6 +1301,53 @@ route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, s
   const removed = state.devices.remove(params.id);
   if (!removed) throw httpError(404, 'DEVICE_NOT_FOUND', 'no such device');
   return { ok: true };
+});
+
+// --- machines, and switching to one ----------------------------------------
+//
+// A phone that is paired with this hub may want to look at another machine.
+// It must NOT receive that machine's credential: instead the hub asks the other
+// machine for a one-time pairing link (it already holds a bearer token there)
+// and hands that back. The phone follows it, pairs there, and the link dies.
+//
+//   GET  /api/machines                  [{name, url, online, self}]
+//   POST /api/machines/:name/handoff    {url} - a one-time link into that machine
+
+route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
+  const peers = state.peers.list();
+  const self = { name: state.config.name || '本机', url: state.pairingUrl || null, online: true, self: true };
+  const rest = await Promise.all(
+    peers.map(async (peer) => {
+      // Both addresses at once: a LAN address that hangs must not hide a
+      // Tailscale address that answers.
+      const probe = (base) =>
+        base
+          ? state.peers
+              .call(peer, 'GET', '/api/health', { timeoutMs: 2500, base })
+              .then((res) => res.ok)
+              .catch(() => false)
+          : Promise.resolve(false);
+      const online = (await Promise.all([probe(peer.url), probe(peer.tailnetUrl || '')])).some(Boolean);
+      return { name: peer.name, url: peer.url, tailnetUrl: peer.tailnetUrl || '', online, self: false };
+    }),
+  );
+  return { machines: [self, ...rest] };
+});
+
+route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, { params, state }) => {
+  const peer = state.peers.find(params.name);
+  if (!peer) throw httpError(404, 'MACHINE_NOT_FOUND', `no machine called "${params.name}"`);
+  let made;
+  try {
+    made = await state.peers.json(peer, 'POST', '/api/pairing/link', { timeoutMs: 8000 });
+  } catch (err) {
+    if (err.code === 'REMOTE_DISABLED') {
+      throw httpError(409, 'MACHINE_REMOTE_DISABLED', `「${peer.name}」没有打开允许手机连接，先在它上面打开再试`);
+    }
+    throw err;
+  }
+  if (!made?.url) throw httpError(409, 'MACHINE_NO_ADDRESS', `「${peer.name}」没有可用的手机地址`);
+  return { ok: true, machine: peer.name, url: made.url, expiresAt: made.expiresAt };
 });
 
 // --- UI state / remote machines -------------------------------------------
@@ -2523,15 +2615,21 @@ function jsonResponse(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const gzip = body.length > 1024 && acceptsGzip(res.req);
   const out = gzip ? zlib.gzipSync(body) : body;
-  const headers = {
+  const headers = withSecurityHeaders(res.req, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': out.length,
     'cache-control': 'no-store',
     vary: 'accept-encoding',
-  };
+  });
   if (gzip) headers['content-encoding'] = 'gzip';
   res.writeHead(status, headers);
   res.end(out);
+}
+
+/** HSTS only over TLS: sending it on plain HTTP would break later http visits. */
+function withSecurityHeaders(req, headers) {
+  if (isSecureRequest(req)) headers['strict-transport-security'] = 'max-age=15552000; includeSubDomains';
+  return headers;
 }
 
 function errorResponse(res, status, code, message) {
@@ -2682,12 +2780,12 @@ async function serveStatic(req, res, pathname) {
     }
   }
 
-  const headers = {
+  const headers = withSecurityHeaders(req, {
     'content-type': type,
     'content-length': payload.length,
     'cache-control': 'no-cache',
     vary: 'accept-encoding',
-  };
+  });
   if (etag) headers.etag = etag;
   if (compressible) headers['content-encoding'] = 'gzip';
   res.writeHead(200, headers);

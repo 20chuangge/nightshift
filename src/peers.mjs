@@ -31,12 +31,14 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
       || null;
   }
 
-  /** One request to a peer: its LAN address first, then its Tailscale address. */
-  async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal } = {}) {
+  /** One request to a peer: its LAN address first, then its Tailscale address.
+   *  `base` forces a single address (the machine list probes both in parallel). */
+  async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal, base } = {}) {
     let lastErr = null;
-    for (const base of [peer.url, peer.tailnetUrl].filter(Boolean)) {
+    const bases = base ? [base] : [peer.url, peer.tailnetUrl].filter(Boolean);
+    for (const candidate of bases) {
       try {
-        const res = await fetchImpl(`${clean(base)}${path}`, {
+        const res = await fetchImpl(`${clean(candidate)}${path}`, {
           method,
           headers: { authorization: `Bearer ${peer.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
           body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined,

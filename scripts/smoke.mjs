@@ -2211,6 +2211,66 @@ function scenarioAuth({ auth, devicesMod }) {
   clock += 600_001;
   check('pair links: an expired token fails', links.consume(stale.token) === null);
   check('pair links: expired links are dropped from memory', links.size === 0, `${links.size}`);
+
+  // --- behind a reverse proxy (Caddy / tunnel) ------------------------------
+  const proxyOff = auth.clientIp(
+    { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '192.0.2.55' } },
+    { trustProxy: false },
+  );
+  check('proxy: X-Forwarded-For is ignored unless proxying is turned on', proxyOff === '127.0.0.1', proxyOff);
+
+  const proxyOn = auth.clientIp(
+    { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '192.0.2.55, 10.0.0.1' } },
+    { trustProxy: true },
+  );
+  check('proxy: a local proxy may name the client (first hop wins)', proxyOn === '192.0.2.55', proxyOn);
+
+  const spoofed = auth.clientIp(
+    { socket: { remoteAddress: '198.51.100.7' }, headers: { 'x-forwarded-for': '127.0.0.1' } },
+    { trustProxy: true },
+  );
+  check(
+    'proxy: a remote client cannot claim to be loopback (fails closed)',
+    spoofed === '198.51.100.7',
+    spoofed,
+  );
+
+  const secretOk = auth.clientIp(
+    {
+      socket: { remoteAddress: '198.51.100.7' },
+      headers: { 'x-forwarded-for': '192.0.2.55', 'x-nightshift-proxy': 'shared-secret' },
+    },
+    { trustProxy: true, proxySecret: 'shared-secret' },
+  );
+  check('proxy: an off-box proxy with the shared secret is trusted', secretOk === '192.0.2.55', secretOk);
+
+  check(
+    'proxy: a TLS connection is recognised',
+    auth.isSecureRequest({ socket: { encrypted: true }, headers: {} }, { trustProxy: false }) === true,
+  );
+  check(
+    'proxy: X-Forwarded-Proto https from the local proxy counts as secure',
+    auth.isSecureRequest(
+      { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-proto': 'https' } },
+      { trustProxy: true },
+    ) === true,
+  );
+  check(
+    'proxy: X-Forwarded-Proto is ignored when proxying is off',
+    auth.isSecureRequest(
+      { socket: { remoteAddress: '192.0.2.9' }, headers: { 'x-forwarded-proto': 'https' } },
+      { trustProxy: false },
+    ) === false,
+  );
+  check(
+    'auth behind a proxy: a proxied remote client without a credential is still gated',
+    auth.evaluateAuth(
+      { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '192.0.2.55' } },
+      security,
+      store,
+      { trustProxy: true },
+    ).authorized === false,
+  );
 }
 
 async function scenarioPairing() {
@@ -2259,6 +2319,26 @@ async function scenarioPairing() {
   check('the list is empty right after the removal', (await api('/api/devices')).json?.devices?.length === 0);
   const missing = await api('/api/devices/no-such-device', { method: 'DELETE' });
   check('removing a device that does not exist is a 404', missing.status === 404 && missing.json?.error?.code === 'DEVICE_NOT_FOUND', missing.text.slice(0, 200));
+
+  // --- switching machines from a paired phone --------------------------------
+  const machines = await api('/api/machines');
+  const selfEntry = (machines.json?.machines || []).find((m) => m.self);
+  check(
+    'GET /api/machines lists this machine first',
+    machines.status === 200 && Boolean(selfEntry) && selfEntry.online === true,
+    machines.text.slice(0, 240),
+  );
+  check(
+    'the machine list never carries a peer token',
+    !/token|Bearer/i.test(machines.text),
+    machines.text.slice(0, 240),
+  );
+  const unknownHandoff = await api('/api/machines/no-such-machine/handoff', { method: 'POST' });
+  check(
+    'a handoff to a machine that does not exist is a 404',
+    unknownHandoff.status === 404 && unknownHandoff.json?.error?.code === 'MACHINE_NOT_FOUND',
+    unknownHandoff.text.slice(0, 200),
+  );
 
   const authInfo = await api('/api/auth');
   check(
@@ -3396,6 +3476,17 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     await dead.set([{ name: 'away', url: 'http://127.0.0.1:1', tailnetUrl: peerUrl, token: TOKEN }]);
     const viaTail = await dead.json(dead.find('away'), 'GET', '/api/bots');
     check('peers: a machine not answering on the LAN is reached on its Tailscale address', Array.isArray(viaTail) && viaTail[0].id === 'bot-ed');
+    // The machine list probes both addresses at once (a hanging LAN address must
+    // not hide an answering Tailscale address), so a single-address call exists.
+    const probe = (base) =>
+      dead
+        .call(dead.find('away'), 'GET', '/api/bots', { base, timeoutMs: 1500 })
+        .then((res) => res.ok)
+        .catch(() => false);
+    check(
+      'machines: one address can be probed on its own (LAN down, Tailscale up)',
+      (await probe('http://127.0.0.1:1')) === false && (await probe(peerUrl)) === true,
+    );
     const ws = fsx.mkdtempSync(path.join(os.tmpdir(), 'ws12-'));
     fsx.writeFileSync(path.join(ws, 'script.md'), '分镜');
     const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => null, getPeers: () => peers });
