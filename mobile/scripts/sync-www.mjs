@@ -90,9 +90,12 @@ async function main() {
   await fsp.rm(wwwDir, { recursive: true, force: true });
   await fsp.mkdir(wwwDir, { recursive: true });
 
-  // 1. The shell: connect screen + launcher. Owned by mobile/, not by public/.
-  await fsp.copyFile(path.join(shellDir, 'index.html'), path.join(wwwDir, 'index.html'));
-  await fsp.copyFile(path.join(shellDir, 'launcher.js'), path.join(wwwDir, 'launcher.js'));
+  // 1. The shell: connect screen + launcher + the native chat screen.
+  //    Everything in mobile/shell/ is the app; index.html is the entry point.
+  for (const entry of await fsp.readdir(shellDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    await fsp.copyFile(path.join(shellDir, entry.name), path.join(wwwDir, entry.name));
+  }
 
   // 2. The UI, verbatim.
   await copyTree(publicDir, uiDir);

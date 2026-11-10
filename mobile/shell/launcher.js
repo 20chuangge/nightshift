@@ -24,7 +24,7 @@
 (() => {
   'use strict';
 
-  const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs' };
+  const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs', bot: 'desk.botId', tokenFor: (hub) => `desk.token:${hub}` };
   const PROBE_TIMEOUT_MS = 4500;
   const LONG_PRESS_MS = 550;
 
@@ -258,7 +258,7 @@
           longPressed = false;
           return;
         }
-        void openHub(entry.url, '');
+        void openChat(entry.url, '');
       });
 
       dom.machineList.appendChild(row);
@@ -350,10 +350,30 @@
   }
 
   // ------------------------------------------------------------------ actions
-  /** Leave the shell and show the hub's own UI (first-party, cookie-friendly). */
-  async function openHub(hub, code) {
+  /**
+   * Pair this phone with a hub from the app itself, and keep the device token.
+   * The app's own screen (app.html) then talks to the HTTP API directly with
+   * `Authorization: Bearer <token>` - no cookie, no cross-site cookie rules.
+   */
+  async function pairWithHub(hub, code) {
+    const res = await fetch(`${hub}/api/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, client: 'app' }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.status === 401) throw new Error('配对码不对，或者这个链接已经过期了。');
+    if (res.status === 409) throw new Error('这台电脑还没有打开「允许手机连接」。');
+    if (!res.ok || !data?.token) {
+      throw new Error((data && data.error && data.error.message) || `配对失败（${res.status}）`);
+    }
+    return data;
+  }
+
+  /** Open the native chat screen (app.html reads the hub + token from storage). */
+  async function openChat(hub, code) {
     show('booting');
-    dom.bootingText.textContent = code ? '正在配对并打开…' : '正在打开夜班…';
+    dom.bootingText.textContent = code ? '正在配对…' : '正在打开夜班…';
     dom.bootingUrl.textContent = hub;
     state.hub = hub;
     const up = await probe(hub);
@@ -362,8 +382,17 @@
       showOffline(`${hub} 没有响应。`);
       return;
     }
-    // location.assign keeps this launchpad in history for the Android back patch.
-    window.location.assign(hubUrlFor(hub, code));
+    if (code) {
+      const paired = await pairWithHub(hub, code);
+      await store.set(KEYS.tokenFor(hub), paired.token);
+      if (paired.device?.id) await store.set('desk.deviceId', paired.device.id);
+    } else if (!(await store.get(KEYS.tokenFor(hub)))) {
+      // No token yet: the hub's own UI has the pairing form.
+      window.location.assign(hubUrlFor(hub, ''));
+      return;
+    }
+    await store.set(KEYS.hub, hub);
+    window.location.assign('app.html');
   }
 
   /** A pair link from the computer's QR code: https://host:port/?pair=TOKEN */
@@ -384,7 +413,12 @@
     const token = url.searchParams.get('pair') || '';
     await rememberHub(hub);
     await renderMachines();
-    await openHub(hub, token);
+    try {
+      await openChat(hub, token);
+    } catch (err) {
+      setError(err.message || String(err));
+      showConnect(hub);
+    }
   }
 
   /**
@@ -483,7 +517,7 @@
       await rememberHub(hub);
       dom.hubCode.value = '';
       await renderMachines();
-      await openHub(hub, code);
+      await openChat(hub, code);
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -521,7 +555,7 @@
   });
 
   dom.openBtn.addEventListener('click', () => {
-    if (state.hub) void openHub(state.hub, '');
+    if (state.hub) void openChat(state.hub, '');
   });
 
   dom.changeBtn.addEventListener('click', () => showConnect(state.hub));
@@ -540,7 +574,7 @@
   });
 
   dom.offlineRetry.addEventListener('click', () => {
-    if (state.hub) void openHub(state.hub, '');
+    if (state.hub) void openChat(state.hub, '');
     else showConnect('');
   });
   dom.offlineChange.addEventListener('click', () => showConnect(state.hub));
