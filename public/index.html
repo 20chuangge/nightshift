@@ -10048,24 +10048,43 @@ function renderMachineMenu() {
     // instead of a separate button.
     const list = (state.machinesCache && state.machinesCache.machines) || [];
     const back = cameFromMachine();
-    // The way back is a normal row in the same list, labelled with the name the
-    // other machine goes by (an IP address means nothing to a person).
-    const backLabel = back ? (back.name || back.origin.replace(/^https?:\/\//, '')) : '';
-    const backRow = back
-      ? `<button type="button" role="menuitem" class="mm-item" data-back-origin="${escapeHtml(back.origin)}">
-           <b>← ${escapeHtml(backLabel)}</b>
-         </button><div class="menu-sep"></div>`
-      : '';
-    if (!list.length && !backRow) {
+    // The way back is rendered exactly like any other machine row: name, an
+    // "离线" tag when it does not answer, and its address. No arrow, no label -
+    // it is just one more machine in the list.
+    const row = (name, address, { off = false, current = false, attrs = '', key = '' } = {}) => `
+      <button type="button" role="menuitem" class="mm-item ${current ? 'current' : ''}" ${attrs} ${key ? `data-row="${escapeHtml(key)}"` : ''}>
+        <b>${escapeHtml(name)}</b>${off ? '<small class="off">离线</small>' : ''}
+        <small>${escapeHtml(address)}</small>
+      </button>`;
+    if (!list.length && !back) {
       menu.innerHTML = '<button type="button" disabled>正在读取机器列表…</button>';
       return;
     }
-    menu.innerHTML = backRow + list.map((m) => `
-      <button type="button" role="menuitem" class="mm-item ${m.self ? 'current' : ''}"
-              ${m.self ? '' : `data-handoff-menu="${escapeHtml(m.name)}"`}>
-        <b>${escapeHtml(m.name)}</b>${m.self ? '' : (m.online ? '' : '<small class="off">离线</small>')}
-        <small>${escapeHtml(m.self ? '你正在用的这台' : (m.tailnetUrl || m.url || ''))}</small>
-      </button>`).join('');
+    const rows = [];
+    if (back) rows.push(row(back.name || back.origin.replace(/^https?:\/\//, ''), back.origin, {
+      attrs: `data-back-origin="${escapeHtml(back.origin)}"`,
+      key: 'origin',
+    }));
+    for (const m of list) {
+      rows.push(
+        m.self
+          ? row(m.name, '你正在用的这台', { current: true })
+          : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
+      );
+    }
+    menu.innerHTML = rows.join('');
+    // The machine we came from is not a peer of this hub, so its state is unknown:
+    // probe it once and mark it 离线 if it does not answer.
+    if (back) {
+      const rowNode = menu.querySelector('[data-row="origin"]');
+      reachable(back.origin).then((ok) => {
+        if (ok || !rowNode) return;
+        const tag = document.createElement('small');
+        tag.className = 'off';
+        tag.textContent = '离线';
+        rowNode.querySelector('b')?.after(tag);
+      });
+    }
     return;
   }
   const rows = [{ url: '', name: '本机', sub: '这台电脑', current: machineBridge.local }]
