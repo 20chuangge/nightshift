@@ -10035,6 +10035,7 @@ async function refreshMachines() {
   if (!machineBridge) {
     try {
       const data = await api('/api/machines');
+      state.machinesCache = { at: Date.now(), machines: data?.machines || [] };
       const mine = (data?.machines || []).find((m) => m.self);
       if (mine?.name) selfMachineName = mine.name;
     } catch {
@@ -10063,7 +10064,19 @@ function renderMachineMenu() {
   const menu = $('machine-menu');
   if (!menu) return;
   if (!machineBridge) {
-    menu.innerHTML = '<button type="button" disabled>在夜班客户端里才能切换机器</button>';
+    // Browser / phone: the hub knows the machines, and can hand out a one-time
+    // link into one of them. Same list as Settings → 机器, one line each.
+    const list = (state.machinesCache && state.machinesCache.machines) || [];
+    if (!list.length) {
+      menu.innerHTML = '<button type="button" disabled>正在读取机器列表…</button>';
+      return;
+    }
+    menu.innerHTML = list.map((m) => `
+      <button type="button" role="menuitem" class="mm-item ${m.self ? 'current' : ''}"
+              ${m.self ? '' : `data-handoff-menu="${escapeHtml(m.name)}"`}>
+        <b>${escapeHtml(m.name)}</b>${m.self ? '' : (m.online ? '' : '<small class="off">离线</small>')}
+        <small>${escapeHtml(m.self ? '你正在用的这台' : (m.tailnetUrl || m.url || ''))}</small>
+      </button>`).join('');
     return;
   }
   const rows = [{ url: '', name: '本机', sub: '这台电脑', current: machineBridge.local }]
@@ -10854,6 +10867,7 @@ function wireChrome() {
     if (!item || item.disabled) return;
     closeMenus();
     if (item.dataset.machineAdd) { openMachineModal(); return; }
+    if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
     if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);
   });
   $('set-machines-list')?.addEventListener('click', onMachineListClick);

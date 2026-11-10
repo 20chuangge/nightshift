@@ -1337,7 +1337,12 @@ route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, s
   return { ok: true };
 });
 
-// --- machines, and switching to one ----------------------------------------
+// Probe results are reused briefly: the machine list is opened often, and every
+// probe costs a round trip to a machine that may be asleep (a phone waits for
+// the whole answer).
+const machineProbeCache = new Map(); // name -> { at, online }
+const MACHINE_PROBE_TTL_MS = 15000;
+const MACHINE_PROBE_TIMEOUT_MS = 900;
 // A phone that is paired with this hub may want to look at another machine.
 // It must NOT receive that machine's credential: instead the hub asks the other
 // machine for a one-time pairing link (it already holds a bearer token there)
@@ -1357,16 +1362,23 @@ route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
       // list() deliberately hides tokens; the probe needs the real record, or it
       // would authenticate with nothing and report every machine as offline.
       const full = state.peers.find(peer.name) || peer;
-      // Both addresses at once: a LAN address that hangs must not hide a
-      // Tailscale address that answers.
-      const probe = (base) =>
-        base
-          ? state.peers
-              .call(full, 'GET', '/api/health', { timeoutMs: 2500, base })
-              .then((res) => res.ok)
-              .catch(() => false)
-          : Promise.resolve(false);
-      const online = (await Promise.all([probe(peer.url), probe(peer.tailnetUrl || '')])).some(Boolean);
+      const cached = machineProbeCache.get(peer.name);
+      let online;
+      if (cached && Date.now() - cached.at < MACHINE_PROBE_TTL_MS) {
+        online = cached.online;
+      } else {
+        // Both addresses at once: a LAN address that hangs must not hide a
+        // Tailscale address that answers.
+        const probe = (base) =>
+          base
+            ? state.peers
+                .call(full, 'GET', '/api/health', { timeoutMs: MACHINE_PROBE_TIMEOUT_MS, base })
+                .then((res) => res.ok)
+                .catch(() => false)
+            : Promise.resolve(false);
+        online = (await Promise.all([probe(peer.url), probe(peer.tailnetUrl || '')])).some(Boolean);
+        machineProbeCache.set(peer.name, { at: Date.now(), online });
+      }
       return { name: peer.name, url: peer.url, tailnetUrl: peer.tailnetUrl || '', online, self: false };
     }),
   );
