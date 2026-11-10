@@ -214,11 +214,13 @@
   /**
    * Fold in the machines the hub knows about (its peers). The phone has only
    * paired with some of them; the rest still belong in this list, with the hub
-   * that can hand out an entry ("via").
+   * that can hand out an entry ("via"). Names learned here also replace the
+   * address a previous handoff left behind.
    */
   async function mergePeerMachines() {
     const hubs = await readHubs();
-    const known = new Set(hubs.map((h) => h.url));
+    const byUrl = new Map(hubs.map((h) => [h.url, h]));
+    const looksLikeAddress = (name) => !name || /^[\d.]+(:\d+)?$/.test(name) || /^\[/.test(name);
     for (const entry of hubs) {
       const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
       if (!token) continue;
@@ -226,17 +228,29 @@
         const res = await fetch(`${entry.url}/api/machines`, { headers: { authorization: `Bearer ${token}` } });
         if (!res.ok) continue;
         const data = await res.json();
-        const added = [];
+        let changed = false;
+        const next = [...hubs];
         for (const machine of data?.machines || []) {
           if (machine.self) continue;
           // A tailnet address works from anywhere; the LAN one may not be routable.
           const url = String(machine.tailnetUrl || machine.url || '').replace(/\/+$/, '');
-          if (!url || known.has(url)) continue;
-          known.add(url);
-          added.push({ url, name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) });
+          if (!url) continue;
+          const known = byUrl.get(url);
+          if (known) {
+            if (machine.name && looksLikeAddress(known.name) && known.name !== machine.name) {
+              known.name = machine.name;
+              known.via = known.via || entry.url;
+              changed = true;
+            }
+            continue;
+          }
+          const fresh = { url, name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) };
+          byUrl.set(url, fresh);
+          next.push(fresh);
+          changed = true;
         }
-        if (added.length) {
-          await store.set(KEYS.hubs, JSON.stringify([...hubs, ...added].slice(0, 12)));
+        if (changed) {
+          await store.set(KEYS.hubs, JSON.stringify(next.slice(0, 12)));
           await renderMachines();
           return;
         }
@@ -344,6 +358,66 @@
    * already holds a device token for that hub, trade it for a one-time pairing
    * link so the UI opens *inside*, not on its pairing screen.
    */
+  /** Resolve a hub's own name (hostname) when all we stored was its address. */
+  async function resolveMachineName(entry) {
+    const looksLikeAddress = (name) => !name || /^[\d.]+(:\d+)?$/.test(name) || /^\[/.test(name);
+    if (entry.name && !looksLikeAddress(entry.name)) return entry.name;
+    const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
+    if (!token) return entry.name || '';
+    try {
+      const res = await fetch(`${entry.url}/api/machines`, { headers: { authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        const mine = (data?.machines || []).find((m) => m.self);
+        if (mine?.name) {
+          await rememberHubNamed(entry.url, mine.name);
+          return mine.name;
+        }
+      }
+    } catch {
+      /* keep what we have */
+    }
+    return entry.name || '';
+  }
+
+  /**
+   * Where did we come from? The target's machine switcher shows that machine as
+   * an ordinary row, so coming in from the phone's home hub must say so - the
+   * two hubs know each other only in one direction.
+   */
+  async function originFor(targetUrl) {
+    const hubs = await readHubs();
+    const via = hubs.find((h) => h.url === targetUrl)?.via;
+    if (via) {
+      const entry = hubs.find((h) => h.url === via) || { url: via, name: '' };
+      return { url: via, name: await resolveMachineName(entry) };
+    }
+    const token = await store.get(KEYS.tokenFor(targetUrl)).catch(() => null);
+    for (const entry of hubs) {
+      if (entry.url === targetUrl) continue;
+      const other = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
+      if (!other) continue;
+      // Prefer a hub that also has a token for us: the target can talk back.
+      if (!token) {
+        return { url: entry.url, name: await resolveMachineName(entry) };
+      }
+    }
+    return null;
+  }
+
+  /** Append the "you came from here" hint the target's switcher renders. */
+  function withOrigin(target, origin) {
+    if (!origin) return target;
+    try {
+      const url = new URL(target);
+      url.searchParams.set('from', origin.url);
+      if (origin.name) url.searchParams.set('fromName', origin.name);
+      return url.toString();
+    } catch {
+      return target;
+    }
+  }
+
   async function enterMachine(entry, tag) {
     const hub = entry.url;
     let up = await probe(hub);
@@ -364,6 +438,8 @@
     }
     await rememberHub(hub);
     const token = await store.get(KEYS.tokenFor(hub));
+    // Whoever we came through gets a row in the target's switcher.
+    const origin = await originFor(hub);
     if (token) {
       try {
         const res = await fetch(`${hub}/api/pairing/link`, {
@@ -376,7 +452,7 @@
           const target = links[0]?.url || made?.url;
           if (target) {
             await store.set(KEYS.hub, hub);
-            window.location.assign(target);
+            window.location.assign(withOrigin(target, origin));
             return;
           }
         }
@@ -395,7 +471,7 @@
           const made = await res.json();
           if (made?.url) {
             await store.set(KEYS.hub, hub);
-            window.location.assign(made.url);
+            window.location.assign(withOrigin(made.url, origin));
             return;
           }
         }
@@ -404,7 +480,7 @@
       }
     }
     await store.set(KEYS.hub, hub);
-    window.location.assign(`${hub}/`);
+    window.location.assign(withOrigin(`${hub}/`, origin));
   }
 
   /**
