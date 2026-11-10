@@ -782,6 +782,38 @@
   });
 
   dom.changeBtn.addEventListener('click', () => showConnect(state.hub));
+
+  // ---------------------------------------------------------------- appearance
+  // Light, dark, or whatever the phone is set to. The stored choice wins; the
+  // device setting is the default, and a change to it is followed live.
+  const THEME_ORDER = ['auto', 'light', 'dark'];
+  const THEME_LABEL = { auto: '跟随系统', light: '浅色', dark: '深色' };
+  const THEME_ICON = { auto: '🌗', light: '☀️', dark: '🌙' };
+  const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  let themeChoice = document.documentElement.dataset.themeChoice || 'auto';
+
+  function paintTheme() {
+    const dark = themeChoice === 'dark' || (themeChoice === 'auto' && darkQuery.matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.dataset.themeChoice = themeChoice;
+    const button = document.getElementById('theme-btn');
+    if (button) {
+      button.textContent = THEME_ICON[themeChoice] || '🌗';
+      button.title = THEME_LABEL[themeChoice] || '跟随系统';
+      button.setAttribute('aria-label', THEME_LABEL[themeChoice] || '跟随系统');
+    }
+  }
+
+  document.getElementById('theme-btn')?.addEventListener('click', () => {
+    themeChoice = THEME_ORDER[(THEME_ORDER.indexOf(themeChoice) + 1) % THEME_ORDER.length];
+    void store.set('desk.theme', themeChoice);
+    paintTheme();
+  });
+  darkQuery.addEventListener?.('change', () => {
+    if (themeChoice === 'auto') paintTheme();
+  });
+  paintTheme();
+
   dom.forgetBtn.addEventListener('click', async () => {
     if (state.hub) await forgetHub(state.hub);
     else await store.remove(KEYS.hub);
