@@ -185,11 +185,16 @@
   async function readHubs() {
     try {
       const raw = JSON.parse((await store.get(KEYS.hubs)) || '[]');
-      if (Array.isArray(raw)) return raw.filter((h) => h && typeof h.url === 'string');
+      if (Array.isArray(raw)) {
+        const list = raw.filter((h) => h && typeof h.url === 'string');
+        if (list.length) return list;
+      }
     } catch {
-      /* corrupt list: start over rather than never booting */
+      /* corrupt list: fall through to the single-hub key */
     }
-    return [];
+    // Older installs (and the very first pairing) only have one hub URL.
+    const single = await store.get(KEYS.hub);
+    return single ? [{ url: single, name: hostLabel(single) }] : [];
   }
 
   async function rememberHub(hub) {
@@ -199,13 +204,54 @@
     await store.set(KEYS.hub, hub);
   }
 
-  async function forgetHub(hub) {
-    const hubs = (await readHubs()).filter((h) => h.url !== hub);
+  /** Rename a remembered hub in place (the hub told us its hostname). */
+  async function rememberHubNamed(hub, name) {
+    const hubs = await readHubs();
+    const next = hubs.map((h) => (h.url === hub ? { ...h, name } : h));
+    await store.set(KEYS.hubs, JSON.stringify(next));
+  }
+
+  /**
+   * Fold in the machines the hub knows about (its peers). The phone has only
+   * paired with some of them; the rest still belong in this list, with the hub
+   * that can hand out an entry ("via").
+   */
+  async function mergePeerMachines() {
+    const hubs = await readHubs();
+    const known = new Set(hubs.map((h) => h.url));
+    for (const entry of hubs) {
+      const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
+      if (!token) continue;
+      try {
+        const res = await fetch(`${entry.url}/api/machines`, { headers: { authorization: `Bearer ${token}` } });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const added = [];
+        for (const machine of data?.machines || []) {
+          if (machine.self) continue;
+          // A tailnet address works from anywhere; the LAN one may not be routable.
+          const url = String(machine.tailnetUrl || machine.url || '').replace(/\/+$/, '');
+          if (!url || known.has(url)) continue;
+          known.add(url);
+          added.push({ url, name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) });
+        }
+        if (added.length) {
+          await store.set(KEYS.hubs, JSON.stringify([...hubs, ...added].slice(0, 12)));
+          await renderMachines();
+          return;
+        }
+      } catch {
+        /* offline hub: nothing to learn from it */
+      }
+    }
+  }
+
+  async function forgetHub(hub) {    const hubs = (await readHubs()).filter((h) => h.url !== hub);
     await store.set(KEYS.hubs, JSON.stringify(hubs));
     if ((await store.get(KEYS.hub)) === hub) await store.remove(KEYS.hub);
   }
 
-  /** Tap opens, long press offers to forget. */
+  /** Tap a machine to go in; long press offers to forget. */
   async function renderMachines() {
     if (!dom.machines || !dom.machineList) return;
     const hubs = await readHubs();
@@ -228,7 +274,11 @@
       url.className = 'u';
       url.textContent = entry.url;
       who.append(name, url);
-      row.append(dot, who);
+
+      const tag = document.createElement('span');
+      tag.className = 'pill warn';
+      tag.textContent = '检测中';
+      row.append(dot, who, tag);
 
       let timer = null;
       let longPressed = false;
@@ -258,15 +308,103 @@
           longPressed = false;
           return;
         }
-        void openChat(entry.url, '');
+        void enterMachine(entry, tag);
       });
 
       dom.machineList.appendChild(row);
       // Show which ones answer right now, without blocking the render.
-      void probe(entry.url).then((up) => {
+      void probe(entry.url).then(async (up) => {
         dot.classList.toggle('up', up);
+        tag.className = `pill${up ? '' : ' warn'}`;
+        tag.textContent = up ? '在线' : '离线';
+        if (!up) return;
+        // A hub we hold a token for can tell us its own name (hostname), which
+        // is nicer in this list than an address.
+        const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
+        if (!token) return;
+        try {
+          const res = await fetch(`${entry.url}/api/machines`, { headers: { authorization: `Bearer ${token}` } });
+          if (!res.ok) return;
+          const data = await res.json();
+          const mine = (data?.machines || []).find((m) => m.self);
+          if (mine?.name && mine.name !== name.textContent) {
+            name.textContent = mine.name;
+            await rememberHubNamed(entry.url, mine.name);
+          }
+        } catch {
+          /* keep the address */
+        }
       });
     }
+  }
+
+  /**
+   * Enter a machine. The full web UI is what the desktop shows, so that is what
+   * opens - but the WebView needs its own session cookie there. If this phone
+   * already holds a device token for that hub, trade it for a one-time pairing
+   * link so the UI opens *inside*, not on its pairing screen.
+   */
+  async function enterMachine(entry, tag) {
+    const hub = entry.url;
+    let up = await probe(hub);
+    if (!up) {
+      // A Tailscale address needs a moment after the VPN comes up; one retry
+      // beats telling the user a machine is off when it is not.
+      await new Promise((r) => setTimeout(r, 700));
+      up = await probe(hub);
+    }
+    if (!up) {
+      if (tag) {
+        tag.className = 'pill warn';
+        tag.textContent = '离线';
+      }
+      // eslint-disable-next-line no-alert
+      window.alert(`「${entry.name || hub}」现在连不上（关机、休眠或不在同一个网络）。`);
+      return;
+    }
+    await rememberHub(hub);
+    const token = await store.get(KEYS.tokenFor(hub));
+    if (token) {
+      try {
+        const res = await fetch(`${hub}/api/pairing/link`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const made = await res.json();
+          const links = Array.isArray(made?.links) ? made.links : [];
+          const target = links[0]?.url || made?.url;
+          if (target) {
+            await store.set(KEYS.hub, hub);
+            window.location.assign(target);
+            return;
+          }
+        }
+      } catch {
+        /* fall back to the plain address below */
+      }
+    } else if (entry.via) {
+      // Never paired with this machine directly: the hub that told us about it
+      // can hand out a one-time door (its own credential never leaves the hub).
+      try {
+        const res = await fetch(`${entry.via}/api/machines/${encodeURIComponent(entry.name || '')}/handoff`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${(await store.get(KEYS.tokenFor(entry.via))) || ''}` },
+        });
+        if (res.ok) {
+          const made = await res.json();
+          if (made?.url) {
+            await store.set(KEYS.hub, hub);
+            window.location.assign(made.url);
+            return;
+          }
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+    await store.set(KEYS.hub, hub);
+    window.location.assign(`${hub}/`);
   }
 
   /**
@@ -325,11 +463,20 @@
   }
 
   function showConnected() {
-    dom.currentHub.textContent = state.hub || '—';
-    dom.shellVersion.textContent = shellLabel();
-    setStatus('检测中…', 'warn');
+    // The app opens on the machine list: every hub this phone has paired with,
+    // with its live state, so a switched-off computer is obvious instead of a
+    // dead button.
+    if (dom.currentHub) dom.currentHub.textContent = state.hub || '—';
+    if (dom.shellVersion) dom.shellVersion.textContent = shellLabel();
+    if (dom.currentStatus) setStatus('检测中…', 'warn');
     show('connected');
+    void renderMachines().then(() => mergePeerMachines());
     void refreshStatus();
+    // Keep the online/offline tags honest while this screen is open.
+    if (showConnected._timer) clearInterval(showConnected._timer);
+    showConnected._timer = setInterval(() => {
+      if (state.view === 'connected') void renderMachines();
+    }, 15000);
   }
 
   function showOffline(reason) {
@@ -370,7 +517,7 @@
     return data;
   }
 
-  /** Open the native chat screen (app.html reads the hub + token from storage). */
+  /** Pair (when a code came with it) and go into that machine's full UI. */
   async function openChat(hub, code) {
     show('booting');
     dom.bootingText.textContent = code ? '正在配对…' : '正在打开夜班…';
@@ -388,11 +535,11 @@
       if (paired.device?.id) await store.set('desk.deviceId', paired.device.id);
     } else if (!(await store.get(KEYS.tokenFor(hub)))) {
       // No token yet: the hub's own UI has the pairing form.
+      await store.set(KEYS.hub, hub);
       window.location.assign(hubUrlFor(hub, ''));
       return;
     }
-    await store.set(KEYS.hub, hub);
-    window.location.assign('app.html');
+    await enterMachine({ url: hub, name: state.machineName || hostLabel(hub) });
   }
 
   /** A pair link from the computer's QR code: https://host:port/?pair=TOKEN */
@@ -554,7 +701,7 @@
     window.location.assign('ui/index.html');
   });
 
-  dom.openBtn.addEventListener('click', () => {
+  dom.openBtn?.addEventListener('click', () => {
     if (state.hub) void openChat(state.hub, '');
   });
 

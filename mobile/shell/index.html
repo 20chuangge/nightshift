@@ -232,19 +232,13 @@
       <button id="scan-btn" class="primary" type="button">扫码连接</button>
     </div>
 
-    <div id="machines" class="machines" hidden>
-      <div class="machines-title">连过的机器</div>
-      <div id="machine-list"></div>
-      <div class="machines-hint">点一下打开；长按删除。</div>
-    </div>
-
     <div class="row">
       <button id="paste-btn" class="ghost" type="button">粘贴地址</button>
       <button id="preview-btn" class="ghost" type="button">预览内置界面</button>
     </div>
   </section>
 
-  <!-- 2. a hub is remembered -->
+  <!-- 2. which machine to open: the app's home screen -->
   <section id="connected" class="card" hidden>
     <div class="brand">
       <div class="mark">N</div>
@@ -254,26 +248,18 @@
       </div>
     </div>
 
-    <h1>已记住你的 Nightshift<span class="en">Ready to open</span></h1>
-    <p class="lede">数据一直在电脑上，手机只是那台电脑的一块屏幕。</p>
+    <h1>选择机器<span class="en">Choose a machine</span></h1>
+    <p class="lede">点一台就进去。离线的那台会标出来，开机后再点即可。</p>
 
-    <dl class="kv">
-      <dt>Hub</dt><dd id="current-hub">—</dd>
-      <dt>状态</dt><dd><span id="current-status" class="pill warn">未检测</span></dd>
-      <dt>外壳</dt><dd id="shell-version">—</dd>
-    </dl>
+    <div id="machines" class="machines"><div id="machine-list"></div></div>
 
-    <div class="row" style="margin-top:18px">
-      <button id="open-btn" class="primary" type="button">打开 Nightshift</button>
-    </div>
-    <div class="row">
-      <button id="change-btn" class="ghost" type="button">更换 Hub</button>
-      <button id="forget-btn" class="ghost" type="button">忘记</button>
+    <div class="row" style="margin-top:14px">
+      <button id="change-btn" class="ghost" type="button">添加机器</button>
+      <button id="forget-btn" class="ghost" type="button">全部忘记</button>
     </div>
 
     <p class="hint">
-      想改地址或重新配对：Android 在夜班里按返回键就回到这一屏；iOS 退出 App 再打开，
-      这一屏永远是启动页。
+      长按一行可以删除它。进去之后左上角还能再切换机器，和电脑上一样。
     </p>
   </section>
 
