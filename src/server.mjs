@@ -58,6 +58,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern } from './approvals.mjs';
+import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
@@ -2164,6 +2165,29 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   const pub = publicPolicy(next);
   state.bus.emit({ type: 'policy.changed', autoApproveAll: pub.autoApproveAll, level: pub.level });
   return pub;
+});
+
+// --- usage / cost -----------------------------------------------------------
+//
+//   GET /api/usage?days=30  -> today + window totals, by bot / day / model
+//   PUT /api/usage {currency?, prices?, dailyAlert?} -> saved settings
+//
+// Prices are per million tokens and optional: an unpriced model counts tokens
+// but no money. The daily threshold is audited once per day (src/usage.mjs).
+
+route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
+  const days = Math.min(Math.max(Number(query.get('days')) || 30, 1), 365);
+  const settings = readUsageSettings();
+  const records = recentRecords(await readUsageRecords(), days);
+  const summary = summarizeUsage(records, settings);
+  const today = summarizeUsage(records.filter((r) => r.day === localDay()), settings).totals;
+  return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, ...summary };
+});
+
+route('PUT', /^\/api\/usage$/, async (_req, _res, { body }) => {
+  const settings = await saveUsageSettings(body || {});
+  await audit({ kind: 'usage.settings', currency: settings.currency, models: Object.keys(settings.prices), dailyAlert: settings.dailyAlert });
+  return { settings };
 });
 
 // --- approvals -------------------------------------------------------------

@@ -2726,6 +2726,19 @@
   .perm-key.on { color: var(--green, #2fbf71); }
   .perm-key.ask { color: var(--amber, #f0a72c); }
   .perm-key.off { color: var(--dim); }
+  .usage-range { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+  .usage-range button {
+    padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border-soft);
+    background: var(--panel-2); color: var(--muted); font: 600 12px/1 var(--sans);
+  }
+  .usage-range button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .usage-table { min-width: 0; table-layout: fixed; }
+  .usage-table th, .usage-table td { white-space: normal; overflow-wrap: anywhere; }
+  .usage-table th:first-child, .usage-table td:first-child { position: static; }
+  .usage-price-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .usage-price-row .name-input { flex: 1; min-width: 130px; font-family: var(--mono); font-size: 12px; }
+  .usage-price-row input.field { width: 92px; }
+  .usage-price-row .tag { font-size: 11px; color: var(--amber, #f0a72c); }
   .perm-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .level-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 12px; cursor: pointer; }
   .level-opt:has(input:checked) { border-color: var(--accent, #8b7cf6); background: var(--panel-2); }
@@ -3041,6 +3054,7 @@
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
+      <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
       <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
       <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
       <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
@@ -3292,6 +3306,43 @@
         </select>
         <div class="row-note">用 sudo、以管理员身份运行之类的命令，默认每次都先问你。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
+      </section>
+
+      <section class="dsec" id="sec-usage">
+        <div class="dsec-head">成本</div>
+        <div class="row-note" id="usage-note">按模型的 token 用量估算花费。单价按「每百万 tokens」填写；没设单价的模型显示「未设单价」。</div>
+        <div class="usage-range" id="usage-range">
+          <button type="button" data-days="1">今天</button>
+          <button type="button" data-days="7" class="on">近 7 天</button>
+          <button type="button" data-days="30">近 30 天</button>
+        </div>
+        <div class="perm-summary" id="usage-summary"></div>
+        <div class="dsec-head" style="font-size:13px;margin:12px 0 6px">按机器人</div>
+        <div class="perm-table-wrap">
+          <table class="perm-table usage-table" id="usage-bots" aria-label="按机器人用量">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="dsec-head" style="font-size:13px;margin:16px 0 6px">按模型</div>
+        <div class="perm-table-wrap">
+          <table class="perm-table usage-table" id="usage-models" aria-label="按模型用量">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">模型单价（每百万 tokens）</div>
+        <div class="usage-prices" id="usage-prices"></div>
+        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">每日花费提醒</div>
+        <div class="deny-add">
+          <select class="field" id="usage-currency">
+            <option value="CNY">¥ 人民币</option>
+            <option value="USD">$ 美元</option>
+          </select>
+          <input class="field" id="usage-alert" placeholder="超过多少提醒，0 = 关闭" inputmode="decimal" autocomplete="off" />
+          <button class="btn" id="usage-save" type="button">保存</button>
+        </div>
+        <div class="row-note">超过阈值会写进操作记录（每天只记一次）。提醒只按已定价模型的估算费用计算；改单价会重算历史估算。</div>
       </section>
 
       <section class="dsec" id="sec-feishu">
@@ -7513,6 +7564,12 @@ function handleEvent(ev) {
     if ($('settings-drawer')?.classList.contains('open')) renderSettingsForm();
     return;
   }
+  if (ev.type === 'usage.alert') {
+    const symbol = ev.currency === 'USD' ? '$' : '¥';
+    toast(`今日估算 ${symbol}${(Number(ev.cost) || 0).toFixed(2)} 已超过提醒线 ${symbol}${(Number(ev.limit) || 0).toFixed(2)}`, true);
+    if ($('settings-drawer')?.classList.contains('open')) loadUsage().catch(() => {});
+    return;
+  }
   if (ev.type === 'roster.changed') {
     refreshRoster();
     return;
@@ -9012,6 +9069,7 @@ function openSettings(section) {
   loadMedia().catch(() => { /* older server: no generation */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
+  loadUsage().catch(() => {});
   loadVault().catch(() => {});
   loadPages().catch(() => {});
   loadFeishu().catch(() => {});
@@ -9632,6 +9690,12 @@ function auditLine(r) {
       return { icon: '🔐', text: '保险箱删了一条', tag: '保险箱' };
     case 'desktop.takeover':
       return { icon: '🖥', text: who ? `接管了 ${who} 的桌面` : '接管了桌面', tag: r.mode === 'view' ? '只能看' : '能看能控', note: r.from ? `来自 ${r.from}` : '' };
+    case 'usage.alert': {
+      const symbol = r.currency === 'USD' ? '$' : '¥';
+      return { icon: '💰', text: `今日估算 ${symbol}${(Number(r.cost) || 0).toFixed(2)} 超过提醒线 ${symbol}${(Number(r.limit) || 0).toFixed(2)}`, tag: '成本', bad: true };
+    }
+    case 'usage.settings':
+      return { icon: '💰', text: `成本设置：${(r.models || []).length} 个模型单价${r.dailyAlert ? `，每日提醒 ${r.dailyAlert}` : ''}`, tag: '成本' };
     case 'policy.changed': {
       const c = r.change || {};
       const names = { careful: '谨慎', standard: '标准', auto: '放手' };
@@ -9878,6 +9942,174 @@ async function applyStrictPermissions() {
     { level: 'careful', generate: 'ask', outside: 'deny', sudo: 'ask', takeover: 'view' },
     '已收紧：谨慎 · 生成先问 · 其他位置不许 · sudo 先问 · 接管只看',
   );
+}
+
+/* --- cost (Settings > 成本) -------------------------------------------------- */
+function fmtTokens(n) {
+  const value = Number(n) || 0;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+function moneyText(cost, currency) {
+  const symbol = currency === 'USD' ? '$' : '¥';
+  const value = Number(cost) || 0;
+  return `${symbol}${value > 0 && value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
+function usageRangeLabel(days) {
+  return days === 1 ? '今天' : days === 7 ? '近 7 天' : `近 ${days} 天`;
+}
+
+async function loadUsage(days = state.usageDays || 7) {
+  state.usageDays = Math.min(Math.max(Number(days) || 7, 1), 365);
+  try {
+    renderUsage(await api(`/api/usage?days=${state.usageDays}`));
+  } catch {
+    /* older server: the section simply stays empty */
+  }
+}
+
+function usageCostText(row, currency) {
+  if (!row || !row.tokens) return '—';
+  if (row.cost > 0) {
+    return row.unpricedTokens
+      ? `${moneyText(row.cost, currency)} + ${fmtTokens(row.unpricedTokens)} 未设单价`
+      : moneyText(row.cost, currency);
+  }
+  return '未设单价';
+}
+
+function renderUsageTable(table, rows, currency, nameOf, emptyText) {
+  if (!table) return;
+  const head = table.querySelector('thead');
+  const body = table.querySelector('tbody');
+  head.innerHTML = '';
+  const headRow = document.createElement('tr');
+  ['名称', 'tokens', '估算'].forEach((label) => headRow.appendChild(el('th', '', label)));
+  head.appendChild(headRow);
+  body.innerHTML = '';
+  for (const row of rows || []) {
+    const tr = document.createElement('tr');
+    tr.appendChild(el('td', '', nameOf(row)));
+    const tokens = row.tokens
+      ? `${fmtTokens(row.tokens)}${row.callsWithoutUsage ? ` · ${row.callsWithoutUsage} 次无用量` : ''}`
+      : (row.callsWithoutUsage ? `${row.callsWithoutUsage} 次无用量` : '0');
+    tr.appendChild(el('td', '', tokens));
+    const cost = usageCostText(row, currency);
+    tr.appendChild(el('td', cost === '未设单价' ? 'ask' : '', cost));
+    body.appendChild(tr);
+  }
+  if (!(rows || []).length) {
+    const tr = document.createElement('tr');
+    const cell = el('td', 'row-note', emptyText);
+    cell.colSpan = 3;
+    tr.appendChild(cell);
+    body.appendChild(tr);
+  }
+}
+
+function renderUsage(data) {
+  state.usage = data;
+  const days = data.days || state.usageDays || 7;
+  const currency = data.currency || 'CNY';
+  const settings = data.settings || { prices: {}, dailyAlert: 0 };
+  const totals = data.totals || {};
+  const summary = $('usage-summary');
+  if (!summary) return;
+  const label = usageRangeLabel(days);
+  const chips = [
+    [`${label} tokens`, fmtTokens(totals.tokens), false],
+    [`${label}估算`, usageCostText({ tokens: totals.tokens, cost: totals.cost, unpricedTokens: totals.unpricedTokens }, currency), Boolean(totals.unpricedTokens && !totals.cost)],
+    ['未设单价 tokens', fmtTokens(totals.unpricedTokens), Boolean(totals.unpricedTokens)],
+    ['调用', `${totals.calls || 0} 次${totals.callsWithoutUsage ? ` · ${totals.callsWithoutUsage} 次无用量` : ''}`, false],
+    ['每日提醒', settings.dailyAlert ? moneyText(settings.dailyAlert, currency) : '关闭', false],
+  ];
+  if (data.alert) chips.push(['今日已超提醒线', moneyText(data.alert.cost, currency), true]);
+  summary.innerHTML = '';
+  for (const [key, value, warn] of chips) {
+    const chip = el('span', `perm-chip${warn ? ' warn' : ''}`);
+    chip.appendChild(el('span', '', key));
+    chip.appendChild(el('b', '', value));
+    summary.appendChild(chip);
+  }
+
+  renderUsageTable(
+    $('usage-bots'),
+    data.byBot,
+    currency,
+    (row) => botById(row.key)?.name || row.key || '—',
+    '还没有用量。接上真实模型聊几句，这里就会出现。',
+  );
+  renderUsageTable($('usage-models'), data.byModel, currency, (row) => row.key || '—', '还没有用量。');
+
+  const priceBox = $('usage-prices');
+  if (priceBox) {
+    priceBox.innerHTML = '';
+    const priced = new Set(Object.keys(settings.prices || {}));
+    const addRow = (name, price, missing = false, removable = true) => {
+      const row = el('div', 'usage-price-row');
+      const nameInput = el('input', 'field name-input');
+      nameInput.value = name;
+      nameInput.placeholder = '模型名';
+      const inInput = el('input', 'field in-input');
+      inInput.placeholder = '输入价';
+      inInput.inputMode = 'decimal';
+      inInput.value = price ? String(price.in) : '';
+      const outInput = el('input', 'field out-input');
+      outInput.placeholder = '输出价';
+      outInput.inputMode = 'decimal';
+      outInput.value = price ? String(price.out) : '';
+      row.appendChild(nameInput);
+      row.appendChild(inInput);
+      row.appendChild(outInput);
+      if (missing) row.appendChild(el('span', 'tag', '未设单价'));
+      if (removable) {
+        const del = el('button', 'att-x', '✕');
+        del.type = 'button';
+        del.addEventListener('click', () => row.remove());
+        row.appendChild(del);
+      }
+      priceBox.appendChild(row);
+    };
+    for (const [name, price] of Object.entries(settings.prices || {})) addRow(name, price);
+    for (const model of data.byModel || []) {
+      if (!priced.has(model.key) && model.tokens) addRow(model.key === '(未知)' ? '' : model.key, null, true);
+    }
+    addRow('', null, false, false);
+  }
+  if ($('usage-currency')) $('usage-currency').value = currency;
+  if ($('usage-alert')) $('usage-alert').value = settings.dailyAlert || '';
+  if ($('usage-range')) {
+    $('usage-range').querySelectorAll('button').forEach((btn) => {
+      btn.classList.toggle('on', Number(btn.dataset.days) === days);
+    });
+  }
+}
+
+async function saveUsageForm() {
+  const prices = {};
+  document.querySelectorAll('#usage-prices .usage-price-row').forEach((row) => {
+    const name = row.querySelector('.name-input')?.value.trim();
+    const inRaw = row.querySelector('.in-input')?.value.trim();
+    const outRaw = row.querySelector('.out-input')?.value.trim();
+    // An untouched row (name only, no numbers) is not a price: saving it as
+    // 0/0 would silently turn "no price" into "free".
+    if (!name || (!inRaw && !outRaw)) return;
+    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0 };
+  });
+  const dailyAlert = Number($('usage-alert')?.value) || 0;
+  try {
+    await api('/api/usage', {
+      method: 'PUT',
+      body: { currency: $('usage-currency')?.value || 'CNY', prices, dailyAlert },
+    });
+    toast('成本设置已保存');
+    loadUsage();
+  } catch (err) {
+    toast(`保存失败：${err.message}`, true);
+  }
 }
 
 function setStatus(kind, text) {  const node = $('set-status');
@@ -11283,6 +11515,10 @@ function wireChrome() {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
   $('perm-strict')?.addEventListener('click', applyStrictPermissions);
+  $('usage-save')?.addEventListener('click', saveUsageForm);
+  $('usage-range')?.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', () => loadUsage(Number(btn.dataset.days)));
+  });
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
   $('folder-add-btn')?.addEventListener('click', async () => {
     const p = $('folder-input').value.trim();

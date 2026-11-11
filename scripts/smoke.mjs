@@ -4127,6 +4127,48 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       strictMachine.careful === true && strictMedium.decision === 'ask' && strictHigh.decision === 'ask');
     check('permission overview: the matrix follows the level (direct / ask / not granted)',
       pageSrc.includes('function permDecision') && pageSrc.includes('permDecision(cap, bot, policy)') && pageSrc.includes("'问'"));
+    // Cost: every model call lands in the ledger; prices and the daily alert
+    // work through the API; crossing the line is audited once per day.
+    const usage1 = (await api('/api/usage?days=1')).json || {};
+    check('usage: model calls are recorded with tokens per bot and model',
+      usage1.totals?.tokens > 0 && (usage1.byBot || []).some((b) => b.key === 'chief') &&
+      (usage1.byModel || []).some((m) => m.key === 'scripted-planner'));
+    const priced = await api('/api/usage', { method: 'PUT', body: { currency: 'CNY', prices: { 'scripted-planner': { in: 1000, out: 2000 } }, dailyAlert: 0.0001 } });
+    check('usage: prices and the daily threshold save',
+      priced.json?.settings?.prices?.['scripted-planner']?.in === 1000 && priced.json?.settings?.dailyAlert === 0.0001);
+    const usage2 = (await api('/api/usage?days=1')).json || {};
+    check('usage: pricing turns tokens into an estimate', usage2.totals?.cost > 0 && usage2.totals?.unpricedTokens === 0);
+    const pricedAudit = (await api('/api/audit?limit=20')).json || [];
+    check('usage: saving prices is audited', pricedAudit.some((r) => r.kind === 'usage.settings'));
+    await api('/api/bots/chief/message', { method: 'POST', body: { text: '成本统计验证' } });
+    await waitUntil(async () => Boolean((await api('/api/usage?days=1')).json?.alert), 8000, 'usage alert').catch(() => null);
+    const usage3 = (await api('/api/usage?days=1')).json || {};
+    const alertAudit = (await api('/api/audit?limit=30')).json || [];
+    check('usage: crossing the daily threshold raises one audited alert',
+      Boolean(usage3.alert) && alertAudit.some((r) => r.kind === 'usage.alert'));
+    const alertCount = (audit) => (audit || []).filter((r) => r.kind === 'usage.alert').length;
+    const beforeCalls = (usage3.totals?.calls || 0);
+    await api('/api/bots/chief/message', { method: 'POST', body: { text: '再验证一次成本提醒' } });
+    await waitUntil(async () => (((await api('/api/usage?days=1')).json?.totals?.calls) || 0) > beforeCalls, 8000, 'second usage call').catch(() => null);
+    const alertAudit2 = (await api('/api/audit?limit=40')).json || [];
+    check('usage: the alert is recorded once per day, not per call',
+      alertCount(alertAudit) === 1 && alertCount(alertAudit2) === 1);
+    const usageMod = await import('../src/usage.mjs');
+    check('usage: days are local dates (no UTC drift)', usageMod.localDay(new Date(2026, 10, 11, 23, 30)) === '2026-11-11');
+    const pricedSettings = { currency: 'CNY', prices: { m: { in: 1, out: 2 } }, dailyAlert: 0 };
+    const mixed = usageMod.summarizeUsage([
+      { day: '2026-11-11', botId: 'a', model: 'm', prompt: 1000, completion: 0, total: 1000 },
+      { day: '2026-11-11', botId: 'a', model: 'm', prompt: null, completion: null, total: null },
+      { day: '2026-11-11', botId: 'a', model: 'free', prompt: 1000, completion: 0, total: 1000 },
+    ], pricedSettings);
+    check('usage: a call without provider usage counts but adds no tokens or money',
+      mixed.totals.calls === 3 && mixed.totals.callsWithoutUsage === 1 &&
+      mixed.totals.tokens === 2000 && mixed.totals.cost === 0.001 && mixed.totals.unpricedTokens === 1000);
+    check('cost page: ranges, per-bot and per-model tables, prices and threshold are wired',
+      pageSrc.includes('id="sec-usage"') && pageSrc.includes('id="usage-range"') &&
+      pageSrc.includes('id="usage-bots"') && pageSrc.includes('id="usage-models"') &&
+      pageSrc.includes('id="usage-prices"') && pageSrc.includes('id="usage-alert"'));
+    await api('/api/usage', { method: 'PUT', body: { prices: {}, dailyAlert: 0 } });
   }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
   {

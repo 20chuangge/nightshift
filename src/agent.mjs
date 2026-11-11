@@ -33,6 +33,7 @@ import {
 import { effectivePolicy, classify, DECISION, machineMode } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary } from './boundary.mjs';
+import { noteUsage } from './usage.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
 const RECOVERY_NOTE =
@@ -504,6 +505,12 @@ export class AgentRuntime {
           this.bus.emit({ type: 'error', ...baseEvent, message: summary });
           break;
         }
+
+        // Cost accounting is a side ledger: a write failure must not fail a turn.
+        noteUsage(
+          { botId: bot.id, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source },
+          { audit, bus: this.bus },
+        ).catch(() => {});
 
         // A reply that reports running something, in a turn that ran nothing,
         // is made up (the model copying earlier output from the chat). Take

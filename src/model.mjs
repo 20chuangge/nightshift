@@ -74,7 +74,14 @@ export function createModel({ provider, baseUrl, apiKey, model, timeoutMs } = {}
       async complete(messages, opts = {}) {
         const result = mockComplete(messages);
         await emitMockDeltas(result.content, opts.onDelta);
-        return result;
+        // A deterministic stand-in so the cost ledger has real numbers to add
+        // up in tests and demos (roughly four characters per token).
+        const promptTokens = Math.max(12, Math.ceil(messages.reduce((n, m) => n + String(m.content ?? '').length, 0) / 4));
+        const completionTokens = Math.max(6, Math.ceil(String(result.content || '').length / 4));
+        return {
+          ...result,
+          usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+        };
       },
     };
   }
