@@ -812,9 +812,10 @@
   body.panel-max #pc-exit { display: inline-flex; }
   .pc-done {
     display: none;
-    position: fixed; right: 150px; bottom: 16px; z-index: 95;
+    position: fixed; right: calc(150px + var(--safe-r)); bottom: calc(16px + var(--safe-b)); z-index: 95;
     border-radius: 10px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-    background: var(--text); color: var(--bg); border: 1px solid var(--text);
+    /* The fullscreen surface is always black, so these never follow the theme. */
+    background: #fff; color: #0a0a0a; border: 0;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   }
   body.panel-max .pc-done.show { display: inline-flex; }
@@ -829,8 +830,9 @@
   #machine-menu .mm-att.off { color: var(--dim); font-weight: 500; }
   .pc-exit {
     display: none;
-    position: fixed; right: 16px; bottom: 16px; z-index: 95;
-    background: rgba(20, 24, 33, .92); color: var(--text); border: 1px solid var(--border);
+    position: fixed; right: calc(16px + var(--safe-r)); bottom: calc(16px + var(--safe-b)); z-index: 95;
+    background: rgba(0, 0, 0, 0.55); color: #fff; border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(8px);
     border-radius: 10px; padding: 8px 14px; font-size: 12.5px; cursor: pointer;
   }
   .pc-exit:hover { background: var(--accent); color: #fff; }
@@ -931,14 +933,15 @@
   }
   .pc-mobile-bar button {
     flex: 1 1 auto; min-width: 54px; padding: 10px 6px; border-radius: 10px;
-    border: 1px solid var(--border-soft); background: var(--panel-2);
-    color: var(--text); font: 600 12px/1 var(--sans);
+    border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(0, 0, 0, 0.55);
+    color: #fff; font: 600 12px/1 var(--sans);
+    backdrop-filter: blur(8px);
   }
   .pc-mobile-bar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   body.panel-max .pc-mobile-bar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 95;
-    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-    background: rgba(8, 10, 14, .86); backdrop-filter: blur(10px);
+    padding: 8px calc(10px + var(--safe-r)) calc(8px + var(--safe-b)) calc(10px + var(--safe-l));
+    background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(10px);
     border-top: 1px solid rgba(255,255,255,.08);
   }
   /* User-controlled rotation: the picture turns, the controls stay upright.
@@ -948,6 +951,16 @@
     width: 100vh; height: 100vw;
     transform: translate(-50%, -50%) rotate(90deg);
   }
+  /* Real landscape (native lock or browser fullscreen): fill the viewport and
+     keep the controls on the right edge, upright, 44px touch targets. */
+  body.panel-max.pc-native-landscape #pc-screen-wrap { right: 76px; }
+  body.panel-max.pc-landscape .pc-mobile-bar {
+    left: auto; right: 0; top: 0; bottom: 0; width: 76px;
+    flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: center;
+    padding: calc(10px + var(--safe-t)) 8px calc(10px + var(--safe-b));
+    border-top: 0; border-left: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  body.panel-max.pc-landscape .pc-mobile-bar button { width: 100%; min-width: 0; min-height: 44px; }
   /* Clipboard drawer: explicit paste in, explicit copy out. Works on plain
      http where navigator.clipboard does not exist. */
   .clip-drawer {
@@ -3448,6 +3461,7 @@
 
       <section class="dsec" id="sec-appearance">
         <div class="dsec-head">外观</div>
+        <div class="row-note">语言、主题、是否显示工具过程和时区只存在这台设备上，不会同步到别的设备。</div>
         <div class="dsec-head" style="font-size:13px;margin-bottom:8px">语言</div>
         <div class="seg" id="lang-seg" role="radiogroup" aria-label="界面语言">
           <button class="seg-btn" type="button" data-lang-choice="zh" role="radio" aria-checked="false">中文</button>
@@ -7559,9 +7573,28 @@ function handleEvent(ev) {
     return;
   }
   if (ev.type === 'settings.changed') {
-    if (state.settings && ev.settings) state.settings.model = ev.settings;
-    updateModelUi();
-    if ($('settings-drawer')?.classList.contains('open')) renderSettingsForm();
+    const section = ev.section || 'model';
+    if (section === 'model' && state.settings && ev.settings) state.settings.model = ev.settings;
+    if (section === 'model') updateModelUi();
+    const drawer = $('settings-drawer');
+    if (!drawer?.classList.contains('open')) return;
+    const active = document.querySelector('.setnav.active')?.dataset.setTarget || 'sec-model';
+    const where = {
+      model: 'sec-model', voice: 'sec-model', vision: 'sec-model', media: 'sec-model',
+      policy: 'sec-run', usage: 'sec-usage', feishu: 'sec-feishu',
+      machines: 'sec-machines', network: 'sec-pair',
+    }[section];
+    if (where && active !== where) return;
+    if (section === 'model') { loadSettings().then(renderSettingsForm).catch(() => {}); loadModels().catch(() => {}); }
+    if (section === 'voice') loadVoice().catch(() => {});
+    if (section === 'vision') loadVision().catch(() => {});
+    if (section === 'media') loadMedia().catch(() => {});
+    if (section === 'policy') loadPolicy().catch(() => {});
+    if (section === 'usage') loadUsage().catch(() => {});
+    if (section === 'feishu') loadFeishu().catch(() => {});
+    if (section === 'machines') renderMachinesList();
+    if (section === 'network') loadSettings().then(renderSettingsForm).catch(() => {});
+    if (section === 'routines') loadRoutines().catch(() => {});
     return;
   }
   if (ev.type === 'usage.alert') {
@@ -11174,8 +11207,83 @@ async function startRemoteProvision(options) {
 }
 
 /** Fill the whole window with the single desktop card. */
+const screenOrientationPlugin = () => window.Capacitor?.Plugins?.ScreenOrientation || null;
+const isNativeApp = () => Boolean(window.Capacitor?.isNativePlatform?.());
+
+function setRotateUi(on) {
+  const btn = $('pcm-rot');
+  if (!btn) return;
+  btn.classList.toggle('on', on);
+  btn.textContent = on ? '竖屏' : '旋转';
+}
+
+/**
+ * User-controlled landscape. Native: real orientation lock + hidden system
+ * bars. Browser: fullscreen + orientation lock when allowed. If either is
+ * refused, fall back to rotating the picture with CSS — the controls stay
+ * upright, and the same button turns it back.
+ */
+async function enterLandscape() {
+  if (document.body.classList.contains('pc-landscape')) return;
+  document.body.classList.add('pc-landscape');
+  setRotateUi(true);
+  // Remote hub pages have no Capacitor JS bridge, so the shell offers the same
+  // two calls directly (window.desk.setOrientation / setImmersive).
+  if (typeof window.desk?.setOrientation === 'function') {
+    window.desk.setOrientation('landscape');
+    window.desk?.setImmersive?.(true);
+    document.body.classList.add('pc-native-landscape');
+    return;
+  }
+  const plugin = screenOrientationPlugin();
+  if (isNativeApp() && plugin) {
+    try {
+      await plugin.lock({ orientation: 'landscape' });
+      document.body.classList.add('pc-native-landscape');
+      window.desk?.setImmersive?.(true);
+      return;
+    } catch { /* fall through to CSS */ }
+  } else {
+    try {
+      if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+      if (screen.orientation?.lock) await screen.orientation.lock('landscape');
+      document.body.classList.add('pc-native-landscape');
+      return;
+    } catch { /* fall through to CSS */ }
+  }
+  document.body.classList.add('pc-rotated');
+}
+
+async function exitLandscape() {
+  const was = document.body.classList.contains('pc-landscape');
+  document.body.classList.remove('pc-landscape', 'pc-rotated', 'pc-native-landscape');
+  setRotateUi(false);
+  if (!was) return;
+  if (typeof window.desk?.setOrientation === 'function') {
+    window.desk.setOrientation('portrait');
+    window.desk?.setImmersive?.(false);
+    return;
+  }
+  const plugin = screenOrientationPlugin();
+  try {
+    if (isNativeApp() && plugin) await plugin.unlock();
+    else {
+      if (screen.orientation?.unlock) screen.orientation.unlock();
+      if (document.fullscreenElement) await document.exitFullscreen();
+    }
+  } catch { /* already portrait */ }
+  window.desk?.setImmersive?.(false);
+}
+
+async function toggleRotate() {
+  if (!document.body.classList.contains('panel-max')) await togglePanelMax(true);
+  if (document.body.classList.contains('pc-landscape')) await exitLandscape();
+  else await enterLandscape();
+}
+
 async function togglePanelMax(on) {
   const next = on === undefined ? !document.body.classList.contains('panel-max') : on;
+  if (!next) await exitLandscape();
   document.body.classList.toggle('panel-max', next);
   if (next) {
     state.panelOpen = true;
@@ -11203,6 +11311,7 @@ async function openDesktopViewer() {
 }
 
 function closeDesktopViewer() {
+  exitLandscape();
   const card = $('pc-screen-wrap');
   if (card) card.classList.remove('takeover');
   unmountViewer();
@@ -11439,13 +11548,8 @@ function wireChrome() {
   $('pcm-esc').addEventListener('click', () => vncUI()?.sendKey(0xff1b, 'Escape'));
   $('pcm-tab').addEventListener('click', () => vncUI()?.sendKey(0xff09, 'Tab'));
   $('pcm-clip').addEventListener('click', openClipDrawer);
-  $('pcm-rot').addEventListener('click', (event) => {
-    if (!document.body.classList.contains('panel-max')) togglePanelMax(true);
-    const on = document.body.classList.toggle('pc-rotated');
-    event.currentTarget.classList.toggle('on', on);
-    event.currentTarget.textContent = on ? '竖屏' : '旋转';
-  });
-  $('pcm-view').addEventListener('click', () => closeDesktopViewer());
+  $('pcm-rot').addEventListener('click', () => { toggleRotate(); });
+  $('pcm-view').addEventListener('click', () => { exitLandscape(); closeDesktopViewer(); });
   $('clip-close').addEventListener('click', closeClipDrawer);
   $('clip-scrim').addEventListener('click', closeClipDrawer);
   $('clip-send').addEventListener('click', () => {
@@ -11895,7 +11999,7 @@ function wireChrome() {
   onViewportModeChange();
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
+    if (document.hidden) { exitLandscape(); return; }
     if (authShown) return;
     if (state.stream && state.stream.readyState === 2) connectStream();
     pollHealth();

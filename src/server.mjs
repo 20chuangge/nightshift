@@ -513,6 +513,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     state.runtime.setModel(state.model);
     state.bus.emit({
       type: 'settings.changed',
+      section: 'model',
       settings: settingsModule.publicModel(state.settings, state.apiKey),
     });
     return state.settingsView();
@@ -963,6 +964,7 @@ route('GET', /^\/api\/peers\/bots$/, async (_req, _res, { state }) => ({ machine
 
 route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
   const peers = await state.peers.set(body?.peers);
+  state.bus.emit({ type: 'settings.changed', section: 'machines' });
   return { peers };
 });
 
@@ -1044,12 +1046,14 @@ route('GET', /^\/api\/feishu$/, async (_req, _res, { state }) => state.feishu.vi
 route('PUT', /^\/api\/feishu$/, async (_req, _res, { body, state }) => {
   const view = await state.feishu.update(body || {});
   await audit({ kind: 'feishu.changed', enabled: view.enabled, appId: view.appId });
+  state.bus.emit({ type: 'settings.changed', section: 'feishu' });
   return view;
 });
 
 route('POST', /^\/api\/feishu\/unpair$/, async (_req, _res, { body, state }) => {
   const view = await state.feishu.unpair(String(body?.openId || ''));
   await audit({ kind: 'feishu.unpaired' });
+  state.bus.emit({ type: 'settings.changed', section: 'feishu' });
   return view;
 });
 
@@ -1093,9 +1097,10 @@ route('GET', /^\/api\/models$/, async (_req, _res, { state }) => ({
   models: await modelsModule.publicProfiles(),
 }));
 
-route('POST', /^\/api\/models$/, async (_req, _res, { body }) => {
+route('POST', /^\/api\/models$/, async (_req, _res, { body, state }) => {
   const model = await modelsModule.saveProfile({ ...body, id: undefined });
   await audit({ kind: 'model.saved', id: model.id, provider: model.provider, model: model.model });
+  state.bus.emit({ type: 'settings.changed', section: 'model' });
   return { model };
 });
 
@@ -1111,9 +1116,10 @@ route('POST', /^\/api\/models\/test$/, async (_req, _res, { body }) => {
   }
 });
 
-route('PUT', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, body }) => {
+route('PUT', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {
   const model = await modelsModule.saveProfile({ ...body, id: params.id });
   await audit({ kind: 'model.saved', id: model.id, provider: model.provider, model: model.model });
+  state.bus.emit({ type: 'settings.changed', section: 'model' });
   return { model };
 });
 
@@ -1121,6 +1127,7 @@ route('DELETE', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, st
   const result = await modelsModule.deleteProfile(params.id);
   await audit({ kind: 'model.deleted', id: params.id });
   state.bus.emit({ type: 'roster.changed' });
+  state.bus.emit({ type: 'settings.changed', section: 'model' });
   return result;
 });
 
@@ -1178,6 +1185,7 @@ route('PUT', /^\/api\/vision$/, async (_req, _res, { body, state }) => {
   for (const k of ['baseUrl', 'model', 'apiKey']) if (body?.[k] !== undefined) patch[k] = body[k];
   if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {baseUrl?, model?, apiKey?}');
   state.vision = await visionModule.saveVision(state.vision, patch);
+  state.bus.emit({ type: 'settings.changed', section: 'vision' });
   return visionModule.publicVision(state.vision, visionCtx(state));
 });
 
@@ -1192,6 +1200,7 @@ route('PUT', /^\/api\/media\/(?<kind>image|video)$/, async (_req, _res, { params
   for (const k of ['service', 'baseUrl', 'model', 'apiKey']) if (body?.[k] !== undefined) patch[k] = body[k];
   if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {service?, baseUrl?, model?, apiKey?}');
   state.media = await mediaModule.saveMedia(state.media, params.kind, patch);
+  state.bus.emit({ type: 'settings.changed', section: 'media' });
   return mediaModule.publicMedia(state.media, { voice: state.voice });
 });
 
@@ -1202,6 +1211,7 @@ route('PUT', /^\/api\/voice$/, async (_req, _res, { body, state }) => {
   for (const k of ['baseUrl', 'model', 'apiKey', 'ttsVoice']) if (body?.[k] !== undefined) patch[k] = body[k];
   if (!Object.keys(patch).length) throw httpError(400, 'SETTINGS_EMPTY', 'body needs {baseUrl?, model?, apiKey?, ttsVoice?}');
   state.voice = await voiceModule.saveVoice(state.voice, patch);
+  state.bus.emit({ type: 'settings.changed', section: 'voice' });
   return voiceModule.publicVoice(state.voice, state.settings, state.apiKey);
 });
 
@@ -1335,6 +1345,7 @@ route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: st
 route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
   const removed = state.devices.remove(params.id);
   if (!removed) throw httpError(404, 'DEVICE_NOT_FOUND', 'no such device');
+  state.bus.emit({ type: 'settings.changed', section: 'network' });
   return { ok: true };
 });
 
@@ -2164,6 +2175,7 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   await audit({ kind: 'policy.changed', change });
   const pub = publicPolicy(next);
   state.bus.emit({ type: 'policy.changed', autoApproveAll: pub.autoApproveAll, level: pub.level });
+  state.bus.emit({ type: 'settings.changed', section: 'policy' });
   return pub;
 });
 
@@ -2184,9 +2196,10 @@ route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
   return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, ...summary };
 });
 
-route('PUT', /^\/api\/usage$/, async (_req, _res, { body }) => {
+route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
   const settings = await saveUsageSettings(body || {});
   await audit({ kind: 'usage.settings', currency: settings.currency, models: Object.keys(settings.prices), dailyAlert: settings.dailyAlert });
+  state.bus.emit({ type: 'settings.changed', section: 'usage' });
   return { settings };
 });
 
@@ -2407,16 +2420,20 @@ route('GET', /^\/api\/routines$/, async (_req, _res, { state }) => {
 
 route('POST', /^\/api\/routines$/, async (_req, _res, { body, state }) => {
   const created = await state.routines.create(body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'routines' });
   return { routine: publicRoutine(created) };
 });
 
 route('PATCH', /^\/api\/routines\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {
   const updated = await state.routines.update(params.id, body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'routines' });
   return { routine: publicRoutine(updated) };
 });
 
 route('DELETE', /^\/api\/routines\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
-  return state.routines.remove(params.id);
+  const result = state.routines.remove(params.id);
+  state.bus.emit({ type: 'settings.changed', section: 'routines' });
+  return result;
 });
 
 route('POST', /^\/api\/routines\/(?<id>[^/]+)\/test$/, async (_req, _res, { params, state }) => {

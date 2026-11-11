@@ -3870,7 +3870,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const toolSrc = await readText('../src/tools.mjs');
     const unlabelled = [...toolSrc.matchAll(/name: '([a-z_]+)',\n\s+description/g)].map((m) => m[1]).filter((n) => !labelled.has(n));
     check('working hint: every tool has a Chinese name (no "正在image_view…")', unlabelled.length === 0, unlabelled.join(','));
-    check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: var\(--text\); color: var\(--bg\);/.test(page));
+    check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: #fff; color: #0a0a0a;/.test(page));
     check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
     const main = await readText('../desktop/main.mjs');
     check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("ipcMain.handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
@@ -4362,14 +4362,43 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('takeover: phones get a permanent key strip wired to the noVNC UI',
       page.includes('id="pc-mobile-bar"') && page.includes('showVirtualKeyboard()') &&
       page.includes('toggleCtrl()') && page.includes('toggleAlt()') && page.includes("sendKey(0xff1b, 'Escape')"));
-    check('takeover: rotation is user-controlled CSS, never an orientation lock',
-      page.includes('body.panel-max.pc-rotated #pc-screen-wrap') && page.includes("classList.toggle('pc-rotated')") &&
-      !page.includes('orientation.lock'));
+    check('takeover: rotation is user-controlled — real lock when allowed, CSS rotation as fallback',
+      page.includes('body.panel-max.pc-rotated #pc-screen-wrap') && page.includes("document.body.classList.add('pc-rotated')") &&
+      page.includes("plugin.lock({ orientation: 'landscape' })") && page.includes('async function exitLandscape'));
     check('takeover: tapping the preview picture enters fullscreen on phones',
       page.includes('pc-shield-hint') && page.includes('if (isMobile() && !desktopTakeover()) togglePanelMax(true)'));
     check('takeover: the clipboard drawer works without navigator.clipboard',
       page.includes('id="clip-drawer"') && page.includes('clipboardPasteFrom(') &&
       page.includes("document.execCommand('copy')") && page.includes('latin1'));
+    // Fullscreen controls never follow the theme: the surface behind them is black.
+    check('takeover: fullscreen buttons are fixed white-on-dark with safe-area offsets',
+      /\.pc-exit\s*\{[^}]*safe-r[^}]*background: rgba\(0, 0, 0, 0\.55\);[^}]*color: #fff;/.test(page) &&
+      /\.pc-done\s*\{[^}]*safe-r[^}]*background: #fff;[^}]*color: #0a0a0a;/.test(page) &&
+      /\.pc-mobile-bar button\s*\{[^}]*background: rgba\(0, 0, 0, 0\.55\);[^}]*color: #fff;/.test(page));
+    // Real landscape: native orientation lock + hidden bars, CSS fallback kept.
+    const mobilePkg = JSON.parse(await readText('../mobile/package.json'));
+    const shellBridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+    check('takeover: real landscape uses the orientation plugin and a native immersive bridge',
+      Boolean(mobilePkg.dependencies?.['@capacitor/screen-orientation']) &&
+      shellBridge.includes('setImmersive') && shellBridge.includes('setOrientation') &&
+      shellBridge.includes('WindowInsetsControllerCompat') &&
+      page.includes('screenOrientationPlugin') && page.includes("plugin.lock({ orientation: 'landscape' })") &&
+      page.includes("window.desk?.setOrientation") && page.includes("window.desk?.setImmersive?.(true)"));
+    check('takeover: leaving fullscreen/background restores portrait and system bars',
+      page.includes('async function exitLandscape') && page.includes("document.addEventListener('visibilitychange', () => {\n    if (document.hidden) { exitLandscape(); return; }") &&
+      /async function togglePanelMax[\s\S]{0,120}if \(!next\) await exitLandscape\(\)/.test(page));
+    check('takeover: landscape puts the key strip on the right, upright and 44px',
+      page.includes('body.panel-max.pc-landscape .pc-mobile-bar') && page.includes('flex-direction: column') && page.includes('min-height: 44px'));
+    // Settings sync: every saving route says which section changed, and the UI
+    // refreshes that page only when it is the one on screen.
+    const srv2 = await readText('../src/server.mjs');
+    check('settings sync: saving routes announce their section',
+      [/section: 'model'/, /section: 'policy'/, /section: 'usage'/, /section: 'voice'/, /section: 'vision'/,
+        /section: 'media'/, /section: 'feishu'/, /section: 'machines'/, /section: 'network'/, /section: 'routines'/]
+        .every((re) => re.test(srv2)));
+    check('settings sync: the UI refreshes only the page that is open, local-only settings stay local',
+      page.includes("const section = ev.section || 'model'") && page.includes("const active = document.querySelector('.setnav.active')") &&
+      page.includes('语言、主题、是否显示工具过程和时区只存在这台设备上'));
   }
   {
     const srv = await readText('../src/server.mjs');

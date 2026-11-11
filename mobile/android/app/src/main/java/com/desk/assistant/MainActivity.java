@@ -50,6 +50,7 @@ public class MainActivity extends BridgeActivity {
         if (bridge == null || bridge.getWebView() == null) return;
         WebView webView = bridge.getWebView();
         webView.addJavascriptInterface(new VoiceBridge(this), "NightshiftVoice");
+        webView.addJavascriptInterface(new ShellBridge(this), "NightshiftShell");
         bridge.addWebViewListener(new WebViewListener() {
             @Override
             public void onPageLoaded(WebView view) {
@@ -59,9 +60,12 @@ public class MainActivity extends BridgeActivity {
     }
 
     private static final String VOICE_SHIM = "(function(){"
-            + "var n=window.NightshiftVoice;if(!n)return;"
-            + "var d=window.desk=window.desk||{};if(d.voiceStart)return;"
-            + "var parse=function(s){try{return JSON.parse(s);}catch(e){return null;}};"
+            + "var n=window.NightshiftVoice,s=window.NightshiftShell;"
+            + "var d=window.desk=window.desk||{};"
+            + "d.setImmersive=function(on){try{if(s)s.setImmersive(!!on);}catch(e){}};"
+            + "d.setOrientation=function(mode){try{if(s)s.setOrientation(String(mode||'portrait'));}catch(e){}};"
+            + "if(!n||d.voiceStart)return;"
+            + "var parse=function(x){try{return JSON.parse(x);}catch(e){return null;}};"
             + "d.voiceStart=async function(){return parse(n.start())||{error:'Error'};};"
             + "d.voiceStop=async function(){var o=parse(n.stop());if(!o||!o.b64)return null;"
             + "var b=atob(o.b64),a=new Uint8Array(b.length);for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);"

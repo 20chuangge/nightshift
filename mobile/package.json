@@ -1,6 +1,6 @@
 {
   "name": "desk-mobile",
-  "version": "1.2.65",
+  "version": "1.2.66",
   "private": true,
   "type": "module",
   "description": "Nightshift mobile shell (Capacitor): connects to a Nightshift hub on your LAN and shows its web UI.",
@@ -32,7 +32,8 @@
     "@capacitor/core": "^7.6.10",
     "@capacitor/ios": "^7.6.10",
     "@capacitor/keyboard": "^7.0.6",
-    "@capacitor/preferences": "^7.0.4"
+    "@capacitor/preferences": "^7.0.4",
+    "@capacitor/screen-orientation": "^7.0.4"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.6.10",

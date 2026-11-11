@@ -1402,4 +1402,5 @@ window.DESK_I18N_EN = {
   "输出价": "Output price",
   "(未知)": "(unknown)",
   "成本设置已保存": "Cost settings saved",
+  "语言、主题、是否显示工具过程和时区只存在这台设备上，不会同步到别的设备。": "Language, theme, showing tool steps and the time zone live only on this device; they do not sync to other devices.",
 };
