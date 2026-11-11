@@ -205,8 +205,11 @@ say "3/7 每个 Bot 的桌面（Xvfb、x11vnc、websockify、noVNC、openbox、C
 # installed in the background once it is running and paired; the screen panel
 # shows the progress meanwhile.
 desktop_complete() {
-  for bin in Xvfb x11vnc websockify; do has "$bin" || return 1; done
-  has openbox || has xfce4-session || return 1
+  has websockify || return 1
+  # X11 screens (Xvfb + x11vnc + a window manager), or on Rocky/RHEL 10, which
+  # have no X11 stack, Wayland screens (cage + wayvnc).
+  { has Xvfb && has x11vnc && { has openbox || has xfce4-session; }; } \
+    || { has cage && has wayvnc && wayvnc --version >/dev/null 2>&1; } || return 1
   [ -d /usr/share/novnc ] || return 1
   has chromium || has chromium-browser || has google-chrome || return 1
 }
@@ -476,14 +479,21 @@ if [ "$PM" = apt ]; then
   has chromium || has chromium-browser || pm_install chromium
 elif [ "${EL_MAJOR:-0}" -ge 10 ]; then
   # Rocky / RHEL 10 dropped the X11 stack (Xvfb, x11vnc, XFCE are in no repo,
-  # EPEL included). The browser still works without a screen.
+  # EPEL included). Each bot screen is a headless Wayland compositor instead:
+  # cage (one window, the bot's browser) + wayvnc.
+  status running "安装屏幕组件（cage、wayvnc，浏览器同时在下载）"
+  pm_install cage wayvnc python3-websockify novnc
+  # EPEL's libavcodec-free (pulled in by wayvnc) needs the newer liblc3 from
+  # AppStream; with the old one wayvnc fails with "undefined symbol".
+  "$PM" -y -q upgrade liblc3 >/dev/null 2>&1 || true
   status running "安装浏览器 Chromium"
   pm_install chromium
-  if has chromium || has chromium-browser; then
-    status unsupported "这个系统（Rocky / RHEL 10）去掉了旧的 X11 桌面组件，机器人的屏幕暂时没法装；执行命令、无界面浏览器照常能用"
-  else
-    status failed "没装上：Chromium"
-  fi
+  missing=""
+  for bin in cage wayvnc websockify; do has "$bin" || missing="$missing $bin"; done
+  if has wayvnc && ! wayvnc --version >/dev/null 2>&1; then missing="$missing wayvnc（缺库，运行 dnf upgrade liblc3）"; fi
+  [ -d /usr/share/novnc ] || missing="$missing noVNC"
+  has chromium || has chromium-browser || missing="$missing Chromium"
+  if [ -z "$missing" ]; then status done ""; else status failed "没装上：$missing"; fi
   exit 0
 else
   pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11

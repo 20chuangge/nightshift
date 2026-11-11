@@ -241,7 +241,7 @@ async function launchOnWindowsDesktop(exe, args, user) {
   return started.ok;
 }
 
-export function buildLaunchArgs({ port, profileDir: profile, headless = false, extraArgs = [] } = {}) {
+export function buildLaunchArgs({ port, profileDir: profile, headless = false, wayland = false, extraArgs = [] } = {}) {
   const args = [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
@@ -261,8 +261,13 @@ export function buildLaunchArgs({ port, profileDir: profile, headless = false, e
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-background-timer-throttling',
+    // The hub stops a bot's browser when it restarts or the desktop idles out;
+    // Chromium then offers "restore pages?" on the bot's screen every time.
+    '--hide-crash-restore-bubble',
   ];
   if (headless) args.push('--headless=new', '--disable-gpu', '--hide-scrollbars');
+  // A Wayland-only screen (cage on Rocky/RHEL 10): draw natively, full screen.
+  else if (wayland) args.push('--ozone-platform=wayland', '--start-maximized');
   args.push(...extraArgs, 'about:blank');
   return args;
 }
@@ -682,30 +687,63 @@ class BrowserManager {
     // On a Linux hub with per-bot desktops, the window must appear on THIS
     // bot's X display; otherwise every bot would paint on the same screen.
     let display = '';
+    let wayland = null;
     if (!headless && process.platform === 'linux') {
       try {
         const { desktopEnv } = await import('./desktops.mjs');
-        display = desktopEnv(this.key)?.DISPLAY || '';
+        const env = desktopEnv(this.key) || {};
+        display = env.DISPLAY || '';
+        // Rocky/RHEL 10 screens are Wayland (cage): no X display at all.
+        if (env.WAYLAND_DISPLAY) wayland = env;
       } catch { /* desktops unavailable: fall back to the inherited display */ }
     }
 
-    const args = buildLaunchArgs({ port, profileDir: profile, headless });
+    const args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
+    let launchEnv = process.env;
+    if (wayland) {
+      launchEnv = { ...process.env, ...wayland };
+      delete launchEnv.DISPLAY;
+      display = `wayland:${wayland.WAYLAND_DISPLAY}`;
+    } else if (display) {
+      launchEnv = { ...process.env, DISPLAY: display };
+    }
     let stderr = '';
-    const child = spawn(executable.path, args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true,
-      env: display ? { ...process.env, DISPLAY: display } : process.env,
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-4000);
-    });
-    child.on('error', () => {});
-    // If the server dies, do not leave a browser orphaned on the machine. One
-    // hook for the whole process, so repeated launches cannot leak listeners.
-    launchedChild = child;
-    ensureExitHook();
+    const launch = () => {
+      const c = spawn(executable.path, args, {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: true,
+        env: launchEnv,
+      });
+      c.stderr?.on('data', (chunk) => {
+        stderr = `${stderr}${chunk.toString('utf8')}`.slice(-4000);
+      });
+      c.on('error', () => {});
+      // If the server dies, do not leave a browser orphaned on the machine. One
+      // hook for the whole process, so repeated launches cannot leak listeners.
+      launchedChild = c;
+      ensureExitHook();
+      return c;
+    };
+    let child = launch();
 
-    const version = await waitForVersion(port, inWindowsServiceSession() ? 120000 : 25000);
+    let version = await waitForVersion(port, inWindowsServiceSession() ? 120000 : 25000);
+    if (version && wayland) {
+      // Seen on Rocky 10: after the hub restarted, Chromium opened its debug
+      // port and then crashed (SIGSEGV) on that compositor every time, until
+      // the bot's screen was restarted. So: give it a moment; if it is gone,
+      // restart the screen once and launch again.
+      await new Promise((r) => setTimeout(r, 1500));
+      if (child.exitCode !== null || child.signalCode) {
+        try {
+          const desk = await import('./desktops.mjs');
+          desk.stopDesktop(this.key);
+          await desk.ensureDesktop(this.key);
+          Object.assign(launchEnv, desk.desktopEnv(this.key) || {});
+        } catch { /* the relaunch below reports what is wrong */ }
+        child = launch();
+        version = await waitForVersion(port, 25000);
+      }
+    }
     if (!version) {
       try {
         child.kill();

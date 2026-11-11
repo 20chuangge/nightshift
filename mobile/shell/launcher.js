@@ -45,6 +45,7 @@
     scanBtn: $('scan-btn'),
     previewBtn: $('preview-btn'),
     machines: $('machines'),
+    connectBack: $('connect-back'),
     machineList: $('machine-list'),
     currentHub: $('current-hub'),
     currentStatus: $('current-status'),
@@ -260,9 +261,24 @@
     }
   }
 
-  async function forgetHub(hub) {    const hubs = (await readHubs()).filter((h) => h.url !== hub);
+  async function forgetHub(hub) {
+    const hubs = (await readHubs()).filter((h) => h.url !== hub);
     await store.set(KEYS.hubs, JSON.stringify(hubs));
-    if ((await store.get(KEYS.hub)) === hub) await store.remove(KEYS.hub);
+    await store.remove(KEYS.tokenFor(hub)).catch(() => {});
+    // Deleting the machine that was opened last must not leave the app without
+    // a current one: the next launch would show the empty "connect" form even
+    // though other machines are still saved. The next one in the list takes over.
+    if ((await store.get(KEYS.hub)) === hub) {
+      if (hubs.length) await store.set(KEYS.hub, hubs[0].url);
+      else await store.remove(KEYS.hub);
+    }
+  }
+
+  /** "全部忘记": every saved machine and its login on this phone. */
+  async function forgetAllHubs() {
+    for (const h of await readHubs()) await store.remove(KEYS.tokenFor(h.url)).catch(() => {});
+    await store.remove(KEYS.hubs);
+    await store.remove(KEYS.hub);
   }
 
   /** How this phone reaches a machine, in words: 局域网 / Tailscale / 外网. */
@@ -466,7 +482,7 @@
         if (res.ok) {
           const made = await res.json();
           const links = Array.isArray(made?.links) ? made.links : [];
-          const target = (await pickReachableLink(links)) || made?.url;
+          const target = (await pickReachableLink(links, safeOrigin(hub))) || made?.url;
           if (target) {
             await store.set(KEYS.hub, hub);
             window.location.assign(withOrigin(target, origin));
@@ -510,7 +526,7 @@
                 if (minted.ok) {
                   const fresh = await minted.json();
                   const links = Array.isArray(fresh?.links) ? fresh.links : [];
-                  target = (await pickReachableLink(links)) || fresh?.url || target;
+                  target = (await pickReachableLink(links, safeOrigin(hub))) || fresh?.url || target;
                 }
               } catch {
                 /* keep the original door */
@@ -579,6 +595,8 @@
   // ---------------------------------------------------------------- screens
   function showConnect(prefill) {
     setError('');
+    // With machines already saved, "添加机器" must have a way back to the list.
+    void readHubs().then((hubs) => { if (dom.connectBack) dom.connectBack.hidden = hubs.length === 0; });
     dom.hubUrl.value = prefill !== undefined ? prefill : state.hub || '';
     dom.hubCode.value = '';
     show('connect');
@@ -646,8 +664,21 @@
    * reach only one of them (a VMware LAN address is not routable from the phone).
    * Probing beats guessing: take the first link that answers.
    */
-  async function pickReachableLink(links) {
-    const usable = (links || []).filter((l) => l && typeof l.url === 'string');
+  function safeOrigin(u) { try { return new URL(u).origin; } catch { return ''; } }
+
+  async function pickReachableLink(links, preferOrigin = '') {
+    // The hub lists its public (Funnel) address first, for phones that have
+    // nothing else. A phone that just reached it directly must stay on that
+    // address: the public one goes round through the internet, is slower, and
+    // its one-time link failed there. Order: the address in use, LAN,
+    // Tailscale, public last.
+    const rank = (l) => {
+      let origin = '';
+      try { origin = new URL(l.url).origin; } catch { /* ranked last */ }
+      if (preferOrigin && origin === preferOrigin) return 0;
+      return { lan: 1, tailnet: 2, public: 3 }[l.kind] ?? 2;
+    };
+    const usable = (links || []).filter((l) => l && typeof l.url === 'string').sort((a, b) => rank(a) - rank(b));
     for (const link of usable) {
       let origin;
       try {
@@ -897,8 +928,10 @@
   paintTheme();
 
   dom.forgetBtn.addEventListener('click', async () => {
-    if (state.hub) await forgetHub(state.hub);
-    else await store.remove(KEYS.hub);
+    const count = (await readHubs()).length;
+    if (count && !window.confirm(`忘记这台手机上保存的全部 ${count} 台机器？
+电脑上的夜班不受影响，以后要重新配对。`)) return;
+    await forgetAllHubs();
     state.hub = '';
     dom.connectForm.reset();
     await renderMachines();
@@ -915,6 +948,7 @@
     else showConnect('');
   });
   dom.offlineChange.addEventListener('click', () => showConnect(state.hub));
+  dom.connectBack?.addEventListener('click', () => showConnected());
 
   // -------------------------------------------------------------------- boot
   async function boot() {
@@ -929,6 +963,13 @@
       } catch {
         state.hub = '';
       }
+    }
+    // Any saved machine means the list, not the empty form: the "last opened"
+    // key can be gone (its machine was deleted) while others are still saved.
+    const saved = await readHubs();
+    if (!state.hub && saved.length) {
+      state.hub = saved[0].url;
+      await store.set(KEYS.hub, state.hub);
     }
     await renderMachines();
     if (state.hub) {

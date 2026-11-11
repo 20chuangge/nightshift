@@ -152,6 +152,7 @@
   /* machines this phone has connected to before */
   .machines { margin-top: 16px; }
   .machines[hidden] { display: none; }
+  #connect-back[hidden] { display: none; }
   .machines-title { font-size: 11.5px; color: var(--dim); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
   .machines-hint { font-size: 11px; color: var(--dim); margin-top: 8px; }
   .machine {
@@ -317,9 +318,8 @@
     </form>
 
     <p class="hint">
-      电脑上要用 <code>ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 npm start</code> 启动（默认只监听本机，
-      手机看不到）。手机和电脑在同一局域网，端口默认 <code>4390</code>。
-      配对码留空也行：打开后夜班自己会显示配对页。
+      在电脑上的夜班打开「设置 → 配对」，扫那里的二维码，或者照着填地址和配对码。
+      只要配对一台：电脑上添加过的其他机器会自动出现在列表里。
     </p>
     <div class="row">
       <button id="scan-btn" class="primary" type="button">扫码连接</button>
@@ -328,6 +328,9 @@
     <div class="row">
       <button id="paste-btn" class="ghost" type="button">粘贴地址</button>
       <button id="preview-btn" class="ghost" type="button">预览内置界面</button>
+    </div>
+    <div class="row">
+      <button id="connect-back" class="ghost" type="button" hidden>返回机器列表</button>
     </div>
   </section>
 

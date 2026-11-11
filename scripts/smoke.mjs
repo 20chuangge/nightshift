@@ -3139,6 +3139,17 @@ function shanghaiWeekday(ts) {
     check('feishu apps of their own: the settings list, the add form and its button are wired', ['feishu-apps', 'feishu-app-bot', 'feishu-app-id', 'feishu-app-secret', 'feishu-app-save'].every((id) => html.includes(`id="${id}"`)) && html.includes("$('feishu-app-save')?.addEventListener('click', addFeishuApp)"));
     const launcher = await readText('../mobile/shell/launcher.js');
     check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.url);'));
+    const shellHtml = await readText('../mobile/shell/index.html');
+    {
+      const srvSrc = await readText('../src/server.mjs');
+      const page = await readText('../public/index.html');
+      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url, links, expiresAt: made.expiresAt };') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
+      check('a long toast stays a rounded box, not an oval', /.toast {[^}]*border-radius: 16px;/.test(page));
+    }
+    check('opening a machine keeps the phone on the address it already uses (LAN, Tailscale) and takes the public one last', launcher.includes('return { lan: 1, tailnet: 2, public: 3 }[l.kind] ?? 2;') && launcher.includes('await pickReachableLink(links, safeOrigin(hub))') && !launcher.includes('await pickReachableLink(links)'));
+    check('the phone opens on its machine list whenever machines are saved, even when the last-opened one was deleted', launcher.includes('if (!state.hub && saved.length) {') && launcher.includes('if (hubs.length) await store.set(KEYS.hub, hubs[0].url);'));
+    check('「全部忘记」 asks, then really forgets every saved machine and its login', launcher.includes('async function forgetAllHubs()') && launcher.includes('await forgetAllHubs();') && launcher.includes('忘记这台手机上保存的全部'));
+    check('the connect page leads back to the list and gives the current pairing steps, not the old npm start hint', shellHtml.includes('id="connect-back"') && launcher.includes("dom.connectBack?.addEventListener('click', () => showConnected());") && !shellHtml.includes('ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 npm start') && shellHtml.includes('只要配对一台'));
   }
 
   // One machine concept: the old "看谁的屏幕" take-over list must not come back.
@@ -3966,7 +3977,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const winLaunch = srv.split('\n').find((l) => l.includes("'tailscale-windows.ps1'), '-KeyFile', keyFile")) || '';
     check('tailscale on a machine already added: Windows launches the installer attached (a detached one runs nothing from the hub task); a key the installer never took is deleted after 90 s and reported', winLaunch && !winLaunch.includes('detached: true') && srv.includes('if (!fs.existsSync(keyFile)) return;') && srv.includes('DESK_TS=failed launch') && srv.includes('const TS_LAUNCH_FAILED'));
     const sh = await readText('../hub/setup-linux.sh');
-    check('Rocky / RHEL 10: no X11 desktop to install, so only Chromium, and an honest "not supported" instead of "add it again"', sh.includes('EL_MAJOR:-0}" -ge 10 ]; then') && sh.includes('status unsupported') && page.includes("setup.state === 'unsupported'"));
+    check('Rocky / RHEL 10: no X11 stack, so Wayland screens (cage + wayvnc) instead of "not supported"; the UI still knows the unsupported state for older hubs', sh.includes('EL_MAJOR:-0}" -ge 10 ]; then') && sh.includes('pm_install cage wayvnc') && page.includes("setup.state === 'unsupported'"));
     const h = await api('/api/health');
     check('busy machines: health reports CPU, cores and memory; the page warns when it stays near 100%', h.json?.load && typeof h.json.load.cores === 'number' && typeof h.json.load.memFreeMB === 'number' && 'busy' in h.json.load && page.includes('async function checkBusy()') && page.includes('id="busy-banner"'));
   }
@@ -4210,7 +4221,24 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('desktops: new Linux machines get openbox for light desktops', setup.includes('has openbox || pm_install openbox x11-xserver-utils') && setup.includes('has openbox || pm_install openbox xsetroot'));
       check('desktops: new Linux machines no longer install XFCE; the bot session falls back to openbox without it', !/pm_install xfce4|groupinstall "Xfce"/.test(setup) && setup.includes('exec openbox') && !/for bin in Xvfb x11vnc websockify xfce4-session/.test(setup));
       const deskSrc = await readText('../src/desktops.mjs');
-      check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("$('pc-light-hint').hidden = state.computer?.desktop?.mode !== 'light'") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
+      {
+        // Batch K: Rocky/RHEL 10 have no Xvfb/x11vnc; their bot screens are cage + wayvnc.
+        const wl = D.waylandCommands({ display: 121, vncPort: 5921, webPort: 6101 });
+        check('desktops (Rocky 10): a Wayland screen is headless cage + wayvnc speaking WebSocket itself on 127.0.0.1 (no websockify fork per viewer)', wl.cage[0] === 'cage' && wl.cage[1].join(' ') === '-d -- sleep 2147121000' && wl.vnc[1].join(' ') === '-w -r 127.0.0.1 6101' && !wl.web && deskSrc.includes("WLR_BACKENDS: 'headless'") && deskSrc.includes("mode: 'kiosk'"));
+        const wlArgs = B.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true });
+        const brSrc = await readText('../src/browser.mjs');
+        check('desktops (Rocky 10): the bot browser draws natively on its Wayland screen, without an X display', wlArgs.includes('--ozone-platform=wayland') && !B.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--ozone-platform=wayland') && brSrc.includes('delete launchEnv.DISPLAY'));
+        check('desktops (Rocky 10): the installer sets up cage + wayvnc on EL 10, fixes liblc3, and counts it as a complete desktop', setup.includes('pm_install cage wayvnc python3-websockify novnc') && setup.includes('upgrade liblc3') && setup.includes('has cage && has wayvnc && wayvnc --version') && !setup.includes('status unsupported'));
+        check('desktops (Rocky 10): the empty kiosk screen explains itself and Settings hides the light/full switch there', page.includes("mode === 'kiosk' ?") && page.includes("r.support?.backend !== 'wayland'"));
+      }
+      check('desktops: the empty-screen note sits under the screen (on top it covered an open browser), and a restarted bot browser does not ask to restore pages', page.indexOf('id="pc-light-hint"') > page.indexOf('id="pc-vnc-shield"') && page.indexOf('id="pc-light-hint"') < page.indexOf('id="pc-mobile-bar"') && !/.pc-light-hint {[^}]*position: absolute/.test(page) && B.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--hide-crash-restore-bubble'));
+      {
+        const dsrc = await readText('../src/desktops.mjs');
+        const bsrc = await readText('../src/browser.mjs');
+        check('desktops: overlapping requests share one start of a bot screen (they used to kill each other)', dsrc.includes('if (starting.has(botId)) return starting.get(botId);') && dsrc.includes('async function ensureDesktopOnce(botId) {'));
+        check('desktops (Rocky 10): a browser that dies right after starting on a Wayland screen gets the screen restarted and one more launch', bsrc.includes('if (child.exitCode !== null || child.signalCode) {') && bsrc.includes('desk.stopDesktop(this.key);'));
+      }
+      check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("hint.hidden = mode !== 'light' && mode !== 'kiosk';") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
       check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);
     }
     const page = await readText('../public/index.html');

@@ -1645,7 +1645,11 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, {
     throw err;
   }
   if (!made?.url) throw httpError(409, 'MACHINE_NO_ADDRESS', `「${peer.name}」没有可用的手机地址`);
-  return { ok: true, machine: peer.name, url: made.url, expiresAt: made.expiresAt };
+  // Every address the machine has (public, LAN, Tailscale): the phone opens the
+  // first one it can reach. A VM's LAN address is often the computer's internal
+  // network, while its Tailscale one works from the phone.
+  const links = Array.isArray(made.links) ? made.links.filter((l) => l && typeof l.url === 'string') : [];
+  return { ok: true, machine: peer.name, url: made.url, links, expiresAt: made.expiresAt };
 });
 
 // --- UI state / remote machines -------------------------------------------

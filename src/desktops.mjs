@@ -164,15 +164,37 @@ export function desktopSupport() {
   if (process.platform !== 'linux') {
     return { available: false, reason: 'per-bot desktops need Linux (Xvfb + x11vnc)' };
   }
+  const backend = desktopBackend();
+  if (backend === 'wayland') return { available: true, reason: '', backend };
   const missing = ['Xvfb', 'x11vnc', 'websockify'].filter((b) => !hasBinary(b));
   if (missing.length) {
-    // Say the install command of this machine's package manager (Rocky/RHEL use dnf).
+    // Say the install command of this machine's package manager. Rocky/RHEL 10
+    // have no X11 stack at all: there the screens are Wayland (cage + wayvnc).
     const hint = hasBinary('apt-get')
       ? 'apt install xvfb x11vnc novnc websockify'
-      : hasBinary('dnf') ? 'dnf install xorg-x11-server-Xvfb x11vnc novnc python3-websockify' : 'install Xvfb, x11vnc, noVNC and websockify';
+      : hasBinary('dnf') ? 'dnf install cage wayvnc novnc python3-websockify; dnf upgrade liblc3' : 'install Xvfb, x11vnc, noVNC and websockify';
     return { available: false, reason: `missing ${missing.join(', ')} (${hint})` };
   }
-  return { available: true, reason: '' };
+  return { available: true, reason: '', backend };
+}
+
+/*
+ * Two ways to give a bot a screen on Linux:
+ *  - x11: Xvfb + a window manager + x11vnc (Ubuntu, Debian, EL 8/9).
+ *  - wayland: cage, a one-window Wayland compositor, on its headless backend,
+ *    with wayvnc (Rocky / RHEL 10, which ship no Xvfb or x11vnc at all). The
+ *    bot's browser fills the screen; there is no desktop around it.
+ * X11 wins when both are installed. The answer is cached: it is asked a lot.
+ */
+let backendCache = null;
+export function desktopBackend() {
+  if (process.env.DESK_DESKTOP_BACKEND === 'x11' || process.env.DESK_DESKTOP_BACKEND === 'wayland') return process.env.DESK_DESKTOP_BACKEND;
+  if (backendCache && Date.now() - backendCache.at < 60000) return backendCache.value;
+  let value = 'x11';
+  if (process.platform === 'linux' && !(hasBinary('Xvfb') && hasBinary('x11vnc'))
+    && hasBinary('cage') && hasBinary('wayvnc')) value = 'wayland';
+  backendCache = { value, at: Date.now() };
+  return value;
 }
 
 export function configure({ dataDir: dir, password } = {}) {
@@ -263,7 +285,19 @@ function displayReady(display) {
  * Start (or reuse) the desktop for a bot. Returns the viewer URL.
  * Idempotent: calling it repeatedly is how the UI polls.
  */
+// One start per bot at a time. Right after a hub restart the UI asks for the
+// screen several times at once; overlapping starts killed each other's
+// processes and wiped the shared runtime directory (one even reported the
+// screen as not running).
+const starting = new Map();
 export async function ensureDesktop(botId) {
+  if (starting.has(botId)) return starting.get(botId);
+  const run = ensureDesktopOnce(botId).finally(() => starting.delete(botId));
+  starting.set(botId, run);
+  return run;
+}
+
+async function ensureDesktopOnce(botId) {
   if (process.platform === 'win32') {
     if (!botId) throw new Error('botId is required');
     if (!windowsVnc.up) { probeWindowsVnc(); windowsVnc.up = await portOpen(WINDOWS_VNC_PORT); }
@@ -287,6 +321,8 @@ export async function ensureDesktop(botId) {
     }
     desktops.delete(botId);
   }
+
+  if (desktopBackend() === 'wayland') return startWaylandDesktop(botId);
 
   for (const pattern of ['Xvfb :' + (BASE_DISPLAY + stableIndex(botId)), 'x11vnc -display :' + (BASE_DISPLAY + stableIndex(botId))]) {
     killByPattern(pattern);
@@ -393,6 +429,63 @@ export async function ensureDesktop(botId) {
   return { ...publicInfo(botId, entry), started: true };
 }
 
+/** The wayland command lines for one screen (also used to kill leftovers). */
+export function waylandCommands({ display, webPort }) {
+  return {
+    // The "app" cage runs is a placeholder; its odd length makes the process
+    // findable after a hub restart. The bot's browser joins as a client.
+    cage: ['cage', ['-d', '--', 'sleep', `2147${display}000`]],
+    // wayvnc speaks WebSocket itself (-w), on the bridge port the hub relays
+    // to: no websockify. That one forks per viewer, and on a 1.6 GB Rocky VM
+    // with Chromium running the fork failed with ENOMEM (a blank viewer).
+    vnc: ['wayvnc', ['-w', '-r', '127.0.0.1', String(webPort)]],
+  };
+}
+
+async function startWaylandDesktop(botId) {
+  const index = stableIndex(botId);
+  const display = BASE_DISPLAY + index;
+  const vncPort = BASE_VNC_PORT + index;
+  const webPort = BASE_WEB_PORT + index;
+  const cmd = waylandCommands({ display, webPort });
+  killByPattern(`sleep 2147${display}000$`);
+  killByPattern(`wayvnc .*127.0.0.1 (${vncPort}|${webPort})$`);
+  killByPattern(`websockify.* 127.0.0.1:${webPort} `);
+  // Its own runtime dir: the Wayland socket lives there and nothing else
+  // (a logged-in GNOME session) can be mistaken for it.
+  const runtime = `/tmp/desk-wl-${process.getuid?.() ?? 1000}-${display}`;
+  try { fs.rmSync(runtime, { recursive: true, force: true }); } catch { /* fine */ }
+  fs.mkdirSync(runtime, { recursive: true, mode: 0o700 });
+  const env = {
+    ...process.env,
+    XDG_RUNTIME_DIR: runtime,
+    WLR_BACKENDS: 'headless',
+    WLR_RENDERER: 'pixman',
+    WLR_LIBINPUT_NO_DEVICES: '1',
+    WLR_HEADLESS_OUTPUTS: '1',
+  };
+  delete env.DISPLAY;
+  delete env.WAYLAND_DISPLAY;
+  const procs = [];
+  procs.push(spawnChild(cmd.cage[0], cmd.cage[1], { stdio: ['ignore', childLog(botId, 'session'), childLog(botId, 'session')], env }));
+  let socket = '';
+  for (let i = 0; i < 50 && !socket; i += 1) {
+    await sleep(100);
+    try { socket = fs.readdirSync(runtime).find((f) => /^wayland-\d+$/.test(f)) || ''; } catch { /* not yet */ }
+  }
+  const clientEnv = { ...env, WAYLAND_DISPLAY: socket || 'wayland-0' };
+  procs.push(spawnChild(cmd.vnc[0], cmd.vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv }));
+  for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
+  // One port: the WebSocket one (the liveness check looks at both fields).
+  const entry = {
+    display, vncPort: webPort, webPort, procs, startedAt: new Date().toISOString(), mode: 'kiosk', viewers: 0, lastUsed: Date.now(),
+    wayland: { display: clientEnv.WAYLAND_DISPLAY, runtime },
+  };
+  desktops.set(botId, entry);
+  startReaper();
+  return { ...publicInfo(botId, entry), started: true };
+}
+
 function publicInfo(botId, entry) {
   return {
     botId,
@@ -422,7 +515,10 @@ export function desktopInfo(botId) {
 /** What the browser/shell tools should put in the environment for this bot. */
 export function desktopEnv(botId) {
   const entry = desktops.get(botId);
-  return entry ? { DISPLAY: `:${entry.display}` } : {};
+  if (!entry) return {};
+  // Wayland screens: the browser connects to that compositor's socket.
+  if (entry.wayland) return { WAYLAND_DISPLAY: entry.wayland.display, XDG_RUNTIME_DIR: entry.wayland.runtime };
+  return { DISPLAY: `:${entry.display}` };
 }
 
 export function stopDesktop(botId) {
