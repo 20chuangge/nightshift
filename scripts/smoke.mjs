@@ -3136,6 +3136,7 @@ function shanghaiWeekday(ts) {
     check('both sides keep a bubble, the human one a softer grey', html.includes('--bubble-user: #333333;') && html.includes('--bubble-user: #E3E3E3;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
     check('settings icons are sized and only shown in the phone list', html.includes('<svg class="setnav-icon" width="20" height="20"') && html.includes('  .setnav-icon { display: none; }') && html.includes('.settings-modal.set-home .setnav svg { display: block;'));
     check('the sidebar is set apart from the chat (darker grey in light, a divider line)', html.includes('--bg: #FFFFFF; --bg-2: #F0F0F0;') && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
+    check('feishu apps of their own: the settings list, the add form and its button are wired', ['feishu-apps', 'feishu-app-bot', 'feishu-app-id', 'feishu-app-secret', 'feishu-app-save'].every((id) => html.includes(`id="${id}"`)) && html.includes("$('feishu-app-save')?.addEventListener('click', addFeishuApp)"));
     const launcher = await readText('../mobile/shell/launcher.js');
     check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.url);'));
   }
@@ -4052,8 +4053,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     };
     const turns = [];
     const asked = [];
+    const fzBus = new EventBus();
     const fz = FS.createFeishu({
-      file: path.join(fdir, 'feishu.json'), bus: new EventBus(), workspaceDir: fdir, fetchImpl: fakeFetch,
+      file: path.join(fdir, 'feishu.json'), bus: fzBus, workspaceDir: fdir, fetchImpl: fakeFetch,
       runtime: { runTurn: async (t) => { turns.push(t); return t; } },
       approvals: { resolve: () => {} },
       getBots: () => [{ id: 'chief', name: '助理', primary: true }, { id: 'bot-ed', name: '剪辑' }],
@@ -4070,13 +4072,79 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     await say('@剪辑 把片头剪短一点');
     check('feishu: "@name" goes straight to that bot on this machine, without the @name', turns.at(-1)?.botId === 'bot-ed' && turns.at(-1).text.startsWith('把片头剪短一点'));
     await say('@编剧 写一个梗概');
-    check('feishu: a name that lives on another machine is asked there, and the answer comes back to Feishu', asked.at(-1)?.machine === 'Ubuntu' && asked.at(-1).botId === 'bot-w' && asked.at(-1).text === '写一个梗概' && sent.some((t) => /已转给「Ubuntu」上的编剧/.test(t)) && sent.some((t) => /编剧（Ubuntu）：梗概写好了/.test(t)) && turns.length === 1);
+    check('feishu: a name that lives on another machine is asked there, and the answer comes back to Feishu', asked.at(-1)?.machine === 'Ubuntu' && asked.at(-1).botId === 'bot-w' && asked.at(-1).text === '写一个梗概' && sent.some((t) => /已转给「Ubuntu」上的编剧/.test(t)) && sent.some((t) => /^【编剧 · Ubuntu】\n梗概写好了/.test(t)) && turns.length === 1);
+    // Batch I (Notion §97.6): the person keeps talking to whoever they named last.
+    await say('再写短一点');
+    check('feishu: after "@编剧", the next message without "@" still goes to 编剧 on Ubuntu', asked.at(-1)?.botId === 'bot-w' && asked.at(-1).text === '再写短一点' && turns.length === 1);
+    const saved = JSON.parse(fsx.readFileSync(path.join(fdir, 'feishu.json'), 'utf8'));
+    check('feishu: who the person talks to is saved (survives a restart)', saved.users[0]?.target?.botId === 'bot-w' && saved.users[0].target.machine === 'Ubuntu');
+    await say('/home');
+    check('feishu: "/home" goes back to the primary bot', /接下来发给 助理（本机）/.test(sent.at(-1) || '') && !JSON.parse(fsx.readFileSync(path.join(fdir, 'feishu.json'), 'utf8')).users[0].target);
     await say('@某个不存在的 你好');
-    check('feishu: an unknown @name is just a message for the main assistant', turns.at(-1)?.botId === 'chief' && turns.at(-1).text.startsWith('@某个不存在的 你好'));
+    check('feishu: an unknown @name is just a message for the current bot', turns.at(-1)?.botId === 'chief' && turns.at(-1).text.startsWith('@某个不存在的 你好'));
+    fzBus.emit({ type: 'message', turnId: turns.at(-1).turnId, text: '你好呀' });
+    fzBus.emit({ type: 'turn.end', turnId: turns.at(-1).turnId, botId: 'chief', status: 'success' });
+    await new Promise((r) => setTimeout(r, 60));
+    check('feishu: an answer starts with who is talking', sent.some((t) => t === '【助理 · 本机】\n你好呀'));
+    await say('切换');
+    const menu = sent.at(-1) || '';
+    check('feishu: "切换" lists every bot, this machine first, with the current one marked', /1. 助理（本机） ← 现在/.test(menu) && /2. 剪辑（本机）/.test(menu) && /3. 编剧（Ubuntu）/.test(menu));
+    await say('2');
+    await say('把结尾也剪一下');
+    check('feishu: a number after "切换" switches, and the next message goes there', sent.some((t) => /接下来发给 剪辑（本机）/.test(t)) && turns.at(-1)?.botId === 'bot-ed' && turns.at(-1).text.startsWith('把结尾也剪一下'));
+    await say('9');
+    check('feishu: a bare number with no list open is just a message', turns.at(-1)?.botId === 'bot-ed' && turns.at(-1).text.startsWith('9'));
     await say('机器人列表');
     check('feishu: "机器人列表" says who can be reached, on which machine', /这台机器：助理、剪辑/.test(sent.at(-1) || '') && /「Ubuntu」：编剧、美术/.test(sent.at(-1)));
     fz.stop();
     srv19.close();
+
+    // Batch I2: a Feishu app of its own, bound to one bot.
+    const pinDir = fsx.mkdtempSync(path.join(os.tmpdir(), 'feishu-pin-'));
+    const pTurns = [];
+    const pAsked = [];
+    const pSent = [];
+    const pFetch = async (url, init = {}) => {
+      const ok = (data) => ({ ok: true, status: 200, json: async () => ({ code: 0, ...data }) });
+      if (url.includes('tenant_access_token')) return ok({ tenant_access_token: 't', expire: 7200 });
+      if (url.includes('/im/v1/messages')) { const c = JSON.parse(JSON.parse(init.body).content); pSent.push(c.zh_cn?.content?.[0]?.[0]?.text || ''); return ok({ data: {} }); }
+      return ok({ data: {} });
+    };
+    const mkPinned = (pinned, file) => FS.createFeishu({
+      file, bus: new EventBus(), workspaceDir: pinDir, fetchImpl: pFetch,
+      runtime: { runTurn: async (t) => { pTurns.push(t); return t; } },
+      approvals: { resolve: () => {} },
+      getBots: () => [{ id: 'chief', name: '助理', primary: true }, { id: 'bot-ed', name: '剪辑' }],
+      machineName: () => '本机',
+      askRemote: async (q) => { pAsked.push(q); return { reply: '分镜画好了', fetched: [] }; },
+      pinned,
+    });
+    const pz = mkPinned({ botId: 'bot-ed', machine: '', name: '剪辑' }, path.join(pinDir, 'a.json'));
+    await pz.load();
+    await pz.update({ appId: 'cli_pin', appSecret: 'sec-pin' });
+    let pn = 0;
+    const psay = async (inst, text, extra = {}) => { pn += 1; inst._handleFrame(FS.encodeFrame({ method: 1, headers: [{ key: 'type', value: 'event' }, { key: 'message_id', value: 'p' + pn }], payload: Buffer.from(JSON.stringify({ header: { event_id: 'pe' + pn, event_type: 'im.message.receive_v1' }, event: { sender: { sender_id: { open_id: 'ou_p' }, sender_type: 'user' }, message: { message_id: 'pm' + pn, chat_id: 'oc_p', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }), ...extra } } })) })); await new Promise((r) => setTimeout(r, 60)); };
+    await psay(pz, '配对 ' + pz.view().pairCode);
+    check('feishu app of its own: pairing says which bot it is', /已连接到「本机」的剪辑/.test(pSent.at(-1) || ''));
+    await psay(pz, '@助理 切换');
+    check('feishu app of its own: every message goes to its bot; "@" and "切换" are just text', pTurns.at(-1)?.botId === 'bot-ed' && pTurns.at(-1).text.startsWith('@助理 切换'));
+    const pinBefore = pTurns.length;
+    await psay(pz, '大家看看', { chat_type: 'group', chat_id: 'oc_g' });
+    await psay(pz, '剪一下片头', { chat_type: 'group', chat_id: 'oc_g', mentions: [{ key: '@_user_1' }] });
+    check('feishu app of its own: in a group it answers only when @-mentioned', pTurns.length === pinBefore + 1 && pTurns.at(-1).text.startsWith('剪一下片头'));
+    pz.dispose();
+    const pr = mkPinned({ botId: 'bot-w', machine: 'Ubuntu', name: '美术' }, path.join(pinDir, 'b.json'));
+    await pr.load();
+    await pr.update({ appId: 'cli_pin2', appSecret: 'sec-pin2' });
+    await psay(pr, '配对 ' + pr.view().pairCode);
+    await psay(pr, '画个分镜');
+    check('feishu app of its own: a bot on another machine is asked there; no 【】 label on its own app', pAsked.at(-1)?.machine === 'Ubuntu' && pAsked.at(-1).botId === 'bot-w' && pSent.at(-1) === '分镜画好了' && pr.view().pinned?.name === '美术');
+    pr.dispose();
+    const appsNone = await api('/api/feishu/apps');
+    const appsBadBot = await api('/api/feishu/apps', { method: 'POST', body: { bot: 'no-such-bot', appId: 'cli_x', appSecret: 's' } });
+    const appsNoKeys = await api('/api/feishu/apps', { method: 'POST', body: { bot: 'chief' } });
+    const appsGone = await api('/api/feishu/apps/fa-nope', { method: 'DELETE' });
+    check('feishu apps of their own: API lists none at first, refuses an unknown bot or missing keys, 404 for an unknown app', Array.isArray(appsNone.json?.apps) && appsNone.json.apps.length === 0 && appsBadBot.status === 400 && appsNoKeys.status === 400 && appsGone.status === 404);
     const page = await readText('../public/index.html');
     check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));
   }

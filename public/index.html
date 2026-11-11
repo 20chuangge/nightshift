@@ -3502,7 +3502,7 @@
 
       <section class="dsec" id="sec-feishu">
         <div class="dsec-head">飞书</div>
-        <div class="row-note">在手机飞书里直接给这台机器的助理发消息、收结果（文字、图片、视频），出门在外也能用。这台机器自己连飞书，不用公网地址。每台机器接一个飞书应用。</div>
+        <div class="row-note">在手机飞书里直接给这台机器的助理发消息、收结果（文字、图片、视频），出门在外也能用。这台机器自己连飞书，不用公网地址。下面这个是总入口：在飞书里发「切换」按编号换人，或者消息开头写「@名字」，就能找任何一台机器上的机器人，之后的消息都发给它；发「/home」回到主助理。</div>
         <div class="feishu-status" id="feishu-status">正在读取…</div>
         <details class="vault-add" id="feishu-guide">
           <summary>第一次用：怎么创建飞书应用（约 5 分钟）</summary>
@@ -3519,7 +3519,7 @@
         <input class="field" id="feishu-appid" autocomplete="off" spellcheck="false" placeholder="cli_xxxxxxxx" />
         <label class="lbl" for="feishu-secret">App Secret</label>
         <input class="field" id="feishu-secret" type="password" autocomplete="new-password" spellcheck="false" />
-        <label class="lbl" for="feishu-bot">由哪个助手回复</label>
+        <label class="lbl" for="feishu-bot">默认由哪个助手回复</label>
         <select class="field" id="feishu-bot"></select>
         <label class="switch-row" for="feishu-enabled"><input type="checkbox" id="feishu-enabled" /> 启用</label>
         <div class="btn-row"><button class="btn primary" id="feishu-save" type="button">保存</button></div>
@@ -3527,6 +3527,19 @@
         <div class="row-note">没配对的人发消息，助理不会做任何事。把这个配对码发给飞书里的应用，就配好了（每个码只能用一次）。</div>
         <div class="feishu-code"><b id="feishu-code">——</b><button class="btn tiny" id="feishu-newcode" type="button">换一个</button></div>
         <div class="vault-list" id="feishu-users"></div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">单独的飞书机器人</div>
+        <div class="row-note">给某个机器人单独建一个飞书应用：在飞书里它就是一个单独的联系人，发给它的消息都由它回答；把几个这样的应用拉进同一个飞书群，@ 谁就是谁回答。建应用的步骤和上面一样（权限、长连接、接收消息事件都要配）；每个应用要单独配对。</div>
+        <div class="vault-list" id="feishu-apps"></div>
+        <details class="vault-add" id="feishu-app-add">
+          <summary>添加一个</summary>
+          <label class="lbl" for="feishu-app-bot">哪个机器人</label>
+          <select class="field" id="feishu-app-bot"></select>
+          <label class="lbl" for="feishu-app-id">App ID</label>
+          <input class="field" id="feishu-app-id" autocomplete="off" spellcheck="false" placeholder="cli_xxxxxxxx" />
+          <label class="lbl" for="feishu-app-secret">App Secret</label>
+          <input class="field" id="feishu-app-secret" type="password" autocomplete="new-password" spellcheck="false" />
+          <div class="btn-row"><button class="btn primary" id="feishu-app-save" type="button">添加并连接</button></div>
+        </details>
       </section>
 
       <section class="dsec" id="sec-pages">
@@ -9740,7 +9753,74 @@ async function saveNewModel() {
 async function loadFeishu() {
   const v = await api('/api/feishu');
   renderFeishu(v);
+  loadFeishuApps().catch(() => { /* older server: no apps of their own */ });
   return v;
+}
+
+/* Feishu apps of their own, one bot each (Notion §97.6 I2). */
+async function loadFeishuApps() {
+  const { apps } = await api('/api/feishu/apps');
+  renderFeishuApps(apps || []);
+  // the bots to choose from: this machine, then the other machines
+  const select = $('feishu-app-bot');
+  if (select && !select.dataset.filled) {
+    select.dataset.filled = '1';
+    select.innerHTML = state.bots.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}（这台机器）</option>`).join('');
+    api('/api/peers/bots').then((r) => {
+      for (const m of r.machines || []) for (const b of m.bots || []) {
+        select.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(`${b.id}@${m.machine}`)}">${escapeHtml(b.name)}（${escapeHtml(m.machine)}）</option>`);
+      }
+    }).catch(() => {});
+  }
+  return apps;
+}
+
+function renderFeishuApps(apps) {
+  const list = $('feishu-apps');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!apps.length) { list.appendChild(el('div', 'row-note', '还没有。')); return; }
+  for (const a of apps) {
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', `${a.name}（${a.machine || '这台机器'}）`));
+    const status = a.connected ? `已连接 · 配对了 ${(a.users || []).length} 人` : !a.enabled ? '没有启用' : a.error ? `没连上：${a.error}` : '正在连接…';
+    title.appendChild(el('small', '', `${status} · 配对码 ${a.pairCode || '——'}`));
+    head.appendChild(title);
+    const code = el('button', 'btn tiny', '换配对码');
+    code.type = 'button';
+    code.addEventListener('click', async () => {
+      try { await api(`/api/feishu/apps/${encodeURIComponent(a.id)}`, { method: 'PUT', body: { newPairCode: true } }); await loadFeishuApps(); } catch (err) { toast(err.message, true); }
+    });
+    head.appendChild(code);
+    const del = el('button', 'btn tiny danger', '删除');
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次删除'; return; }
+      try { await api(`/api/feishu/apps/${encodeURIComponent(a.id)}`, { method: 'DELETE' }); await loadFeishuApps(); toast('已删除'); } catch (err) { toast(err.message, true); }
+    });
+    head.appendChild(del);
+    row.appendChild(head);
+    list.appendChild(row);
+  }
+}
+
+async function addFeishuApp() {
+  const body = { bot: $('feishu-app-bot').value, appId: $('feishu-app-id').value.trim(), appSecret: $('feishu-app-secret').value.trim() };
+  if (!body.bot || !body.appId || !body.appSecret) { toast('先选机器人，再填 App ID 和 App Secret', true); return; }
+  try {
+    await api('/api/feishu/apps', { method: 'POST', body });
+    $('feishu-app-id').value = '';
+    $('feishu-app-secret').value = '';
+    $('feishu-app-add').open = false;
+    toast('已添加，正在连接飞书…');
+    for (let i = 0; i < 20; i += 1) {
+      const apps = await loadFeishuApps().catch(() => null);
+      if (!apps || apps.every((a) => a.connected || a.error || !a.enabled)) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } catch (err) { toast(`添加失败：${err.message}`, true); }
 }
 
 function renderFeishu(v) {
@@ -11917,6 +11997,7 @@ function wireChrome() {
   $('folder-outside')?.addEventListener('change', (e) => savePolicy({ outside: e.target.value }, '已保存'));
   $('sudo-mode')?.addEventListener('change', (e) => savePolicy({ sudo: e.target.value }, '已保存'));
   $('feishu-save')?.addEventListener('click', saveFeishu);
+  $('feishu-app-save')?.addEventListener('click', addFeishuApp);
   $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);
   $('mp-test')?.addEventListener('click', testNewModel);

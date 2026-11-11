@@ -425,8 +425,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // Feishu: the assistant in the phone's chat app, over a connection this
   // machine opens (no public address needed). Off until set up in Settings.
-  state.feishu = createFeishu({
-    file: path.join(P.dataDir, 'feishu.json'),
+  const feishuBase = {
     bus,
     runtime,
     approvals: {
@@ -456,11 +455,40 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       const bytes = await voiceModule.speak(tts, voiceModule.speakableText(text, 500), { format: 'opus' });
       return { bytes, durationMs: voiceModule.oggDurationMs(bytes) };
     },
-  });
+  };
+  state.feishu = createFeishu({ ...feishuBase, file: path.join(P.dataDir, 'feishu.json') });
   listBots().then((b) => { state.botsCache = b; }).catch(() => {});
   bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
   await state.feishu.load();
   refs.feishu = state.feishu;
+
+  // Feishu apps of their own, one per bot (Notion §97.6 I2). data/feishu-apps.json
+  // lists them; each keeps its credentials, pairing and people in
+  // data/feishu-app-<id>.json, because Feishu gives a person a different id in
+  // every app - each app pairs on its own.
+  state.feishuApps = new Map();
+  state.feishuAppsFile = path.join(P.dataDir, 'feishu-apps.json');
+  state.feishuAppFile = (id) => path.join(P.dataDir, `feishu-app-${id}.json`);
+  state.resolveFeishuBot = async (ref) => {
+    const want = String(ref || '').trim();
+    if (!want) return null;
+    if (want.includes('@')) {
+      const far = await resolveRemoteMember(refs.peers, want).catch(() => null);
+      return far ? { botId: far.info.botId, machine: far.info.machine, name: far.info.name } : null;
+    }
+    const bot = (await listBots()).find((b) => b.id === want);
+    return bot ? { botId: bot.id, machine: '', name: bot.name } : null;
+  };
+  state.startFeishuApp = async (meta) => {
+    const inst = createFeishu({ ...feishuBase, file: state.feishuAppFile(meta.id), pinned: { botId: meta.botId, machine: meta.machine || '', name: meta.name } });
+    await inst.load();
+    state.feishuApps.set(meta.id, { meta, inst });
+    return inst;
+  };
+  state.saveFeishuApps = () => writeJsonSyncAtomic(state.feishuAppsFile, [...state.feishuApps.values()].map((a) => a.meta));
+  for (const meta of readJsonSync(state.feishuAppsFile, []) || []) {
+    if (meta?.id && meta.botId) await state.startFeishuApp(meta).catch((err) => console.error('[feishu] app', meta.id, err.message));
+  }
 
   // The daily briefing's facts about this machine (other machines answer for themselves).
   refs.collectBriefing = (hours = 24) => collectBriefing({
@@ -1085,6 +1113,70 @@ route('POST', /^\/api\/feishu\/unpair$/, async (_req, _res, { body, state }) => 
   await audit({ kind: 'feishu.unpaired' });
   state.bus.emit({ type: 'settings.changed', section: 'feishu' });
   return view;
+});
+
+// --- Feishu apps of their own (one bot each) ------------------------------------
+//   GET    /api/feishu/apps                -> {apps:[{id, botId, machine, name, ...the app's view}]}
+//   POST   /api/feishu/apps                {bot:"botId" | "botId@machine", appId, appSecret}
+//   PUT    /api/feishu/apps/:id            {enabled?, appId?, appSecret?, newPairCode?}
+//   POST   /api/feishu/apps/:id/unpair     {openId}
+//   DELETE /api/feishu/apps/:id
+
+const feishuAppView = ({ meta, inst }) => ({ id: meta.id, botId: meta.botId, machine: meta.machine || '', name: meta.name, ...inst.view() });
+const feishuAppOr404 = (state, id) => {
+  const app = state.feishuApps?.get(id);
+  if (!app) throw httpError(404, 'FEISHU_APP_NOT_FOUND', '没有这个飞书应用');
+  return app;
+};
+const feishuAppsChanged = (state) => state.bus.emit({ type: 'settings.changed', section: 'feishu' });
+
+route('GET', /^\/api\/feishu\/apps$/, async (_req, _res, { state }) => ({ apps: [...(state.feishuApps?.values() || [])].map(feishuAppView) }));
+
+route('POST', /^\/api\/feishu\/apps$/, async (_req, _res, { body, state }) => {
+  const target = await state.resolveFeishuBot(body?.bot);
+  if (!target) throw httpError(400, 'FEISHU_APP_BAD_BOT', '找不到这个机器人');
+  const appId = String(body?.appId || '').trim();
+  const appSecret = String(body?.appSecret || '').trim();
+  if (!appId || !appSecret) throw httpError(400, 'FEISHU_APP_NEEDS_KEYS', '要填 App ID 和 App Secret');
+  if (appId === state.feishu.view().appId || [...state.feishuApps.values()].some((a) => a.inst.view().appId === appId)) {
+    throw httpError(409, 'FEISHU_APP_IN_USE', '这个飞书应用已经在用了：一个飞书应用只能对应一个入口');
+  }
+  const meta = { id: uid('fa'), ...target };
+  const inst = await state.startFeishuApp(meta);
+  state.saveFeishuApps();
+  await inst.update({ appId, appSecret, enabled: true });
+  await audit({ kind: 'feishu.app.added', bot: target.botId, machine: target.machine || '', appId });
+  feishuAppsChanged(state);
+  return feishuAppView(state.feishuApps.get(meta.id));
+});
+
+route('PUT', /^\/api\/feishu\/apps\/(?<id>[\w-]+)$/, async (_req, _res, { body, state, params }) => {
+  const app = feishuAppOr404(state, params.id);
+  const patch = {};
+  for (const k of ['enabled', 'appId', 'appSecret', 'newPairCode']) if (body?.[k] !== undefined) patch[k] = body[k];
+  await app.inst.update(patch);
+  await audit({ kind: 'feishu.app.changed', id: app.meta.id, enabled: app.inst.view().enabled });
+  feishuAppsChanged(state);
+  return feishuAppView(app);
+});
+
+route('POST', /^\/api\/feishu\/apps\/(?<id>[\w-]+)\/unpair$/, async (_req, _res, { body, state, params }) => {
+  const app = feishuAppOr404(state, params.id);
+  await app.inst.unpair(String(body?.openId || ''));
+  await audit({ kind: 'feishu.unpaired', app: app.meta.id });
+  feishuAppsChanged(state);
+  return feishuAppView(app);
+});
+
+route('DELETE', /^\/api\/feishu\/apps\/(?<id>[\w-]+)$/, async (_req, _res, { state, params }) => {
+  const app = feishuAppOr404(state, params.id);
+  app.inst.dispose();
+  state.feishuApps.delete(app.meta.id);
+  state.saveFeishuApps();
+  await fsp.rm(state.feishuAppFile(app.meta.id), { force: true });
+  await audit({ kind: 'feishu.app.removed', id: app.meta.id, bot: app.meta.botId });
+  feishuAppsChanged(state);
+  return { ok: true, id: app.meta.id };
 });
 
 // --- what a provider offers ----------------------------------------------------

@@ -10,7 +10,17 @@
  * must contain the pairing code shown in Settings → 飞书; after that their
  * open_id is allowed. Everyone else is told how to pair and nothing runs.
  *
- * data/feishu.json {enabled, appId, appSecret, botId, pairCode, users:[{openId, since}]}
+ * data/feishu.json {enabled, appId, appSecret, botId, pairCode, users:[{openId, since, target}]}
+ *
+ * Who answers: each person has a current target ({botId, machine, name}; none =
+ * the primary bot). "@名字 …" talks to that bot and makes it the target, so the
+ * next messages need no "@"; "切换" lists every bot (this machine and the
+ * others) to pick by number; "/home" goes back to the primary. Every answer
+ * starts with 【name · machine】 so it is clear who is talking.
+ *
+ * A pinned instance (o.pinned) is a separate Feishu app bound to one bot: all
+ * its messages go to that bot, no routing commands, and in a group it only
+ * answers when it is @-mentioned.
  * The secret is write-only: publicFeishu() reports hasSecret only.
  */
 
@@ -135,7 +145,11 @@ export async function loadFeishu(file) {
     appSecret: String(r.appSecret || ''),
     botId: String(r.botId || ''),
     pairCode: /^\d{6}$/.test(String(r.pairCode)) ? String(r.pairCode) : newPairCode(),
-    users: Array.isArray(r.users) ? r.users.filter((u) => u && u.openId) : [],
+    users: Array.isArray(r.users) ? r.users.filter((u) => u && u.openId).map((u) => ({
+      openId: String(u.openId),
+      since: u.since || null,
+      target: u.target && u.target.botId ? { botId: String(u.target.botId), machine: String(u.target.machine || ''), name: String(u.target.name || u.target.botId) } : null,
+    })) : [],
   };
 }
 
@@ -158,6 +172,7 @@ async function saveFeishuFile(file, cfg) {
  *   resolveRemote / askRemote / listRemote   bots on the human's other machines ("@name", "@name@machine")
  *   workspaceDir
  *   machineName () => string
+ *   pinned      {botId, machine, name}: this app is bound to one bot (machine '' = this one)
  *   fetchImpl, WebSocketImpl, openUrl   (tests)
  */
 export function createFeishu(o) {
@@ -178,6 +193,8 @@ export function createFeishu(o) {
   const feishuTurns = new Map(); // turnId -> {messageId, chatId, texts: []}
   const lastChat = new Map(); // botId -> {chatId, messageId, at}
   const waitingApproval = new Map(); // chatId -> approvalId
+  const picks = new Map(); // openId -> {list, until} after "切换"
+  let unsubscribe = null;
 
   const log = (...a) => console.log('[feishu]', ...a);
 
@@ -295,6 +312,63 @@ export function createFeishu(o) {
     return '';
   }
 
+  const here = () => o.machineName?.() || '这台机器';
+  const localBot = (id) => (o.getBots?.() || []).find((b) => b.id === id);
+  const primaryTarget = () => ({ botId: botId(), machine: '', name: localBot(botId())?.name || '助理' });
+  const labelOf = (t) => `【${t.name} · ${t.machine || here()}】`;
+  const sayWho = (t) => `${t.name}（${t.machine || here()}）`;
+
+  /** Every bot this person can switch to: this machine first, then the others. */
+  async function allTargets() {
+    const list = (o.getBots?.() || []).map((b) => ({ botId: b.id, machine: '', name: b.name }));
+    const far = typeof o.listRemote === 'function' ? await o.listRemote().catch(() => []) : [];
+    for (const m of far) for (const b of m.bots || []) list.push({ botId: b.id, machine: m.machine, name: b.name });
+    return list;
+  }
+
+  /** The person's target, if it still exists; otherwise the primary bot. */
+  function currentTarget(user) {
+    const t = user?.target;
+    if (!t) return primaryTarget();
+    if (!t.machine && !localBot(t.botId)) return primaryTarget();
+    return t;
+  }
+
+  async function setTarget(user, target) {
+    const same = (a, b) => (a?.botId || '') === (b?.botId || '') && (a?.machine || '') === (b?.machine || '');
+    const isPrimary = !target || (!target.machine && target.botId === botId());
+    const next = isPrimary ? null : target;
+    if (same(user.target, next)) return;
+    user.target = next;
+    await saveFeishuFile(o.file, cfg);
+  }
+
+  /** Send the message to one bot: a turn here, or a hand-off to another machine. */
+  async function dispatch(to, target, full, spoken) {
+    const label = o.pinned ? '' : labelOf(target);
+    if (target.machine) {
+      if (typeof o.askRemote !== 'function') { await sendText(to, `这台机器连不上「${target.machine}」。`); return; }
+      await sendText(to, `已转给「${target.machine}」上的${target.name}，做完把结果发给你。`).catch(() => {});
+      try {
+        const r = await o.askRemote({ machine: target.machine, botId: target.botId, text: full });
+        const reply = r.reply || '（没有回答）';
+        await deliver(to, [label ? `${label}\n${reply}` : reply], '', (r.fetched || []).map((x) => x.to));
+      } catch (err) {
+        await sendText(to, `没能联系上「${target.machine}」上的${target.name}：${err.message}`).catch(() => {});
+      }
+      return;
+    }
+    const id = target.botId;
+    const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
+    feishuTurns.set(turnId, { ...to, texts: [], spoken, label });
+    lastChat.set(id, { ...to, at: Date.now() });
+    o.runtime.runTurn({ botId: id, text: `${full}\n\n（这条消息来自飞书，用户在手机上；回复会发回飞书。飞书这条通道能收文字、图片和语音：你回复里写到的工作区图片和视频，会作为真正的图片、视频发过去；用户发语音来时，你的文字回复也会自动附一条语音。所以别说飞书只能发文字。）`, source: 'feishu', turnId })
+      .catch(async (err) => {
+        feishuTurns.delete(turnId);
+        await sendText(to, `没能开始：${err.message}`).catch(() => {});
+      });
+  }
+
   const YES = /^(批准|同意|可以|好|行|ok|yes|允许|确认)[。!！.]*$/i;
   const NO = /^(拒绝|不行|不要|别|no|取消)[。!！.]*$/i;
 
@@ -303,6 +377,8 @@ export function createFeishu(o) {
     const sender = event.sender?.sender_id?.open_id || '';
     const to = { chatId: message.chat_id, messageId: message.message_id };
     if (!sender || event.sender?.sender_type === 'app') return;
+    // A bot of its own in a group answers only when someone @-mentions it.
+    if (o.pinned && message.chat_type === 'group' && !(message.mentions || []).length) return;
     const text = textOf(message);
 
     // Pairing: nothing runs for someone this machine has not met.
@@ -312,7 +388,9 @@ export function createFeishu(o) {
         cfg.pairCode = newPairCode(); // one code, one person
         await saveFeishuFile(o.file, cfg);
         o.bus?.emit({ type: 'feishu.changed' });
-        await sendText(to, `已连接到「${o.machineName?.() || '这台机器'}」的助理。直接发消息给我就行，图片和语音也可以。`);
+        await sendText(to, o.pinned
+          ? `已连接到「${o.pinned.machine || here()}」的${o.pinned.name}。直接发消息给我就行，图片和语音也可以。`
+          : `已连接到「${here()}」的助理。直接发消息给我就行，图片和语音也可以。发「切换」可以换别的机器人。`);
       } else {
         await sendText(to, '还没配对：在电脑上的夜班里打开「设置 → 飞书」，把配对码发给我。');
       }
@@ -365,48 +443,69 @@ export function createFeishu(o) {
       return;
     }
 
+    const user = cfg.users.find((u) => u.openId === sender);
+    // A Feishu app of its own: everything goes to its bot.
+    if (o.pinned) { await dispatch(to, o.pinned, full, spoken); return; }
+    const said = full.trim();
+
     // "机器人列表": who can be reached with @name.
-    if (/^(机器人列表|有哪些机器人|\/bots)$/i.test(full.trim())) {
-      const here = (o.getBots?.() || []).map((b) => b.name);
+    if (/^(机器人列表|有哪些机器人|\/bots)$/i.test(said)) {
+      const names = (o.getBots?.() || []).map((b) => b.name);
       const far = typeof o.listRemote === 'function' ? await o.listRemote().catch(() => []) : [];
-      const lines = [`这台机器：${here.join('、') || '（没有）'}`, ...far.map((m) => `「${m.machine}」：${(m.bots || []).map((b) => b.name).join('、') || '（没有）'}`)];
-      await sendText(to, `${lines.join('\n')}\n\n消息开头写「@名字」就直接找它，比如「@${here[1] || here[0] || '助理'} 帮我…」；别的机器上重名时写「@名字@机器名」。不写就找主助理。`);
+      const lines = [`这台机器：${names.join('、') || '（没有）'}`, ...far.map((m) => `「${m.machine}」：${(m.bots || []).map((b) => b.name).join('、') || '（没有）'}`)];
+      await sendText(to, `${lines.join('\n')}\n\n现在在跟 ${sayWho(currentTarget(user))} 说话。发「切换」按编号换人；或者消息开头写「@名字」，之后的消息都发给它（别的机器上重名时写「@名字@机器名」）；发「/home」回到主助理。`);
       return;
     }
 
-    // "@编剧 写个开头" goes straight to that bot - on this machine or, when it
-    // is not here (or "@编剧@Ubuntu" says where), on one of the other machines.
-    let id = botId();
+    // "/home": back to the primary bot.
+    if (/^(\/home|回主助理|找主助理)$/i.test(said)) {
+      await setTarget(user, null);
+      await sendText(to, `接下来发给 ${sayWho(primaryTarget())}。`);
+      return;
+    }
+
+    // "切换": a numbered list of every bot; the next message "2" picks one.
+    if (/^(切换|换人|\/to)$/i.test(said)) {
+      const list = await allTargets();
+      picks.set(sender, { list, until: Date.now() + 5 * 60 * 1000 });
+      const now = currentTarget(user);
+      const lines = list.map((t, n) => `${n + 1}. ${t.name}（${t.machine || here()}）${t.botId === now.botId && (t.machine || '') === (now.machine || '') ? ' ← 现在' : ''}`);
+      await sendText(to, `回一个数字换人（5 分钟内有效）：\n${lines.join('\n')}`);
+      return;
+    }
+    const pick = picks.get(sender);
+    if (pick && /^\d{1,3}$/.test(said)) {
+      picks.delete(sender);
+      if (Date.now() > pick.until) { await sendText(to, '这个列表过期了，再发一次「切换」。'); return; }
+      const chosen = pick.list[Number(said) - 1];
+      if (!chosen) { await sendText(to, `没有第 ${said} 个，再发一次「切换」看看列表。`); return; }
+      await setTarget(user, chosen);
+      await sendText(to, `接下来发给 ${sayWho(chosen)}。发「切换」可以换人，「/home」回到主助理。`);
+      return;
+    }
+
+    // "@编剧 写个开头": that bot answers, and stays the one this person talks
+    // to. On this machine or, when it is not here (or "@编剧@Ubuntu" says
+    // where), on one of the other machines. An unknown name goes to the target.
+    let target = currentTarget(user);
     const at = spoken ? null : /^[@＠]([^\s@＠，,:：]{1,30})(?:[@＠]([^\s，,:：]{1,30}))?[\s，,:：]*/.exec(full);
     if (at) {
       const want = at[1].toLowerCase();
-      const local = at[2] ? null : (o.getBots?.() || []).find((b) => b.id.toLowerCase() === want || String(b.name).toLowerCase() === want);
       const rest = full.slice(at[0].length).trim();
-      if (local && rest) {
-        id = local.id;
-        full = rest;
-      } else if (!local && rest && typeof o.resolveRemote === 'function') {
+      const local = at[2] ? null : (o.getBots?.() || []).find((b) => b.id.toLowerCase() === want || String(b.name).toLowerCase() === want);
+      let found = local ? { botId: local.id, machine: '', name: local.name } : null;
+      if (!found && typeof o.resolveRemote === 'function') {
         const far = await o.resolveRemote(at[2] ? `${at[1]}@${at[2]}` : at[1]).catch(() => null);
-        if (far) {
-          await sendText(to, `已转给「${far.info.machine}」上的${far.info.name}，做完把结果发给你。`).catch(() => {});
-          try {
-            const r = await o.askRemote({ machine: far.info.machine, botId: far.info.botId, text: rest });
-            await deliver(to, [`${far.info.name}（${far.info.machine}）：${r.reply || '（没有回答）'}`], '', (r.fetched || []).map((f) => f.to));
-          } catch (err) {
-            await sendText(to, `没能联系上「${far.info.machine}」上的${far.info.name}：${err.message}`).catch(() => {});
-          }
-          return;
-        }
+        if (far) found = { botId: far.info.botId, machine: far.info.machine, name: far.info.name };
+      }
+      if (found) {
+        await setTarget(user, found);
+        target = found;
+        if (!rest) { await sendText(to, `接下来发给 ${sayWho(found)}。发「切换」可以换人，「/home」回到主助理。`); return; }
+        full = rest;
       }
     }
-    const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
-    feishuTurns.set(turnId, { ...to, texts: [], spoken });
-    lastChat.set(id, { ...to, at: Date.now() });
-    o.runtime.runTurn({ botId: id, text: `${full}\n\n（这条消息来自飞书，用户在手机上；回复会发回飞书。飞书这条通道能收文字、图片和语音：你回复里写到的工作区图片和视频，会作为真正的图片、视频发过去；用户发语音来时，你的文字回复也会自动附一条语音。所以别说飞书只能发文字。）`, source: 'feishu', turnId })
-      .catch(async (err) => {
-        feishuTurns.delete(turnId);
-        await sendText(to, `没能开始：${err.message}`).catch(() => {});
-      });
+    await dispatch(to, target, full, spoken);
   }
 
   // ---------------------------------------------------------------- results out
@@ -452,7 +551,8 @@ export function createFeishu(o) {
         let extra = '';
         if (ev.waitingFor === 'takeover') extra = '\n\n（这一步要在电脑上的夜班里接管屏幕来完成。）';
         if (ev.waitingFor === 'login') extra = '\n\n（需要在电脑上的夜班里填写登录信息，密码不要发在飞书里。）';
-        deliver(turn, turn.texts.concat(extra ? [extra] : []), ev.summary)
+        const said = turn.texts.concat(extra ? [extra] : []).join('\n\n').trim() || String(ev.summary || '').trim();
+        deliver(turn, [turn.label && said ? `${turn.label}\n${said}` : said], '')
           // Asked by voice: the answer comes back as a voice message as well.
           .then(() => (turn.spoken ? sendVoice(turn, turn.texts.join('\n\n').trim() || String(ev.summary || '')).catch((err) => log('voice reply failed:', err.message)) : null))
           .catch((err) => log('deliver failed:', err.message));
@@ -576,7 +676,7 @@ export function createFeishu(o) {
   return {
     async load() {
       cfg = await loadFeishu(o.file);
-      o.bus?.subscribe(onBus);
+      if (!unsubscribe && o.bus) unsubscribe = o.bus.subscribe(onBus) || null;
       start();
     },
     /** Patch {enabled?, appId?, appSecret?, botId?, newPairCode?}; appSecret "" keeps the old one. */
@@ -607,13 +707,20 @@ export function createFeishu(o) {
         hasSecret: Boolean(cfg.appSecret),
         botId: cfg.botId,
         pairCode: cfg.pairCode,
-        users: cfg.users.map((u) => ({ openId: u.openId, since: u.since })),
+        users: cfg.users.map((u) => ({ openId: u.openId, since: u.since, talkingTo: u.target ? sayWho(u.target) : '' })),
+        pinned: o.pinned || null,
         connected: status.connected,
         error: status.error,
         since: status.since,
       };
     },
     stop,
+    /** Stop for good (a pinned app being removed). */
+    dispose() {
+      stop();
+      if (typeof unsubscribe === 'function') unsubscribe();
+      unsubscribe = null;
+    },
     /** Send a text (and the pictures/videos it names) to everyone paired. -> how many got it */
     async push(text) {
       if (!cfg?.enabled || !cfg.appId || !cfg.appSecret || !cfg.users?.length) return 0;
