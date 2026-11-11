@@ -25,7 +25,7 @@ Set-Service sshd -StartupType Automatic; Start-Service sshd
 | 命令 | 覆盖 |
 | --- | --- |
 | `npm run check` | 语法 |
-| `npm run smoke` | 720 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 |
+| `npm run smoke` | 724 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 / 手机附件与语音 |
 | `npm run smoke:remote-mock` | 假 SSH 主机上走完"添加机器"：Linux、Windows、不支持的系统、Hub 起不来 |
 | `npm run check:i18n` | 所有界面中文都有英文 |
 
@@ -93,6 +93,8 @@ DESK_TARGET_HOST=<ip> DESK_TARGET_USER=<user> DESK_TARGET_PASS=<pass> npm run ve
 | 4.9 | 断网点「拒绝」 | 通知变成「这一步还没答复」，点开进入审批卡；联网后可在卡上拒绝 |
 | 4.10 | 审批还挂在手机上时，在电脑端批准 / 拒绝 | 手机上的对应审批通知自动消失，不留下已答复的卡 |
 | 4.11 | 审批等待期间切换 Wi-Fi / 断开网络再恢复 | App 在 45 秒内发现断流并重连；新审批仍能到达通知栏 |
+| 4.12 | 手机聊天里点 📎 选一张图发送 | 系统选择器弹出；输入框上方出现缩略图芯片；气泡带图；助理用 image_view 说出图片内容 |
+| 4.13 | 手机聊天里点 🎤 说一句话再点停止 | 首次弹系统麦克风授权；允许后录音，停止后转写文字落入输入框（http 局域网下走原生录音桥） |
 
 ## 5. 异常与恢复
 

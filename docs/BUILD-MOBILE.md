@@ -267,7 +267,7 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 - [ ] 内容分级问卷、目标受众、截图（手机 + 平板）、图标 512×512、feature graphic 1024×500
 - [ ] **明文 HTTP**：`usesCleartextTraffic="true"` 本身不违反 Play 政策，但审核会问"为什么需要明文"。理由要写清楚：Hub 是用户局域网内自建服务，不是公网明文。能改成 https（§1.1）就应该改，并把 manifest 里这个属性删掉
 - [ ] 新个人开发者账号有 **12 名测试者 / 14 天** 的封闭测试门槛（2023 起）
-- [ ] `versionCode` 每次上传必须递增 → 默认由 `package.json` 版本换算（`1.2.61` → `12061`），每次发版递增
+- [ ] `versionCode` 每次上传必须递增 → 默认由 `package.json` 版本换算（`1.2.62` → `12062`），每次发版递增
 
 ### 5.3 iOS / App Store
 
@@ -303,6 +303,8 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 | 审批通知卡片 → 通知内答复 → Hub 审计 `by: "device"` | ✅ OPPO 真机（1.2.61）：展开是与对话同构的卡片，独立分组不被折叠；两个按钮真实点击后审计记为设备 |
 | 其他客户端处理后通知自动清除 | ✅ OPPO 真机（1.2.61）：桌面端拒绝后，手机对应通知按分组消失 |
 | 通知深链定位审批卡 | ✅ OPPO 真机（1.2.61）：`?approval=&bot=` 打开对应机器与卡片并高亮 |
+| 手机附件（选图 → 上传 → 气泡缩略图 → image_view） | ✅ OPPO 真机（1.2.62）：WebView 里走 Web 端上传链路，系统选择器由 Capacitor 接管 |
+| 手机语音（http 局域网下的录音 → 转写） | ✅ OPPO 真机（1.2.62）：原生 MediaRecorder 桥接成 `window.desk`，转写文字落入输入框 |
 | `./gradlew assembleRelease` 签名包 | ⚠️ 本机**没有 release keystore**，只能出 unsigned；签名包由 CI 用 secrets 出 |
 | `xcodebuild archive` / IPA | ❌ 本机无 Xcode，**IPA 未构建**，只能在 macOS 或 CI 上跑 |
 | iOS 真机行为（cookie、ATS、局域网权限） | ❌ 未验证；需真机自测 |
