@@ -2843,8 +2843,8 @@
     --on-accent: #0A0A0A;
     --brand: #7C5CFF; --link: #A78BFA;
     --green: #22C55E; --amber: #F59E0B; --red: #EF4444;
-    --bubble-user: #1C1C1C; --bubble-user-border: transparent; --bubble-user-text: #F5F5F5;
-    --bubble-bot: #141414; --bubble-bot-border: transparent; --bubble-shadow: none;
+    --bubble-user: #E8E8E8; --bubble-user-border: transparent; --bubble-user-text: #0A0A0A;
+    --bubble-bot: #171717; --bubble-bot-border: transparent; --bubble-shadow: none;
     --float-shadow: none;
   }
   html[data-theme="light"] {
@@ -2857,8 +2857,8 @@
     --on-accent: #FFFFFF;
     --brand: #6A4CFF; --link: #6A4CFF;
     --green: #16A34A; --amber: #B45309; --red: #DC2626;
-    --bubble-user: #EDEDED; --bubble-user-border: transparent; --bubble-user-text: #0A0A0A;
-    --bubble-bot: #F5F5F5; --bubble-bot-border: transparent; --bubble-shadow: none;
+    --bubble-user: #1F1F1F; --bubble-user-border: transparent; --bubble-user-text: #FFFFFF;
+    --bubble-bot: #F3F3F3; --bubble-bot-border: transparent; --bubble-shadow: none;
     --float-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
   body { background: var(--bg); }
@@ -2871,6 +2871,12 @@
   .bubble.md code { background: var(--panel-2); }
   html[data-theme="light"] .bubble.md .md-code, .bubble.md .md-code { background: var(--panel); border-color: transparent; }
   .composer-box { box-shadow: var(--float-shadow); }
+  .row.user .bubble,
+  html[data-theme="light"] .row.user .bubble { border: 0; border-radius: 20px 20px 6px 20px; }
+  .row.assistant .bubble,
+  html[data-theme="light"] .row.assistant .bubble { border: 0; border-radius: 20px 20px 20px 6px; }
+  .row.user .bubble a { color: inherit; text-decoration: underline; }
+  .row.user .bubble code { background: rgba(127, 127, 127, 0.22); color: inherit; }
   .approval { box-shadow: none; }
   html[data-theme="light"] .approval { box-shadow: none; }
   html[data-theme="light"] .composer-box { box-shadow: var(--float-shadow); }
@@ -2888,12 +2894,12 @@
     .row.user .bubble,
     html[data-theme="light"] .row.user .bubble {
       background: var(--bubble-user); color: var(--bubble-user-text); border: 0;
-      border-radius: 20px; padding: 10px 16px; max-width: 80%; font-size: 15px;
+      border-radius: 20px 20px 6px 20px; padding: 10px 16px; max-width: 80%; font-size: 15px;
     }
     .row.assistant .bubble,
     html[data-theme="light"] .row.assistant .bubble {
-      background: transparent; border: 0; box-shadow: none; padding: 0;
-      max-width: 100%; border-radius: 0; font-size: 15px; line-height: 1.6;
+      background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;
+      max-width: 88%; border-radius: 20px 20px 20px 6px; font-size: 15px; line-height: 1.6;
     }
     .bubble.md .md-h { font-size: 17px; }
     .chip, html[data-theme="light"] .chip { border: 0; background: transparent; border-radius: 12px; font-size: 13px; }
