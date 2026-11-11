@@ -68,7 +68,7 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, DESKTOP_IDLE_MS } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, DESKTOP_IDLE_MS, fullDesktopInstalled } from './desktops.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
@@ -954,7 +954,7 @@ route('GET', /^\/api\/providers$/, async () => ({ providers: publicProviderCatal
 
 // Per-bot desktops. `support` explains why it is off (non-Linux hub, missing
 // Xvfb) so the UI can say something more useful than "failed".
-route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops(), mode: getDesktopMode(), idleMinutes: Math.round(DESKTOP_IDLE_MS / 60000) }));
+route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops(), mode: getDesktopMode(), idleMinutes: Math.round(DESKTOP_IDLE_MS / 60000), fullInstalled: fullDesktopInstalled() }));
 
 // Light (openbox only) or full (XFCE) desktops for the bots; new desktops use it.
 route('PUT', /^\/api\/desktops\/mode$/, async (_req, _res, { body, state }) => {
@@ -962,7 +962,7 @@ route('PUT', /^\/api\/desktops\/mode$/, async (_req, _res, { body, state }) => {
   writeJsonSyncAtomic(path.join(P.dataDir, 'desktop.json'), { mode });
   await audit({ kind: 'desktop.mode', mode });
   state.bus.emit({ type: 'settings.changed', section: 'machines' });
-  return { mode };
+  return { mode, fullInstalled: fullDesktopInstalled() };
 });
 
 route('GET', /^\/api\/bots\/(?<botId>[^/]+)\/desktop$/, async (_req, _res, { params }) => {

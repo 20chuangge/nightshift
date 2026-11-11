@@ -4208,6 +4208,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('desktops: the light/full switch is in Settings → 机器 and wired', page.includes('id="desktop-mode"') && page.includes("$('desktop-mode')?.addEventListener('change', saveDesktopMode)") && page.includes('loadDesktopMode().catch'));
       const setup = await readText('../hub/setup-linux.sh');
       check('desktops: new Linux machines get openbox for light desktops', setup.includes('has openbox || pm_install openbox x11-xserver-utils') && setup.includes('has openbox || pm_install openbox xsetroot'));
+      check('desktops: new Linux machines no longer install XFCE; the bot session falls back to openbox without it', !/pm_install xfce4|groupinstall "Xfce"/.test(setup) && setup.includes('exec openbox') && !/for bin in Xvfb x11vnc websockify xfce4-session/.test(setup));
+      const deskSrc = await readText('../src/desktops.mjs');
+      check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);
     }
     const page = await readText('../public/index.html');
     check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));

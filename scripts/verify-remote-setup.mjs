@@ -99,7 +99,7 @@ const PREFLIGHT = {
   sudo: 'sudo -n true >/dev/null 2>&1 && echo passwordless || echo needs-password',
   packageManager: 'for p in apt-get dnf yum; do command -v "$p" >/dev/null 2>&1 && echo "$p"; done',
   node: 'node -v 2>/dev/null || echo none',
-  desktopTools: 'for t in Xvfb x11vnc websockify xfce4-session gnome-session; do command -v "$t" >/dev/null 2>&1 && echo "$t"; done',
+  desktopTools: 'for t in Xvfb x11vnc websockify openbox xfce4-session gnome-session; do command -v "$t" >/dev/null 2>&1 && echo "$t"; done',
   memory: "awk '/MemTotal/ {print int($2/1024) \" MB\"}' /proc/meminfo",
 };
 
@@ -110,7 +110,7 @@ const POSTFLIGHT = {
   health: `(curl -fsS -m 3 http://127.0.0.1:${port}/api/health || wget -qO- -T 3 http://127.0.0.1:${port}/api/health) 2>/dev/null || echo unreachable`,
   unit: "sed -n 's/^WorkingDirectory=//p;s/^ExecStart=//p' /etc/systemd/system/desk-hub.service 2>/dev/null || echo missing",
   sessionHelper: 'ls -l /usr/local/bin/desk-bot-session 2>/dev/null || echo missing',
-  desktopTools: 'for t in Xvfb x11vnc websockify xfce4-session gnome-session; do command -v "$t" >/dev/null 2>&1 && echo "$t"; done',
+  desktopTools: 'for t in Xvfb x11vnc websockify openbox xfce4-session gnome-session; do command -v "$t" >/dev/null 2>&1 && echo "$t"; done',
   sudoers: 'ls /etc/sudoers.d/desk-hub 2>/dev/null || echo missing',
 };
 // Windows: works from cmd.exe or PowerShell as the OpenSSH default shell.
@@ -187,7 +187,7 @@ try {
       ['本机 /api/health 应答', /"ok"\s*:\s*true/.test(pf.health.output)],
       ['拿到了配对码', Boolean(job.pairCode)],
       ['每 Bot 桌面会话脚本已安装', !/missing/.test(pf.sessionHelper.output)],
-      ['Bot 桌面需要的程序齐全（Xvfb、x11vnc、websockify、XFCE）', ['Xvfb', 'x11vnc', 'websockify', 'xfce4-session'].every((t) => pf.desktopTools.output.includes(t))],
+      ['Bot 桌面需要的程序齐全（Xvfb、x11vnc、websockify、openbox 或 XFCE）', ['Xvfb', 'x11vnc', 'websockify'].every((t) => pf.desktopTools.output.includes(t)) && /openbox|xfce4-session/.test(pf.desktopTools.output)],
     ];
     console.log('\n=== 结论检查 ===');
     for (const [name, ok] of checks) console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);

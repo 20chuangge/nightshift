@@ -197,13 +197,16 @@ node_ok "${NODE_BIN:-/nonexistent}" || { echo "[desk] Node.js 安装失败（下
 say "Node $("$NODE_BIN" -v)：$NODE_BIN"
 
 # ---------------------------------------------------------------------------
-say "3/7 每个 Bot 的桌面（Xvfb、x11vnc、websockify、noVNC、XFCE、Chromium）"
-# These are the slow part of a fresh install (XFCE, and Chromium, which is a
+say "3/7 每个 Bot 的桌面（Xvfb、x11vnc、websockify、noVNC、openbox、Chromium）"
+# Bots get a light desktop: the openbox window manager, no XFCE (it is installed
+# only when someone picks the full desktop in Settings).
+# These are the slow part of a fresh install (Chromium, which is a
 # ~180 MB snap on Ubuntu). The Hub does not need them to start, so they are
 # installed in the background once it is running and paired; the screen panel
 # shows the progress meanwhile.
 desktop_complete() {
-  for bin in Xvfb x11vnc websockify xfce4-session; do has "$bin" || return 1; done
+  for bin in Xvfb x11vnc websockify; do has "$bin" || return 1; done
+  has openbox || has xfce4-session || return 1
   [ -d /usr/share/novnc ] || return 1
   has chromium || has chromium-browser || has google-chrome || return 1
 }
@@ -238,6 +241,12 @@ MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 if [ "${DESK_BOT_GNOME:-0}" = 1 ] && command -v gnome-session >/dev/null 2>&1 && [ "$MEM_MB" -ge 6000 ]; then
   export XDG_CURRENT_DESKTOP=GNOME
   exec dbus-launch --exit-with-session gnome-session
+fi
+if ! command -v xfce4-session >/dev/null 2>&1; then
+  # No XFCE on this machine (new installs only get openbox): a window manager
+  # still gives a usable screen instead of a black one.
+  command -v xsetroot >/dev/null 2>&1 && xsetroot -solid '#2b2b2b'
+  exec openbox
 fi
 export XDG_CURRENT_DESKTOP=XFCE
 # Skip the panel's first-run "default or empty config?" dialog on a new desktop.
@@ -454,11 +463,10 @@ fi
 status running "选下载源"
 pick_mirror
 if [ "$PM" = apt ]; then
-  status running "安装屏幕组件和 XFCE 桌面（浏览器同时在下载）"
+  status running "安装屏幕组件（浏览器同时在下载）"
   pm_install xvfb x11vnc websockify novnc dbus-x11
   # Light bot desktops: a window manager only (~150 MB per bot instead of ~240 MB with XFCE).
   has openbox || pm_install openbox x11-xserver-utils
-  has xfce4-session || pm_install xfce4 xfce4-terminal
   if [ -n "$SNAP_PID" ]; then
     status running "等浏览器 Chromium 装完（最大的一步，约 180 MB）"
     wait "$SNAP_PID" || true
@@ -482,11 +490,10 @@ else
   has openbox || pm_install openbox xsetroot
   status running "安装浏览器 Chromium"
   pm_install chromium
-  status running "安装 XFCE 桌面"
-  has xfce4-session || "$PM" -y -q groupinstall "Xfce" >/dev/null 2>&1 || pm_install xfce4-session xfwm4 xfdesktop xfce4-panel xfce4-terminal
 fi
 missing=""
-for bin in Xvfb x11vnc websockify xfce4-session; do has "$bin" || missing="$missing $bin"; done
+for bin in Xvfb x11vnc websockify; do has "$bin" || missing="$missing $bin"; done
+has openbox || has xfce4-session || missing="$missing openbox"
 [ -d /usr/share/novnc ] || missing="$missing noVNC"
 has chromium || has chromium-browser || missing="$missing Chromium"
 if [ -z "$missing" ]; then status done ""; else status failed "没装上：$missing"; fi

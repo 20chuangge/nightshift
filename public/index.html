@@ -9403,7 +9403,10 @@ async function loadDesktopMode() {
   if (box.hidden) return;
   $('desktop-mode').value = r.mode;
   const running = (r.desktops || []).filter((d) => d.running).length;
-  $('desktop-mode-note').textContent = `每个机器人有一块自己的屏幕，开着的有 ${running} 块。没人用 ${r.idleMinutes || 15} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。`;
+  const noXfce = r.mode === 'full' && r.fullInstalled === false
+    ? '这台机器没装 XFCE，现在仍用轻量桌面。要完整桌面，先在这台机器上运行 sudo apt install xfce4（Rocky 等用 sudo dnf groupinstall Xfce），或者让机器人帮你装。'
+    : '';
+  $('desktop-mode-note').textContent = `每个机器人有一块自己的屏幕，开着的有 ${running} 块。没人用 ${r.idleMinutes || 15} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。${noXfce ? ` ${noXfce}` : ''}`;
 }
 
 async function saveDesktopMode() {

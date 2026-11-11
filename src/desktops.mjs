@@ -41,6 +41,11 @@ let dataDir = '';
 let desktopMode = process.env.DESK_DESKTOP_MODE === 'full' ? 'full' : 'light';
 export function setDesktopMode(mode) { desktopMode = mode === 'full' ? 'full' : 'light'; return desktopMode; }
 export function getDesktopMode() { return desktopMode; }
+/** Is the full (XFCE) desktop installed here? */
+export function fullDesktopInstalled() {
+  if (process.platform === 'win32') return false;
+  try { return spawnSync('sh', ['-c', 'command -v xfce4-session'], { encoding: 'utf8' }).status === 0; } catch { return false; }
+}
 
 // A desktop nobody used for this long is stopped (it starts again in about two
 // seconds when needed; the bot's browser profile, logins included, is on disk).
@@ -318,7 +323,10 @@ export async function ensureDesktop(botId) {
     catch { return false; }
   };
   let sessionMode = 'full';
-  if (desktopMode === 'light' && have('openbox')) {
+  // "Full" on a machine without XFCE (new installs only get openbox) would be a
+  // black screen: use openbox and let Settings say how to get XFCE.
+  const wantLight = desktopMode === 'light' || !have('xfce4-session');
+  if (wantLight && have('openbox')) {
     // Light: openbox alone, with the same per-display runtime dir the full
     // session uses (a shared /run/user/<uid> confused the session with a
     // logged-in GNOME one).

@@ -91,7 +91,7 @@ function respond(command) {
   if (command.includes('/api/health')) return [0, '{"ok":true,"version":"1.0.0"}\n'];
   if (command.includes('desk-bot-session')) return [0, '-rwxr-xr-x 1 root root 600 /usr/local/bin/desk-bot-session\n'];
   if (command.includes('PRETTY_NAME')) return [0, 'Ubuntu 24.04 LTS\n'];
-  if (command.includes('for t in Xvfb')) return [0, 'Xvfb\nx11vnc\nwebsockify\nxfce4-session\n'];
+  if (command.includes('for t in Xvfb')) return [0, 'Xvfb\nx11vnc\nwebsockify\nopenbox\n'];
   return [0, ''];
 }
 

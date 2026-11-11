@@ -1456,4 +1456,7 @@ window.DESK_I18N_EN = {
   "完整：XFCE 桌面": "Full: the XFCE desktop",
   "每个机器人有一块自己的屏幕，开着的有 {0} 块。没人用 {1} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。": "Each bot has a screen of its own; {0} open now. One nobody uses for {1} minutes is closed and opens again when needed (browser logins are kept). A change applies to desktops opened after it.",
   "已保存，新打开的桌面会用这个": "Saved; desktops opened from now on use it",
+  "这台机器没装 XFCE，现在仍用轻量桌面。要完整桌面，先在这台机器上运行 sudo apt install xfce4（Rocky 等用 sudo dnf groupinstall Xfce），或者让机器人帮你装。": "XFCE is not installed on this machine, so the light desktop is still used. For the full desktop, run sudo apt install xfce4 on it first (sudo dnf groupinstall Xfce on Rocky and similar), or ask a bot to install it.",
+  "每个机器人有一块自己的屏幕，开着的有 {0} 块。没人用 {1} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。{2}": "Each bot has a screen of its own; {0} open now. One nobody uses for {1} minutes is closed and opens again when needed (browser logins are kept). A change applies to desktops opened after it.{2}",
+  " {0}": " {0}",
 };
