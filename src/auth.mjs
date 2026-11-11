@@ -191,7 +191,9 @@ export async function rotatePairingCode(security) {
  */
 export function evaluateAuth(req, security, devices, proxy = {}) {
   const address = clientIp(req, proxy);
-  if (isLoopbackAddress(address)) {
+  // The public port is bound to 127.0.0.1 behind a tunnel: the socket address
+  // proves nothing about the caller, so that port never counts as local.
+  if (!req?.viaPublic && isLoopbackAddress(address)) {
     return { required: false, authorized: true, mode: 'local', local: true, address };
   }
 

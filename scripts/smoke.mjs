@@ -85,6 +85,7 @@ async function stage(name, fn) {
 let child = null;
 let home = null;
 let base = '';
+let publicBase = '';
 
 async function main() {
   home = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-'));
@@ -243,6 +244,7 @@ async function bootServer() {
   const started = await startServerChild(home);
   child = started.child;
   base = started.url;
+  publicBase = started.ready?.publicPort ? `http://127.0.0.1:${started.ready.publicPort}` : '';
   return started;
 }
 
@@ -4405,6 +4407,56 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("req.auth?.deviceId ? 'device' : 'human'") &&
       srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by)"));
+  }
+  // Public port (G1): a tunnel socket that never counts as the local human.
+  {
+    const pubHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-public-'));
+    await seedHome(pubHome);
+    const started = await startServerChild(pubHome, { HOST: '0.0.0.0', ASSIST_ALLOW_REMOTE: '1' });
+    const normalBase = `http://127.0.0.1:${started.ready.port}`;
+    const pubBase = `http://127.0.0.1:${started.ready.publicPort}`;
+    try {
+      const noAuth = await fetch(`${pubBase}/api/settings`);
+      check('public port: a tunnel caller is never the local human', noAuth.status === 401);
+      check('public port: HSTS is sent', /max-age=/.test(noAuth.headers.get('strict-transport-security') || ''));
+      const eight = await fetch(`${pubBase}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: '12345678' }) });
+      const eightJson = await eight.json().catch(() => ({}));
+      check('public port: the 8-digit code is refused there', eight.status === 403 && eightJson?.error?.code === 'PAIR_CODE_NOT_ALLOWED_PUBLIC');
+      const made = await fetch(`${normalBase}/api/pairing/link`, { method: 'POST' }).then((r) => r.json());
+      const link = (made.links || []).find((l) => l.kind === 'lan') || (made.links || [])[0];
+      const token = new URL(link.url).searchParams.get('pair');
+      const paired = await fetch(`${pubBase}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: token, client: 'app' }) });
+      const pairedJson = await paired.json().catch(() => ({}));
+      check('public port: the QR one-time token pairs there', paired.status === 200 && String(pairedJson.token || '').length >= 16);
+      check('public port: its session cookie is Secure', /;\s*secure/i.test(paired.headers.get('set-cookie') || ''));
+      const bearer = pairedJson.token;
+      const localOnly = await fetch(`${pubBase}/api/remote/push-update`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` }, body: '{}' });
+      check('public port: local-only routes still refuse a tunnel caller', localOnly.status === 403);
+      const ctrl = new AbortController();
+      const stream = await fetch(`${pubBase}/api/stream?botId=chief`, { headers: { authorization: `Bearer ${bearer}`, accept: 'text/event-stream' }, signal: ctrl.signal });
+      check('public port: SSE works there with a device token', stream.status === 200 && /text\/event-stream/.test(stream.headers.get('content-type') || ''));
+      ctrl.abort();
+      let last = null;
+      for (let i = 0; i < 21; i += 1) {
+        last = await fetch(`${pubBase}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: `deadbeef${i}` }) });
+      }
+      const lastJson = await last.json().catch(() => ({}));
+      check('public port: twenty failures pause public pairing', last.status === 429 && lastJson?.error?.code === 'PAIR_PAUSED_PUBLIC');
+    } finally {
+      await stopProcess(started.child);
+    }
+  }
+  {
+    const pageG = await readText('../public/index.html');
+    const funnelSrc = await readText('../src/funnel.mjs');
+    const srvG = await readText('../src/server.mjs');
+    check('public access: the settings card, QR tab and per-machine switches are wired',
+      pageG.includes('id="funnel-enabled"') && pageG.includes('loadFunnel') &&
+      pageG.includes("public: '任何网络'") && pageG.includes('data-funnel='));
+    check('funnel: the real CLI verbs are used and the admin link is surfaced',
+      funnelSrc.includes("'funnel'") && funnelSrc.includes("'--bg'") && funnelSrc.includes("'status'") &&
+      funnelSrc.includes("'--json'") && funnelSrc.includes('login.tailscale.com') &&
+      srvG.includes('/^\\/api\\/funnel$/') && srvG.includes("section: 'network'"));
   }
 
 }

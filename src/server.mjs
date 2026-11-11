@@ -71,6 +71,7 @@ import * as providersModule from './providers.mjs';
 import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop } from './desktops.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
+import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
@@ -583,7 +584,31 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // or data/tls/cert.pem + key.pem); without it, run a reverse proxy or use a
   // tunnel - see docs/HTTPS.md.
   const tls = loadTls();
-  const onRequest = (req, res) => {
+  const server = tls
+    ? https.createServer(tls, hubRequestHandler(state, false))
+    : http.createServer(hubRequestHandler(state, false));
+  if (tls) console.error('[assistant] TLS is on (HSTS + Secure cookies)');
+  attachHubUpgrade(server, state, false);
+
+  return {
+    server,
+    state,
+    port,
+    host,
+    // A separate socket for the tunnel: same routes, but it never counts as
+    // "the local human" no matter that it is bound to 127.0.0.1.
+    makePublicServer: () => {
+      const publicServer = http.createServer(hubRequestHandler(state, true));
+      attachHubUpgrade(publicServer, state, true);
+      return publicServer;
+    },
+  };
+}
+
+/** One request handler for both sockets; the public one carries a flag. */
+function hubRequestHandler(state, viaPublic) {
+  return (req, res) => {
+    if (viaPublic) req.viaPublic = true;
     handleRequest(req, res, state).catch((err) => {
       // Last-resort guard: no route may ever produce an unhandled rejection.
       console.error('[assistant] unhandled request error:', err);
@@ -591,12 +616,12 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       else res.end();
     });
   };
-  const server = tls ? https.createServer(tls, onRequest) : http.createServer(onRequest);
-  if (tls) console.error('[assistant] TLS is on (HSTS + Secure cookies)');
+}
 
-  // Bot desktops: websockify listens on 127.0.0.1 only; a viewer reaches it
-  // through this relay, which applies the same pairing check as the API.
+/** Bot desktop websocket relay, shared by the normal and the public socket. */
+function attachHubUpgrade(server, state, viaPublic) {
   server.on('upgrade', (req, socket, head) => {
+    if (viaPublic) req.viaPublic = true;
     const refuse = (status, text) => {
       try { socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch { /* gone */ }
     };
@@ -626,8 +651,6 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     upstream.on('error', () => socket.destroy());
     socket.on('close', () => upstream.destroy());
   });
-
-  return { server, state, port, host };
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +674,11 @@ async function handleRequest(req, res, state) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const pathname = safeDecode(url.pathname);
   const method = (req.method || 'GET').toUpperCase();
+
+  if (req.viaPublic) {
+    // The tunnel terminates TLS; tell the browser never to go back to http.
+    res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  }
 
   // The native app lives on its own origin (https://localhost in a Capacitor
   // WebView). It authenticates with a Bearer token, never a cookie, so the
@@ -847,13 +875,15 @@ function pairingInfo(state) {
   // Addresses a phone could use. Empty when the hub only listens on loopback:
   // the UI then says "turn on 允许手机连接" instead of showing a dead link.
   const urls = [];
+  const publicUrl = funnelPublicUrl();
+  if (publicUrl) urls.push({ kind: 'public', url: publicUrl });
   if (state.lanUrl) {
     const lanAddress = preferredLanAddress();
     const tailnetIp = tailnetAddress();
     if (lanAddress) urls.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
     if (tailnetIp) urls.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
   }
-  return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl) };
+  return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl || publicUrl) };
 }
 
 route('GET', /^\/api\/settings$/, async (_req, _res, { state }) => ({
@@ -1282,19 +1312,39 @@ route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
 });
 
 route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
-  const limit = state.pairLimiter.check(clientIp(req));
-  if (!limit.allowed) {
-    res.setHeader('retry-after', String(Math.max(1, Math.ceil((limit.retryAfterMs || 0) / 1000))));
-    throw httpError(429, 'PAIR_RATE_LIMITED', 'too many pairing attempts; wait a minute and try again');
+  if (req.viaPublic) {
+    const paused = publicPairPaused();
+    if (paused.paused) {
+      res.setHeader('retry-after', String(Math.max(1, Math.ceil(paused.retryAfterMs / 1000))));
+      throw httpError(429, 'PAIR_PAUSED_PUBLIC', 'too many failed public pairing attempts; try again later');
+    }
+  }
+  // The public port has its own global budget (below); the per-IP limiter would
+  // otherwise see one address for the whole internet and throttle real pairings.
+  if (!req.viaPublic) {
+    const limit = state.pairLimiter.check(clientIp(req));
+    if (!limit.allowed) {
+      res.setHeader('retry-after', String(Math.max(1, Math.ceil((limit.retryAfterMs || 0) / 1000))));
+      throw httpError(429, 'PAIR_RATE_LIMITED', 'too many pairing attempts; wait a minute and try again');
+    }
   }
 
   // Two ways in, both counted against the same rate limit: the 8-digit code a
   // human types, and the one-time token a QR code carries.
   const code = String(body?.code ?? body?.token ?? '').trim();
   if (!code) throw httpError(400, 'PAIR_CODE_REQUIRED', 'body needs { code }');
+  // A typed code is a shared secret that can be guessed; the public port only
+  // takes the one-time token a QR code carries.
+  if (req.viaPublic && /^\d{8}$/.test(code)) {
+    await notePublicPairFailure(state);
+    throw httpError(403, 'PAIR_CODE_NOT_ALLOWED_PUBLIC', 'the 8-digit code cannot be used on the public address; scan the QR code instead');
+  }
   if (!/^\d{8}$/.test(code)) {
     const link = state.pairLinks.consume(code);
-    if (!link) throw httpError(401, 'PAIR_INVALID_LINK', 'that code was already used or has expired; scan the code again');
+    if (!link) {
+      if (req.viaPublic) await notePublicPairFailure(state);
+      throw httpError(401, 'PAIR_INVALID_LINK', 'that code was already used or has expired; scan the code again');
+    }
   } else if (!safeEqual(code, state.security.code)) {
     throw httpError(401, 'PAIR_INVALID_CODE', 'that pairing code is not valid');
   }
@@ -1302,19 +1352,48 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   // Every paired client gets its own session, so Settings can list the phones
   // and remove one without logging the others out.
   const { device, sessionToken } = state.devices.add({ name: describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
-  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) }));
+  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) || Boolean(req.viaPublic) }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
   if (String(body?.client || '') === 'app') return { ok: true, device, token: sessionToken };
   return { ok: true, device };
 });
 
+// --- public pairing guard -----------------------------------------------------
+// The public port only accepts one-time tokens; 20 failures within an hour
+// pause public pairing for 15 minutes (audited once), so a scanner cannot
+// grind tokens from the whole internet.
+
+const publicPairLog = { fails: [], pausedUntil: 0 };
+
+function publicPairPaused() {
+  const now = Date.now();
+  if (publicPairLog.pausedUntil > now) return { paused: true, retryAfterMs: publicPairLog.pausedUntil - now };
+  return { paused: false };
+}
+
+async function notePublicPairFailure(state) {
+  const now = Date.now();
+  publicPairLog.fails = publicPairLog.fails.filter((t) => now - t < 60 * 60 * 1000);
+  publicPairLog.fails.push(now);
+  if (publicPairLog.fails.length >= 20 && publicPairLog.pausedUntil < now) {
+    publicPairLog.pausedUntil = now + 15 * 60 * 1000;
+    await audit({
+      kind: 'public.pair.paused',
+      failures: publicPairLog.fails.length,
+      until: new Date(publicPairLog.pausedUntil).toISOString(),
+    }).catch(() => {});
+    state.bus.emit({ type: 'attention.changed' });
+  }
+}
+
 route('GET', /^\/api\/pairing$/, async (_req, _res, { state }) => pairingInfo(state));
 
 // A QR code in Settings: a URL that pairs the phone by itself, once, in ten
 // minutes. Only the machine owner (or an already-paired device) can ask.
 route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
-  if (!state.lanUrl) {
+  const publicUrl = funnelPublicUrl();
+  if (!state.lanUrl && !publicUrl) {
     throw httpError(
       409,
       'REMOTE_DISABLED',
@@ -1325,13 +1404,17 @@ route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
   const lanAddress = preferredLanAddress();
   const tailnetIp = tailnetAddress();
   const links = [];
-  if (lanAddress) links.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
-  if (tailnetIp) links.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
+  // Public first: a phone without Tailscale can only use this one.
+  if (publicUrl) links.push({ kind: 'public', url: publicUrl });
+  if (state.lanUrl) {
+    if (lanAddress) links.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
+    if (tailnetIp) links.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
+  }
 
-  // One token, both addresses: the phone scans whichever it can reach.
+  // One token, every address: the phone scans whichever it can reach.
   const { token, expiresAt } = state.pairLinks.create();
   const withToken = links.map((link) => ({ ...link, url: `${link.url}/?pair=${token}` }));
-  const preferred = withToken.find((link) => link.kind === 'tailnet') || withToken[0] || null;
+  const preferred = withToken[0] || null;
   return {
     links: withToken,
     url: preferred?.url || null,
@@ -1341,6 +1424,34 @@ route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
 });
 
 route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
+
+// Public HTTPS door. Off by default; enabling runs the real Tailscale CLI and
+// persists the choice so a restart brings it back.
+route('GET', /^\/api\/funnel$/, async (_req, _res, { state }) => funnelView(state.publicPort));
+
+route('POST', /^\/api\/funnel$/, async (_req, _res, { body, state }) => {
+  if (typeof body?.enabled !== 'boolean') throw httpError(400, 'BAD_FUNNEL', 'body needs {enabled}');
+  if (body.enabled) await enableFunnel(state.publicPort);
+  else await disableFunnel();
+  state.bus.emit({ type: 'settings.changed', section: 'network' });
+  return funnelView(state.publicPort);
+});
+
+route('GET', /^\/api\/machines\/(?<name>[^/]+)\/funnel$/, async (_req, _res, { params, state }) => {
+  const peer = state.peers.find(params.name);
+  if (!peer) throw httpError(404, 'MACHINE_NOT_FOUND', `no machine called "${params.name}"`);
+  const view = await state.peers.json(peer, 'GET', '/api/funnel', { timeoutMs: 15000 });
+  return { ok: true, machine: peer.name, funnel: view };
+});
+
+route('POST', /^\/api\/machines\/(?<name>[^/]+)\/funnel$/, async (_req, _res, { params, body, state }) => {
+  if (typeof body?.enabled !== 'boolean') throw httpError(400, 'BAD_FUNNEL', 'body needs {enabled}');
+  const peer = state.peers.find(params.name);
+  if (!peer) throw httpError(404, 'MACHINE_NOT_FOUND', `no machine called "${params.name}"`);
+  const view = await state.peers.json(peer, 'POST', '/api/funnel', { body: { enabled: body.enabled }, timeoutMs: 60000 });
+  state.bus.emit({ type: 'settings.changed', section: 'machines' });
+  return { ok: true, machine: peer.name, funnel: view };
+});
 
 route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
   const removed = state.devices.remove(params.id);
@@ -1470,7 +1581,7 @@ route(
 );
 
 route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
-  if (!isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can push updates');
+  if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can push updates');
   const url = String(body?.url || '').replace(/\/+$/, '');
   if (!/^https?:\/\/[^/]+$/.test(url)) throw httpError(400, 'BAD_URL', 'url must be a machine address like http://host:4390');
   const headers = body?.cookie ? { cookie: String(body.cookie) } : {};
@@ -3005,7 +3116,7 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
     throw err;
   }
 
-  const { server, state } = await createAssistant({ port, host });
+  const { server, state, makePublicServer } = await createAssistant({ port, host });
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -3030,12 +3141,52 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
   state.lanUrl = lanUrl;
   state.pairingUrl = lanUrl || `http://${isLoopbackHost(host) ? '127.0.0.1' : host}:${actualPort}`;
 
+  // Tunnel-only socket. It stays on 127.0.0.1 and every request on it is
+  // flagged non-local, so the tunnel can never inherit "the human's computer".
+  const publicStart = Math.min(Math.max(Number(process.env.ASSIST_PUBLIC_PORT) || 4391, 1), 65531);
+  let publicPort = null;
+  for (let attempt = 0; attempt <= 10 && publicPort == null; attempt += 1) {
+    const candidate = publicStart + attempt;
+    try {
+      const publicServer = makePublicServer();
+      await new Promise((resolve, reject) => {
+        publicServer.once('error', reject);
+        publicServer.listen(candidate, '127.0.0.1', () => {
+          publicServer.removeListener('error', reject);
+          resolve();
+        });
+      });
+      publicPort = candidate;
+      state.publicServer = publicServer;
+    } catch (err) {
+      if (err.code !== 'EADDRINUSE') {
+        console.error('[assistant] public port failed:', err.message);
+        break;
+      }
+    }
+  }
+  state.publicPort = publicPort;
+  if (publicPort) {
+    writeJsonSyncAtomic(path.join(P.dataDir, 'public-port.json'), { port: publicPort, updatedAt: nowIso() });
+    console.error(`[assistant] public port: http://127.0.0.1:${publicPort} (tunnel only; never local-trusted)`);
+  }
+  // A funnel the human left on comes back after a restart; failure is logged,
+  // never fatal (the tunnel is optional).
+  if (publicPort) {
+    restoreFunnel(publicPort)
+      .then((view) => {
+        if (view?.enabled && view.address) console.error(`[assistant] funnel: ${view.address}`);
+      })
+      .catch((err) => console.error('[assistant] funnel restore failed:', err.message));
+  }
+
   // Machine-readable readiness line (parsed by the smoke test); human logs go
   // to stderr so stdout stays clean.
   console.log(
     JSON.stringify({
       event: 'ready',
       port: actualPort,
+      publicPort,
       url,
       provider: state.model.provider,
       workspace: state.workspaceDir,
@@ -3091,9 +3242,11 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
       console.error('[assistant] closed');
       process.exit(0);
     });
+    try { state.publicServer?.close(); } catch { /* already gone */ }
     // SSE connections are long-lived by design: close them so server.close()
     // can actually finish instead of waiting for a browser tab to go away.
     if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    if (typeof state.publicServer?.closeAllConnections === 'function') state.publicServer.closeAllConnections();
     // If a socket refuses to close, leave anyway.
     const force = setTimeout(() => process.exit(0), 3000);
     if (typeof force.unref === 'function') force.unref();

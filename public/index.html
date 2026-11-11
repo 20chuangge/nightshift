@@ -3502,6 +3502,22 @@
             </label>
             <div class="row-note" id="allow-remote-note">打开后，这台电脑的夜班会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
           </div>
+          <div class="pair-row" style="align-items:center;margin-top:14px">
+            <div>
+              <div class="pair-label">外网访问（手机不用装 Tailscale）</div>
+              <div class="pair-hint" id="funnel-hint">—</div>
+            </div>
+            <label class="switch-row" for="funnel-enabled"><input type="checkbox" id="funnel-enabled" /> 开启</label>
+          </div>
+          <div class="pair-row" id="funnel-address" hidden>
+            <div class="pair-value mono" id="funnel-url">—</div>
+            <button class="btn tiny" id="funnel-copy" type="button">复制</button>
+          </div>
+          <div class="btn-row" id="funnel-actions" hidden>
+            <a class="btn tiny" id="funnel-open" target="_blank" rel="noreferrer">去 Tailscale 打开（只需一次）</a>
+            <button class="btn tiny" id="funnel-retry" type="button">重试</button>
+          </div>
+          <div class="row-note" id="funnel-note">地址是公开的 HTTPS 网址，只有配对过的设备能用。</div>
           <div class="pair-row" style="align-items:center">
             <div>
               <div class="pair-label">用手机连接</div>
@@ -8749,6 +8765,62 @@ function renderSettingsForm() {
   $('set-test').disabled = Boolean(unavailable);
 }
 
+async function loadFunnel() {
+  try {
+    state.funnel = await api('/api/funnel');
+    renderFunnel();
+  } catch {
+    /* older server: no public door */
+  }
+}
+
+function renderFunnel() {
+  const funnel = state.funnel;
+  if (!funnel) return;
+  const toggle = $('funnel-enabled');
+  if (toggle) {
+    toggle.checked = Boolean(funnel.enabled);
+    toggle.disabled = !funnel.installed;
+  }
+  const hint = $('funnel-hint');
+  if (hint) {
+    hint.textContent = funnel.state === 'not_installed'
+      ? '这台电脑没装 Tailscale：装好后才能开外网访问。'
+      : funnel.state === 'need_tailscale'
+        ? '还差一步：去 Tailscale 后台打开 Funnel 和 HTTPS 证书，然后点「重试」。'
+        : funnel.state === 'enabled'
+          ? '已开启：手机在任何网络下都能连（不用装 Tailscale）。'
+          : funnel.state === 'error'
+            ? (funnel.error || '开启失败')
+            : '关闭：手机在外面只能走局域网或已装 Tailscale。';
+  }
+  if ($('funnel-address')) $('funnel-address').hidden = !funnel.enabled || !funnel.address;
+  if (funnel.address) $('funnel-url').textContent = `${funnel.address}/`;
+  if ($('funnel-actions')) $('funnel-actions').hidden = !(funnel.hint || funnel.error);
+  const open = $('funnel-open');
+  if (open) {
+    open.hidden = !funnel.hint;
+    if (funnel.hint) open.href = funnel.hint;
+  }
+  if ($('funnel-retry')) $('funnel-retry').hidden = !(funnel.hint || funnel.error);
+}
+
+async function setFunnel(enabled) {
+  const toggle = $('funnel-enabled');
+  if (toggle) toggle.disabled = true;
+  try {
+    state.funnel = await api('/api/funnel', { method: 'POST', body: { enabled } });
+    renderFunnel();
+    toast(enabled ? '外网访问已开启' : '外网访问已关闭');
+    await loadSettings();
+  } catch (err) {
+    toast(`外网访问没改成：${err.message}`, true);
+    await loadFunnel();
+  } finally {
+    if (toggle) toggle.disabled = !state.funnel?.installed;
+  }
+}
+
 function renderPairing() {
   const s = state.settings || {};
   const p = (s.pairing) || state.pairing || {};
@@ -8890,8 +8962,8 @@ function renderPairTabs(links, preferredKind) {
     return;
   }
   tabs.hidden = links.length < 2;
-  const labels = { lan: '在家（局域网）', tailnet: '在外面（Tailscale）' };
-  const chosenKind = preferredKind || links.find((l) => l.kind === 'tailnet')?.kind || links[0].kind;
+  const labels = { public: '任何网络', lan: '在家（局域网）', tailnet: '在外面（Tailscale）' };
+  const chosenKind = preferredKind || links.find((l) => l.kind === 'public')?.kind || links.find((l) => l.kind === 'tailnet')?.kind || links[0].kind;
   const chosen = links.find((l) => l.kind === chosenKind) || links[0];
   for (const link of links) {
     const btn = document.createElement('button');
@@ -9103,6 +9175,7 @@ function openSettings(section) {
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
   loadUsage().catch(() => {});
+  loadFunnel().catch(() => {});
   loadVault().catch(() => {});
   loadPages().catch(() => {});
   loadFeishu().catch(() => {});
@@ -10749,7 +10822,8 @@ async function renderBrowserMachines() {
       <div class="machine-actions">
         ${m.self
           ? '<span class="machine-tag">当前</span>'
-          : `<button class="btn tiny" data-handoff="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>切到这</button>`}
+          : `<button class="btn tiny" data-handoff="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>切到这</button>
+             <button class="btn tiny" data-funnel="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>外网</button>`}
       </div>
     </div>`;
   const rows = machines.map(row);
@@ -10760,9 +10834,24 @@ async function renderBrowserMachines() {
     rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
   }
   box.innerHTML = rows.join('');
+  refreshMachineFunnelButtons();
 }
 
-/** Switch by asking this hub for a one-time link into the other machine. */
+/** Per-machine public door: read current state lazily, one small button each. */
+async function refreshMachineFunnelButtons() {
+  for (const btn of document.querySelectorAll('#set-machines-list [data-funnel]')) {
+    const name = btn.dataset.funnel;
+    try {
+      const data = await api(`/api/machines/${encodeURIComponent(name)}/funnel`);
+      const funnel = data.funnel || {};
+      btn.dataset.enabled = funnel.enabled ? '1' : '';
+      btn.textContent = funnel.enabled ? '外网开' : '外网关';
+      btn.title = funnel.address || funnel.error || '';
+    } catch {
+      btn.textContent = '外网?';
+    }
+  }
+}
 async function handoffToMachine(name, button) {
   if (button) {
     button.disabled = true;
@@ -10815,6 +10904,23 @@ function reachable(url, timeoutMs = 2500) {
 }
 
 async function onMachineListClick(event) {
+  const funnelBtn = event.target.closest('[data-funnel]');
+  if (funnelBtn) {
+    const name = funnelBtn.dataset.funnel;
+    const enabled = funnelBtn.dataset.enabled !== '1';
+    funnelBtn.disabled = true;
+    funnelBtn.textContent = enabled ? '开启中…' : '关闭中…';
+    try {
+      await api(`/api/machines/${encodeURIComponent(name)}/funnel`, { method: 'POST', body: { enabled } });
+      toast(enabled ? `「${name}」外网访问已开启` : `「${name}」外网访问已关闭`);
+    } catch (err) {
+      toast(`没改成：${err.message}`, true);
+    } finally {
+      funnelBtn.disabled = false;
+      refreshMachineFunnelButtons();
+    }
+    return;
+  }
   const handoff = event.target.closest('[data-handoff]');
   if (handoff) {
     await handoffToMachine(handoff.dataset.handoff, handoff);
@@ -11948,6 +12054,25 @@ function wireChrome() {
 
   // 手机和外网: QR dialog, device list, the desktop-only remote switch
   $('phone-connect')?.addEventListener('click', () => showPairDialog());
+  $('funnel-enabled')?.addEventListener('change', (event) => setFunnel(event.target.checked));
+  $('funnel-retry')?.addEventListener('click', () => setFunnel(Boolean($('funnel-enabled')?.checked ?? true)));
+  $('funnel-copy')?.addEventListener('click', async () => {
+    const text = $('funnel-url')?.textContent || '';
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(text);
+      else {
+        const area = document.createElement('textarea');
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      toast('已复制');
+    } catch {
+      toast('复制失败', true);
+    }
+  });
   $('pair-modal-close')?.addEventListener('click', () => pairModalOpen(false));
   $('pair-scrim')?.addEventListener('click', () => pairModalOpen(false));
   $('qr-refresh')?.addEventListener('click', () => requestPairLink(state.pairLinksPrefer || ''));
