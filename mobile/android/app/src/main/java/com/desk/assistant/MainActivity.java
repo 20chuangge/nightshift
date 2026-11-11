@@ -9,6 +9,7 @@ import android.webkit.WebView;
 
 import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.WebViewListener;
 
 /**
  * Nightshift's Android shell.
@@ -34,8 +35,39 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         startWatcher();
         askForNotifications();
+        installVoiceBridge();
         openFromNotification(getIntent());
     }
+
+    /**
+     * The hub page is normally plain http on the LAN, where getUserMedia does not
+     * exist. The page already knows how to let the shell record for it
+     * (window.desk.voiceStart/Stop/Cancel, the desktop path); offer the same
+     * three calls from Android and adapt them onto window.desk after each load.
+     */
+    private void installVoiceBridge() {
+        Bridge bridge = getBridge();
+        if (bridge == null || bridge.getWebView() == null) return;
+        WebView webView = bridge.getWebView();
+        webView.addJavascriptInterface(new VoiceBridge(this), "NightshiftVoice");
+        bridge.addWebViewListener(new WebViewListener() {
+            @Override
+            public void onPageLoaded(WebView view) {
+                view.evaluateJavascript(VOICE_SHIM, null);
+            }
+        });
+    }
+
+    private static final String VOICE_SHIM = "(function(){"
+            + "var n=window.NightshiftVoice;if(!n)return;"
+            + "var d=window.desk=window.desk||{};if(d.voiceStart)return;"
+            + "var parse=function(s){try{return JSON.parse(s);}catch(e){return null;}};"
+            + "d.voiceStart=async function(){return parse(n.start())||{error:'Error'};};"
+            + "d.voiceStop=async function(){var o=parse(n.stop());if(!o||!o.b64)return null;"
+            + "var b=atob(o.b64),a=new Uint8Array(b.length);for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);"
+            + "return {mime:o.mime,bytes:a};};"
+            + "d.voiceCancel=async function(){n.cancel();return true;};"
+            + "})();";
 
     @Override
     protected void onNewIntent(Intent intent) {

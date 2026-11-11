@@ -658,7 +658,7 @@ async function handleRequest(req, res, state) {
   if (appOrigin) {
     res.setHeader('access-control-allow-origin', appOrigin);
     res.setHeader('vary', 'origin');
-    res.setHeader('access-control-allow-headers', 'authorization, content-type');
+    res.setHeader('access-control-allow-headers', 'authorization, content-type, x-file-name');
     res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('access-control-max-age', '600');
     if (method === 'OPTIONS') {

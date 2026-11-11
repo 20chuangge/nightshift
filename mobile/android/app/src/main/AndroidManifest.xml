@@ -61,4 +61,9 @@
          still type the address by hand. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- 语音输入: the WebView asks for AUDIO_CAPTURE; Capacitor's chrome client
+         turns that into these runtime permissions before granting the page. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 </manifest>

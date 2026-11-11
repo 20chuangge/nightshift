@@ -4262,6 +4262,26 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('notification: a decision that cannot be delivered falls back to the card', receiver.includes('manager.notify(notificationId, fallback') && receiver.includes('desk.openApproval'));
   }
   {
+    // The phone loads the hub's own UI over plain http, where getUserMedia does
+    // not exist. Attachments ride the normal upload path; voice rides a native
+    // recorder exposed as window.desk, the same fallback the desktop shell uses.
+    const srv = await readText('../src/server.mjs');
+    const manifest = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
+    const activity = await readText('../mobile/android/app/src/main/java/com/desk/assistant/MainActivity.java');
+    const voice = await readText('../mobile/android/app/src/main/java/com/desk/assistant/VoiceBridge.java');
+    const page = await readText('../public/index.html');
+    check('mobile attachments: the upload preflight allows the file-name header from the app origin',
+      srv.includes("'authorization, content-type, x-file-name'"));
+    check('mobile voice: the manifest declares the microphone the WebView will ask for',
+      manifest.includes('android.permission.RECORD_AUDIO') && manifest.includes('android.hardware.microphone'));
+    check('mobile voice: a native recorder is exposed to the page and adapted onto window.desk',
+      voice.includes('@JavascriptInterface') && voice.includes('MediaRecorder.AudioSource.MIC') &&
+      activity.includes('addJavascriptInterface(new VoiceBridge(this), "NightshiftVoice")') &&
+      activity.includes('d.voiceStart=async function()') && activity.includes('addWebViewListener'));
+    check('mobile voice: the page prefers the shell recorder when the origin is not secure',
+      page.includes('window.desk?.voiceStart') && page.includes('/api/voice/transcribe'));
+  }
+  {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("req.auth?.deviceId ? 'device' : 'human'") &&
