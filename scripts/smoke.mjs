@@ -4145,6 +4145,70 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const appsNoKeys = await api('/api/feishu/apps', { method: 'POST', body: { bot: 'chief' } });
     const appsGone = await api('/api/feishu/apps/fa-nope', { method: 'DELETE' });
     check('feishu apps of their own: API lists none at first, refuses an unknown bot or missing keys, 404 for an unknown app', Array.isArray(appsNone.json?.apps) && appsNone.json.apps.length === 0 && appsBadBot.status === 400 && appsNoKeys.status === 400 && appsGone.status === 404);
+
+    // Batch J (Notion §97): bots on one Windows desktop, light and idle Linux desktops.
+    {
+      const W = await import('../src/winui.mjs');
+      const { EventEmitter } = await import('node:events');
+      const calls = [];
+      const fakeSpawn = (cmd, args, opts) => {
+        calls.push({ cmd, args, env: opts.env });
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        const req = JSON.parse(Buffer.from(opts.env.DESK_WINUI, 'base64').toString('utf8'));
+        setTimeout(() => {
+          if (req.window === 'nope') { child.stderr.emit('data', '#< CLIXML <S S="Error">NO_WINDOW_x000D__x000A_</S>'); child.emit('close', 1); return; }
+          child.stdout.emit('data', JSON.stringify({ window: req.window, text: 'hello' }));
+          child.emit('close', 0);
+        }, 5);
+        return child;
+      };
+      fakeSpawn.fake = true;
+      const read = await W.runWinUi({ action: 'read', window: '记事本' }, { spawnImpl: fakeSpawn });
+      const sent = JSON.parse(Buffer.from(calls[0].env.DESK_WINUI, 'base64').toString('utf8'));
+      check('desktop_ui: the request goes in as base64 JSON, the script as -EncodedCommand (nothing parsed as PowerShell)', read.text === 'hello' && sent.window === '记事本' && calls[0].args.includes('-EncodedCommand') && !calls[0].args.join(' ').includes('记事本'));
+      let missing = '';
+      try { await W.runWinUi({ action: 'read', window: 'nope' }, { spawnImpl: fakeSpawn }); } catch (err) { missing = err.message; }
+      check('desktop_ui: a missing window comes back as advice in plain words', /找不到标题里含「nope」的窗口/.test(missing));
+      let bad = '';
+      try { await W.runWinUi({ action: 'format_disk' }, { spawnImpl: fakeSpawn }); } catch (err) { bad = err.message; }
+      check('desktop_ui: only the five actions exist', /不认识的操作/.test(bad) && W.WINUI_ACTIONS.join(',') === 'windows,controls,click,type,read');
+      const toolsSrc = await readText('../src/tools.mjs');
+      check('desktop_ui: looking is low risk, pressing and typing are medium (approval rules apply)', toolsSrc.includes("name: 'desktop_ui'") && toolsSrc.includes("args?.action === 'click' || args?.action === 'type' ? { risk: RISK.MEDIUM } : { risk: RISK.LOW }"));
+      const botsSrc = await readText('../src/bots.mjs');
+      check('desktop_ui: the primary bot gets it on upgrade (seed grants version 5)', /chief: \{\s*version: 5,/.test(botsSrc) && botsSrc.includes("'desktop_ui',"));
+      const B = await import('../src/browser.mjs');
+      const launch = B.buildLaunchArgs({ port: 9, profileDir: 'x' });
+      check('browsers: a covered or minimised bot window keeps full speed', ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'].every((a) => launch.includes(a)));
+
+      const D = await import('../src/desktops.mjs');
+      const closedBrowsers = [];
+      D.setDesktopHooks({ busy: (id) => id === 'busy-bot', beforeStop: async (id) => { closedBrowsers.push(id); } });
+      const old = Date.now() - D.DESKTOP_IDLE_MS - 60000;
+      D._testAddDesktop('idle-bot', { lastUsed: old });
+      D._testAddDesktop('watched-bot', { lastUsed: old, viewers: 1 });
+      D._testAddDesktop('busy-bot', { lastUsed: old });
+      D._testAddDesktop('fresh-bot', { lastUsed: Date.now() });
+      const stopped = await D.reapIdleDesktops();
+      check('desktops: only the one nobody used for 15 minutes stops, its browser closed first; watched, busy and fresh ones stay', stopped.join(',') === 'idle-bot' && closedBrowsers.join(',') === 'idle-bot' && D.listDesktops().map((d) => d.botId).sort().join(',') === 'busy-bot,fresh-bot,watched-bot');
+      const leave = D.desktopViewerOpened('watched-bot');
+      leave(); leave();
+      const watched = D._testDesktopEntry('watched-bot');
+      check('desktops: a viewer leaving counts once', watched.viewers === 1);
+      for (const id of ['watched-bot', 'busy-bot', 'fresh-bot']) D.stopDesktop(id);
+      D.setDesktopHooks({ busy: () => false, beforeStop: async () => {} });
+
+      const modes = await api('/api/desktops');
+      const toFull = await api('/api/desktops/mode', { method: 'PUT', body: { mode: 'full' } });
+      const toOdd = await api('/api/desktops/mode', { method: 'PUT', body: { mode: 'gnome' } });
+      check('desktops: light by default; full can be chosen; anything else means light; idle minutes reported', modes.json?.mode === 'light' && modes.json.idleMinutes === 15 && toFull.json?.mode === 'full' && toOdd.json?.mode === 'light');
+      const page = await readText('../public/index.html');
+      check('desktops: the light/full switch is in Settings → 机器 and wired', page.includes('id="desktop-mode"') && page.includes("$('desktop-mode')?.addEventListener('change', saveDesktopMode)") && page.includes('loadDesktopMode().catch'));
+      const setup = await readText('../hub/setup-linux.sh');
+      check('desktops: new Linux machines get openbox for light desktops', setup.includes('has openbox || pm_install openbox x11-xserver-utils') && setup.includes('has openbox || pm_install openbox xsetroot'));
+    }
     const page = await readText('../public/index.html');
     check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));
   }

@@ -30,6 +30,7 @@ export const MAX_HANDOFFS = 12;
 const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
+import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
 /** Same site: equal hosts, or one is a subdomain of the other's registrable part (passport.jd.com ~ www.jd.com). */
@@ -637,6 +638,42 @@ export function createRegistry(deps) {
       });
     },
   });
+
+  // --- desktop programs on Windows (no real mouse: several bots at once) ---
+
+  if (process.platform === 'win32' || process.env.DESK_WINUI_TOOL === '1') {
+    add({
+      name: 'desktop_ui',
+      description:
+        'Work a desktop program on this Windows machine in the background, through its accessibility interface: no real mouse or keyboard, so the human keeps working and other bots can do the same in other windows. ' +
+        'Actions: windows (list open windows), controls (buttons, menus and text boxes of one window), click (press a button/menu/checkbox by its name or id), type (set the text of a text box; without target: the first editable box), read (all the text a window shows). ' +
+        'Start a program with the shell tool first (for example "start notepad"). Programs without an accessibility interface (games, some drawing apps) cannot be worked this way; say so.',
+      // Looking is free; pressing and typing change things the human may care about.
+      risk: (args) => (args?.action === 'click' || args?.action === 'type' ? { risk: RISK.MEDIUM } : { risk: RISK.LOW }),
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: WINUI_ACTIONS },
+          window: { type: 'string', description: 'Part of the window title (not for "windows").' },
+          target: { type: 'string', description: 'Name or automation id of the control (click; optional for type).' },
+          text: { type: 'string', description: 'The text to put in the box (type).' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      async run(args, ctx) {
+        const action = String(args?.action || '');
+        if (action !== 'windows' && !String(args?.window || '').trim()) throw toolError('DESKTOP_UI_BAD_ARGS', 'say which window (part of its title)');
+        if (action === 'click' && !String(args?.target || '').trim()) throw toolError('DESKTOP_UI_BAD_ARGS', 'say which button or menu to press');
+        if (action === 'type' && typeof args?.text !== 'string') throw toolError('DESKTOP_UI_BAD_ARGS', 'say what text to type');
+        try {
+          return await runWinUi({ action, window: args.window, target: args.target, text: args.text }, { signal: ctx.signal });
+        } catch (err) {
+          throw toolError('DESKTOP_UI_FAILED', err.message);
+        }
+      },
+    });
+  }
 
   // --- network ------------------------------------------------------------
 

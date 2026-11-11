@@ -256,6 +256,11 @@ export function buildLaunchArgs({ port, profileDir: profile, headless = false, e
     // does that by default) or sync that account's passwords and history.
     '--disable-sync',
     '--disable-features=Translate,MediaRouter,msImplicitSignin,msEdgeImplicitSignin,msSyncConsent',
+    // Several bots' windows share one Windows desktop and cover each other; a
+    // covered or minimised window must keep full speed for the bot driving it.
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
   ];
   if (headless) args.push('--headless=new', '--disable-gpu', '--hide-scrollbars');
   args.push(...extraArgs, 'about:blank');

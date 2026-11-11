@@ -33,6 +33,70 @@ let indexByBot = new Map();
 let vncPassword = '';
 let dataDir = '';
 
+// Light: a window manager only (openbox) - a bot needs windows, not a panel
+// and wallpaper. Measured on Ubuntu 24.04: about 150 MB per bot desktop against
+// about 240 MB with XFCE (Xvfb + x11vnc + websockify are ~130 MB of either). Full: the
+// XFCE desktop a human would recognise. Light falls back to full when openbox
+// is not installed.
+let desktopMode = process.env.DESK_DESKTOP_MODE === 'full' ? 'full' : 'light';
+export function setDesktopMode(mode) { desktopMode = mode === 'full' ? 'full' : 'light'; return desktopMode; }
+export function getDesktopMode() { return desktopMode; }
+
+// A desktop nobody used for this long is stopped (it starts again in about two
+// seconds when needed; the bot's browser profile, logins included, is on disk).
+export const DESKTOP_IDLE_MS = Math.max(1, Number(process.env.DESK_DESKTOP_IDLE_MIN) || 15) * 60 * 1000;
+let hooks = { busy: () => false, beforeStop: async () => {} };
+/** busy(botId) -> true while the bot's browser is working; beforeStop(botId) closes it cleanly. */
+export function setDesktopHooks(next = {}) { hooks = { ...hooks, ...next }; }
+let reaper = null;
+
+/** Someone is using this bot's desktop now (the UI asked for it, a tool needs it). */
+export function touchDesktop(botId) {
+  const entry = desktops.get(botId);
+  if (entry) entry.lastUsed = Date.now();
+}
+
+/** A viewer connected; call the returned function when it disconnects. */
+export function desktopViewerOpened(botId) {
+  const entry = desktops.get(botId);
+  if (!entry) return () => {};
+  entry.viewers = (entry.viewers || 0) + 1;
+  entry.lastUsed = Date.now();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    entry.viewers = Math.max(0, (entry.viewers || 1) - 1);
+    entry.lastUsed = Date.now();
+  };
+}
+
+/** Stop desktops nobody used for DESKTOP_IDLE_MS. -> the bot ids stopped. */
+export async function reapIdleDesktops(now = Date.now()) {
+  const stopped = [];
+  for (const [botId, entry] of [...desktops]) {
+    if ((entry.viewers || 0) > 0) continue;
+    let busy = false;
+    try { busy = Boolean(hooks.busy(botId)); } catch { /* treat as idle */ }
+    if (busy) { entry.lastUsed = now; continue; }
+    if (now - (entry.lastUsed || 0) < DESKTOP_IDLE_MS) continue;
+    try { await hooks.beforeStop(botId); } catch { /* the desktop goes anyway */ }
+    if (stopDesktop(botId)) stopped.push(botId);
+  }
+  if (stopped.length) console.log('[desktops] stopped idle desktops:', stopped.join(', '));
+  return stopped;
+}
+
+function startReaper() {
+  if (reaper) return;
+  reaper = setInterval(() => { reapIdleDesktops().catch(() => {}); }, 60 * 1000);
+  if (typeof reaper.unref === 'function') reaper.unref();
+}
+
+/** For tests: put an entry in the table without starting processes. */
+export function _testDesktopEntry(botId) { return desktops.get(botId) || null; }
+export function _testAddDesktop(botId, entry) { desktops.set(botId, { procs: [], viewers: 0, lastUsed: Date.now(), ...entry }); }
+
 function hasBinary(bin) {
   try {
     const res = spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' });
@@ -208,7 +272,7 @@ export async function ensureDesktop(botId) {
     const alive = existing.procs.every((proc) => !proc.killed && proc.exitCode === null)
       && (await portOpen(existing.vncPort))
       && (await portOpen(existing.webPort));
-    if (alive) return { ...publicInfo(botId, existing), started: false };
+    if (alive) { existing.lastUsed = Date.now(); return { ...publicInfo(botId, existing), started: false }; }
     for (const proc of existing.procs) {
       try { proc.kill(); } catch { /* already gone */ }
     }
@@ -253,7 +317,25 @@ export async function ensureDesktop(botId) {
     try { return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0; }
     catch { return false; }
   };
-  if (fs.existsSync('/usr/local/bin/desk-bot-session')) {
+  let sessionMode = 'full';
+  if (desktopMode === 'light' && have('openbox')) {
+    // Light: openbox alone, with the same per-display runtime dir the full
+    // session uses (a shared /run/user/<uid> confused the session with a
+    // logged-in GNOME one).
+    const runtime = `/tmp/desk-runtime-${process.getuid?.() ?? 1000}-${display}`;
+    try { fs.mkdirSync(runtime, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
+    const lightEnv = { ...sessionEnv, XDG_RUNTIME_DIR: runtime, XDG_CURRENT_DESKTOP: 'openbox', GDK_BACKEND: 'x11', QT_QPA_PLATFORM: 'xcb', NO_AT_BRIDGE: '1' };
+    delete lightEnv.WAYLAND_DISPLAY;
+    delete lightEnv.DBUS_SESSION_BUS_ADDRESS;
+    delete lightEnv.SESSION_MANAGER;
+    if (have('xsetroot')) spawnChild('xsetroot', ['-solid', '#2b2b2b'], { stdio: 'ignore', env: lightEnv });
+    procs.push(spawnChild('openbox', [], {
+      stdio: ['ignore', childLog(botId, 'session'), childLog(botId, 'session')],
+      env: lightEnv,
+    }));
+    sessionMode = 'light';
+    await sleep(400);
+  } else if (fs.existsSync('/usr/local/bin/desk-bot-session')) {
     procs.push(spawnChild('/usr/local/bin/desk-bot-session', [String(display)], {
       stdio: ['ignore', childLog(botId, 'session'), childLog(botId, 'session')],
       env: sessionEnv,
@@ -293,8 +375,9 @@ export async function ensureDesktop(botId) {
   }));
   for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
 
-  const entry = { display, vncPort, webPort, procs, startedAt: new Date().toISOString() };
+  const entry = { display, vncPort, webPort, procs, startedAt: new Date().toISOString(), mode: sessionMode, viewers: 0, lastUsed: Date.now() };
   desktops.set(botId, entry);
+  startReaper();
   return { ...publicInfo(botId, entry), started: true };
 }
 
@@ -306,6 +389,9 @@ function publicInfo(botId, entry) {
     webPort: entry.webPort,
     running: entry.procs.every((p) => !p.killed && p.exitCode === null),
     startedAt: entry.startedAt,
+    mode: entry.mode || 'full',
+    viewers: entry.viewers || 0,
+    lastUsed: entry.lastUsed ? new Date(entry.lastUsed).toISOString() : null,
     // Same-origin viewer (the hub serves noVNC) that connects back through
     // the hub's authenticated relay; relative so it works from any address.
     url: viewerUrl(botId),

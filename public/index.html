@@ -3590,6 +3590,14 @@
         <div class="row-actions" style="margin-top:10px">
           <button class="btn primary tiny" id="set-add-machine" type="button">添加机器</button>
         </div>
+        <div id="desktop-mode-box" hidden>
+          <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
+          <select class="field" id="desktop-mode">
+            <option value="light">轻量：只有窗口，省内存</option>
+            <option value="full">完整：XFCE 桌面</option>
+          </select>
+          <div class="row-note" id="desktop-mode-note"></div>
+        </div>
       </section>
 
       <section class="dsec" id="sec-skills">
@@ -5093,6 +5101,7 @@ const ABILITIES = [
   { id: 'files', label: '读写文件', note: '在工作区读、写、建文件夹', tools: ['fs_list', 'fs_read', 'fs_write', 'fs_mkdir'] },
   { id: 'delete', label: '删除文件', note: '', tools: ['fs_delete'] },
   { id: 'web', label: '上网和浏览器', note: '打开网页、抓取内容', tools: ['browser_open', 'http_fetch'] },
+  { id: 'desktop', label: '操作桌面程序', note: 'Windows：在后台按按钮、填文字，不动鼠标', tools: ['desktop_ui'] },
   { id: 'memory', label: '记忆和技能', note: '记住你的习惯、保存做法', tools: ['memory_write', 'memory_read', 'skill_list', 'skill_read', 'skill_save'] },
   { id: 'routines', label: '定时任务', note: '', tools: ['routine_create', 'routine_list', 'routine_run'] },
   { id: 'team', label: '建机器人和群、派活', note: '', tools: ['bot_list', 'bot_message', 'bot_create', 'bot_update', 'bot_delete', 'group_create', 'group_post', 'group_list', 'group_update', 'group_delete'] },
@@ -7237,6 +7246,7 @@ const TOOL_TEXT = {
   image_generate: { label: '生成图片', title: '想生成图片', impact: '会调用生图服务，按张计费（通常几分钱）；图片存进工作区。' },
   video_generate: { label: '生成视频', title: '想生成一段视频', impact: '会调用生视频服务，按条计费，比图片贵；要等几分钟。' },
   shell: { label: '执行命令', title: '想在这台电脑上运行一条命令', impact: '命令会以你当前的用户身份运行，可能出现你没预料到的改动。' },
+  desktop_ui: { label: '操作桌面程序', title: '想在后台操作一个桌面程序', impact: '会在那个窗口里按按钮或填文字，不动你的鼠标。' },
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
   machine_switch: { label: '把任务交给另一台机器', title: '想切到另一台机器，把任务交给那里的助理', impact: '窗口会切到那台机器，那里的助理接着做。' },
   machine_list: { label: '查看机器', title: '想看看有哪些机器', impact: '只读取名单。' },
@@ -9355,6 +9365,7 @@ async function syncModelToMachines() {
 function openSettings(section) {
   if ($('model-share')) $('model-share').hidden = !window.desk?.syncModel;
   renderMachinesList();
+  loadDesktopMode().catch(() => { /* older server */ });
   loadSkills();
   loadMemory();
   loadSettings().catch(() => { /* keep whatever we have */ });
@@ -9380,6 +9391,27 @@ function openSettings(section) {
   setSettingsNav(targetId);
   if (isMobile() && !section) showSettingsHome();
   if (!isMobile() && !section) setTimeout(() => $('set-provider').focus(), 120);
+}
+
+/* Linux machines: each bot has a screen of its own; light or full, and idle ones stop. */
+async function loadDesktopMode() {
+  const box = $('desktop-mode-box');
+  if (!box) return;
+  const r = await api('/api/desktops');
+  const perBot = Boolean(r.support?.available && !r.support?.shared);
+  box.hidden = !perBot || !r.mode;
+  if (box.hidden) return;
+  $('desktop-mode').value = r.mode;
+  const running = (r.desktops || []).filter((d) => d.running).length;
+  $('desktop-mode-note').textContent = `每个机器人有一块自己的屏幕，开着的有 ${running} 块。没人用 ${r.idleMinutes || 15} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。`;
+}
+
+async function saveDesktopMode() {
+  try {
+    await api('/api/desktops/mode', { method: 'PUT', body: { mode: $('desktop-mode').value } });
+    toast('已保存，新打开的桌面会用这个');
+    loadDesktopMode().catch(() => {});
+  } catch (err) { toast(`保存失败：${err.message}`, true); }
 }
 
 function closeSettings() {
@@ -10216,6 +10248,7 @@ const PERM_CAPS = [
   { label: '生成媒体', tools: ['image_generate', 'video_generate'], risk: 'media' },
   { label: '切机器', tools: ['machine_switch'], risk: 'medium' },
   { label: '浏览器', tools: ['browser_open', 'browser_click', 'browser_type'], risk: 'medium' },
+  { label: '桌面程序', tools: ['desktop_ui'], risk: 'medium' },
 ];
 const PERM_LEVEL = { careful: '谨慎', standard: '标准', auto: '放手' };
 
@@ -11998,6 +12031,7 @@ function wireChrome() {
   $('sudo-mode')?.addEventListener('change', (e) => savePolicy({ sudo: e.target.value }, '已保存'));
   $('feishu-save')?.addEventListener('click', saveFeishu);
   $('feishu-app-save')?.addEventListener('click', addFeishuApp);
+  $('desktop-mode')?.addEventListener('change', saveDesktopMode);
   $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);
   $('mp-test')?.addEventListener('click', testNewModel);

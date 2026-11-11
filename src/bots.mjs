@@ -364,13 +364,14 @@ async function avatarFilesByBot() {
  */
 export const SEED_GRANTS = {
   chief: {
-    version: 4,
+    version: 5,
     tools: [
       'machine_list', 'machine_switch',
       'bot_create', 'bot_update', 'bot_delete',
       'group_create', 'group_update', 'group_delete', 'group_list', 'group_post',
       'settings_get', 'settings_update', 'ui_get', 'ui_set',
       'shell', 'fs_delete', 'browser_open',
+      'desktop_ui',
     ],
     // The primary bot is the human's single point of contact; it may change
     // product settings without a second confirmation. HIGH risk still asks,

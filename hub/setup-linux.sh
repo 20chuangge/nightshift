@@ -456,6 +456,8 @@ pick_mirror
 if [ "$PM" = apt ]; then
   status running "安装屏幕组件和 XFCE 桌面（浏览器同时在下载）"
   pm_install xvfb x11vnc websockify novnc dbus-x11
+  # Light bot desktops: a window manager only (~150 MB per bot instead of ~240 MB with XFCE).
+  has openbox || pm_install openbox x11-xserver-utils
   has xfce4-session || pm_install xfce4 xfce4-terminal
   if [ -n "$SNAP_PID" ]; then
     status running "等浏览器 Chromium 装完（最大的一步，约 180 MB）"
@@ -477,6 +479,7 @@ elif [ "${EL_MAJOR:-0}" -ge 10 ]; then
   exit 0
 else
   pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11
+  has openbox || pm_install openbox xsetroot
   status running "安装浏览器 Chromium"
   pm_install chromium
   status running "安装 XFCE 桌面"

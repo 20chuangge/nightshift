@@ -68,7 +68,7 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, DESKTOP_IDLE_MS } from './desktops.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
@@ -232,6 +232,23 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // Per-bot desktops read the VNC password the installer stored, if any.
   configureDesktops({ dataDir: P.dataDir });
+  // Light or full desktops for the bots (Linux), and stopping the idle ones:
+  // a desktop counts as in use while its bot's browser works.
+  setDesktopMode(readJsonSync(path.join(P.dataDir, 'desktop.json'), {})?.mode || process.env.DESK_DESKTOP_MODE || 'light');
+  {
+    const { browserManagers } = await import('./browser.mjs');
+    const managerOf = (botId) => browserManagers().find((m) => m.key === botId);
+    setDesktopHooks({
+      busy: (botId) => {
+        const m = managerOf(botId);
+        return Boolean(m?.session && (m.inFlight > 0 || Date.now() - (m.lastActivity || 0) < DESKTOP_IDLE_MS));
+      },
+      beforeStop: async (botId) => {
+        const m = managerOf(botId);
+        if (m?.session) await m.close().catch(() => {});
+      },
+    });
+  }
 
   // Reports and dashboards bots make as web pages (the page library).
   refs.pages = createPages({ workspaceDir });
@@ -667,6 +684,9 @@ function attachHubUpgrade(server, state, viaPublic) {
       return;
     }
     if (!info.webPort) return refuse(404, 'Not Found');
+    // Someone watching keeps the desktop from being stopped as idle.
+    const viewerDone = desktopViewerOpened(safeDecode(match[1]));
+    socket.on('close', viewerDone);
     const upstream = net.connect(info.webPort, '127.0.0.1', () => {
       // Replay the client's handshake to websockify; it answers the upgrade.
       const lines = ['GET / HTTP/1.1'];
@@ -934,7 +954,16 @@ route('GET', /^\/api\/providers$/, async () => ({ providers: publicProviderCatal
 
 // Per-bot desktops. `support` explains why it is off (non-Linux hub, missing
 // Xvfb) so the UI can say something more useful than "failed".
-route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops() }));
+route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops(), mode: getDesktopMode(), idleMinutes: Math.round(DESKTOP_IDLE_MS / 60000) }));
+
+// Light (openbox only) or full (XFCE) desktops for the bots; new desktops use it.
+route('PUT', /^\/api\/desktops\/mode$/, async (_req, _res, { body, state }) => {
+  const mode = setDesktopMode(body?.mode);
+  writeJsonSyncAtomic(path.join(P.dataDir, 'desktop.json'), { mode });
+  await audit({ kind: 'desktop.mode', mode });
+  state.bus.emit({ type: 'settings.changed', section: 'machines' });
+  return { mode };
+});
 
 route('GET', /^\/api\/bots\/(?<botId>[^/]+)\/desktop$/, async (_req, _res, { params }) => {
   const botId = params.botId;
