@@ -903,9 +903,11 @@
   .pc-vnc-shield {
     position: absolute; inset: 0; z-index: 4; display: flex;
     flex-direction: column; align-items: center; justify-content: flex-end; gap: 10px;
-    padding: 0 0 18px; pointer-events: none;
+    padding: 0 0 18px; pointer-events: auto;
     background: linear-gradient(180deg, rgba(5,7,11,0) 55%, rgba(5,7,11,0.55) 100%);
   }
+  .pc-shield-hint { display: none; color: #cfd4e2; font-size: 11px; letter-spacing: .02em; }
+  @media (max-width: 860px) { .pc-shield-hint { display: block; } }
   .pc-vnc-shield[hidden] { display: none; }
   .pc-preview-badge {
     position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 6px;
@@ -922,6 +924,50 @@
     box-shadow: 0 8px 24px rgba(0,0,0,0.35);
   }
   body.panel-max .pc-vnc-shield { padding-bottom: 54px; }
+  /* Touch takeover: the noVNC control bar is a desktop affordance, so phones
+     get a permanent strip of the keys a remote session actually needs. */
+  .pc-mobile-bar {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0;
+  }
+  .pc-mobile-bar button {
+    flex: 1 1 auto; min-width: 54px; padding: 10px 6px; border-radius: 10px;
+    border: 1px solid var(--border-soft); background: var(--panel-2);
+    color: var(--text); font: 600 12px/1 var(--sans);
+  }
+  .pc-mobile-bar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  body.panel-max .pc-mobile-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 95;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(8, 10, 14, .86); backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(255,255,255,.08);
+  }
+  /* User-controlled rotation: the picture turns, the controls stay upright.
+     No orientation lock — the same button turns it back. */
+  body.panel-max.pc-rotated #pc-screen-wrap {
+    inset: auto; left: 50%; top: 50%;
+    width: 100vh; height: 100vw;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+  /* Clipboard drawer: explicit paste in, explicit copy out. Works on plain
+     http where navigator.clipboard does not exist. */
+  .clip-drawer {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 97;
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel); border-top: 1px solid var(--border-soft);
+    border-radius: 16px 16px 0 0; box-shadow: 0 -12px 40px rgba(0,0,0,.4);
+  }
+  .clip-drawer[hidden] { display: none; }
+  .clip-head { display: flex; align-items: center; justify-content: space-between; }
+  .clip-drawer textarea {
+    width: 100%; min-height: 84px; resize: vertical; border-radius: 10px;
+    border: 1px solid var(--border-soft); background: var(--panel-2);
+    color: var(--text); font: 13px/1.5 var(--sans); padding: 9px 10px; outline: none;
+  }
+  .clip-drawer textarea:focus { border-color: var(--accent); }
+  .clip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .clip-row .btn { flex: 1 1 auto; }
+  #clip-scrim { z-index: 96; }
   .pc-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 
   /* author display rules below would otherwise beat the UA [hidden] style */
@@ -2920,10 +2966,21 @@
             <div class="pc-vnc-layer" id="pc-vnc-wrap" hidden></div>
             <div class="pc-vnc-shield" id="pc-vnc-shield" hidden>
               <div class="pc-preview-badge"><i></i><span id="pc-preview-name">实时画面</span></div>
+              <div class="pc-shield-hint">点按画面进全屏</div>
               <button class="btn primary" id="pc-preview-take" type="button">接管桌面</button>
             </div>
             <button class="pc-exit" id="pc-exit" type="button">退出全屏 (Esc)</button>
             <button class="pc-done" id="pc-done" type="button">我弄好了，继续</button>
+          </div>
+          <div class="pc-mobile-bar" id="pc-mobile-bar" hidden>
+            <button id="pcm-key" type="button">键盘</button>
+            <button id="pcm-ctrl" type="button">Ctrl</button>
+            <button id="pcm-alt" type="button">Alt</button>
+            <button id="pcm-esc" type="button">Esc</button>
+            <button id="pcm-tab" type="button">Tab</button>
+            <button id="pcm-clip" type="button">剪贴板</button>
+            <button id="pcm-rot" type="button">旋转</button>
+            <button id="pcm-view" type="button">预览</button>
           </div>
           <div class="pc-stats" id="pc-stats"></div>
           <div class="section-head" id="pc-procs-head" style="margin-top:14px"><span>进程</span></div>
@@ -3455,6 +3512,20 @@
 <!-- =====================================================================
      add a machine: SSH in, install a hub, pair, remember it
      ===================================================================== -->
+<div class="scrim" id="clip-scrim" aria-hidden="true" hidden></div>
+<div class="clip-drawer" id="clip-drawer" role="dialog" aria-modal="true" aria-label="剪贴板" hidden>
+  <div class="clip-head">
+    <b>剪贴板</b>
+    <button class="icon-btn sm" id="clip-close" type="button" aria-label="关闭">✕</button>
+  </div>
+  <textarea id="clip-text" rows="4" placeholder="把手机上的文字粘贴到这里，再送进远端；远端复制的文字也会出现在这里。"></textarea>
+  <div class="clip-row">
+    <button class="btn primary" id="clip-send" type="button">发送到远端</button>
+    <button class="btn" id="clip-paste" type="button">发送并 Ctrl+V</button>
+    <button class="btn" id="clip-copy" type="button">复制到手机</button>
+  </div>
+  <div class="row-note">密码、验证码请直接在远端屏幕里输入，不要贴进聊天。远端剪贴板走 VNC 标准通道（latin1），中文可能变成 ?；中文请用「键盘」直接输入。</div>
+</div>
 <div class="scrim" id="vnc-scrim" aria-hidden="true"></div>
 <div class="modal" id="vnc-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-modal-title" aria-hidden="true">
   <div class="modal-head">
@@ -7095,6 +7166,19 @@ function takeoverCard(item) {
  * offers a hidden side panel for it; here text copied over there lands in
  * this clipboard, and Ctrl/Cmd+V in the viewer pastes this clipboard there.
  */
+function openClipDrawer() {
+  const remote = document.querySelector('#pc-vnc-wrap iframe')?.contentDocument?.getElementById('noVNC_clipboard_text');
+  if (remote?.value) $('clip-text').value = remote.value;
+  $('clip-scrim').classList.add('show');
+  $('clip-drawer').hidden = false;
+  setTimeout(() => $('clip-text').focus(), 60);
+}
+
+function closeClipDrawer() {
+  $('clip-scrim').classList.remove('show');
+  $('clip-drawer').hidden = true;
+}
+
 function bridgeClipboard(frame) {
   const win = frame.contentWindow;
   if (!win || win.__nsClipboard) return;
@@ -7107,7 +7191,11 @@ function bridgeClipboard(frame) {
     rfb.__nsBridged = true;
     rfb.addEventListener('clipboard', (event) => {
       const text = event.detail && event.detail.text;
-      if (text && clip) clip.writeText(text).catch(() => {});
+      if (!text) return;
+      // The drawer is the clipboard on plain http, where the API is absent.
+      const box = document.getElementById('clip-text');
+      if (box) box.value = text;
+      if (clip) clip.writeText(text).catch(() => {});
     });
   }, 1000);
   win.document.addEventListener('keydown', async (event) => {
@@ -7117,7 +7205,7 @@ function bridgeClipboard(frame) {
     event.preventDefault();
     event.stopImmediatePropagation();
     let text = '';
-    try { text = clip ? await clip.readText() : ''; } catch { /* no permission: paste what is already there */ }
+    try { text = clip ? await clip.readText() : (document.getElementById('clip-text')?.value || ''); } catch { /* no permission: paste what is already there */ }
     if (text) rfb.clipboardPasteFrom(text);
     // Ctrl is already down over there; send the V once the clipboard arrived.
     setTimeout(() => { rfb.sendKey(0x76, 'KeyV', true); rfb.sendKey(0x76, 'KeyV', false); }, 80);
@@ -7340,11 +7428,11 @@ function applyUiCommand(patch = {}) {
   }
 
   if (patch.tab) {
-    if (!state.panelOpen) {
-      state.panelOpen = true;
-      applyLayoutPrefs();
-    }
-    switchTab(patch.tab);
+    state.panelOpen = true;
+    applyLayoutPrefs();
+    // On mobile the sheet only slides up via openPanel(); setting state alone
+    // left the viewer mounted but parked below the viewport.
+    openPanel(patch.tab);
     touched = true;
   }
   if (patch.panelOpen !== undefined) {
@@ -10451,13 +10539,17 @@ function syncViewer() {
   const takeover = desktopTakeover();
   const watching = state.panelOpen && state.tab === 'computer';
   const installing = state.computer?.desktopSetup?.state === 'running';
-  if (!takeover && (!state.computer?.desktop?.url || !watching || installing)) {
+  const bar = $('pc-mobile-bar');
+  if (bar) bar.hidden = !(isMobile() && takeover && watching);
+  const url = currentViewerUrl();
+  // Closing the pane ends the session even mid-takeover: a hidden iframe must
+  // not keep a VNC websocket (and the remote input focus) alive.
+  if (!watching || installing || (!takeover && !url)) {
     unmountViewer();
     if (shield) shield.hidden = true;
+    if ($('pc-desktop')) $('pc-desktop').textContent = '接管桌面';
     return;
   }
-
-  const url = currentViewerUrl();
   if (!url) { unmountViewer(); if (shield) shield.hidden = true; return; }
   if (viewerUrl !== url || !wrap.querySelector('iframe')) {
     wrap.innerHTML = '';
@@ -10779,13 +10871,15 @@ function openPanel(tab) {
 function closePanel() {
   $('panel').classList.remove('open');
   $('panel-scrim').classList.remove('show');
-  if (!isMobile() && state.panelOpen) {
+  // Mobile used to keep state.panelOpen true here, so the VNC iframe and its
+  // websocket stayed live behind a closed sheet, burning battery and data.
+  if (state.panelOpen) {
     state.panelOpen = false;
     try { localStorage.setItem('desk.panelOpen', '0'); } catch { /* private mode */ }
-    document.body.classList.add('panel-hidden');
+    applyLayoutPrefs();
   }
-  if (isMobile()) $('panel').setAttribute('aria-hidden', 'true');
-  else $('panel').setAttribute('aria-hidden', 'false');
+  $('panel').setAttribute('aria-hidden', isMobile() ? 'true' : 'false');
+  syncViewer();
 }
 
 /** Conversation-first defaults: no work panel, no tool chips, until asked. */
@@ -10947,6 +11041,49 @@ function wireChrome() {
     else openDesktopViewer();
   });
   $('pc-preview-take').addEventListener('click', () => openDesktopViewer());
+  $('pc-vnc-shield').addEventListener('click', (event) => {
+    if (event.target.closest('button')) return;
+    if (isMobile() && !desktopTakeover()) togglePanelMax(true);
+  });
+  const vncUI = () => document.querySelector('#pc-vnc-wrap iframe')?.contentWindow?.UI || null;
+  $('pcm-key').addEventListener('click', () => vncUI()?.showVirtualKeyboard());
+  $('pcm-ctrl').addEventListener('click', (event) => { vncUI()?.toggleCtrl(); event.currentTarget.classList.toggle('on'); });
+  $('pcm-alt').addEventListener('click', (event) => { vncUI()?.toggleAlt(); event.currentTarget.classList.toggle('on'); });
+  $('pcm-esc').addEventListener('click', () => vncUI()?.sendKey(0xff1b, 'Escape'));
+  $('pcm-tab').addEventListener('click', () => vncUI()?.sendKey(0xff09, 'Tab'));
+  $('pcm-clip').addEventListener('click', openClipDrawer);
+  $('pcm-rot').addEventListener('click', (event) => {
+    if (!document.body.classList.contains('panel-max')) togglePanelMax(true);
+    const on = document.body.classList.toggle('pc-rotated');
+    event.currentTarget.classList.toggle('on', on);
+    event.currentTarget.textContent = on ? '竖屏' : '旋转';
+  });
+  $('pcm-view').addEventListener('click', () => closeDesktopViewer());
+  $('clip-close').addEventListener('click', closeClipDrawer);
+  $('clip-scrim').addEventListener('click', closeClipDrawer);
+  $('clip-send').addEventListener('click', () => {
+    const ui = vncUI();
+    if (!ui?.rfb) { toast('画面还没连上', true); return; }
+    ui.rfb.clipboardPasteFrom($('clip-text').value);
+    toast('已放入远端剪贴板：在远端按 Ctrl+V 粘贴');
+  });
+  $('clip-paste').addEventListener('click', () => {
+    const ui = vncUI();
+    if (!ui?.rfb) { toast('画面还没连上', true); return; }
+    ui.rfb.clipboardPasteFrom($('clip-text').value);
+    ui.sendKey(0xffe3, 'ControlLeft', true);
+    ui.sendKey(0x76, 'KeyV');
+    ui.sendKey(0xffe3, 'ControlLeft', false);
+    closeClipDrawer();
+  });
+  $('clip-copy').addEventListener('click', async () => {
+    const box = $('clip-text');
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(box.value);
+      else { box.focus(); box.select(); document.execCommand('copy'); }
+      toast('已复制到手机剪贴板');
+    } catch { toast('复制失败：请长按文本框手动复制', true); }
+  });
   $('pc-max').addEventListener('click', () => togglePanelMax());
   $('pc-exit').addEventListener('click', () => togglePanelMax(false));
   $('pc-done')?.addEventListener('click', finishTakeover);
@@ -11041,10 +11178,11 @@ function wireChrome() {
   $('rule-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addRule(); } });
   $('deny-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDeny(); } });
   $('panel-toggle').addEventListener('click', () => {
-    state.panelOpen = !state.panelOpen;
-    try { localStorage.setItem('desk.panelOpen', state.panelOpen ? '1' : '0'); } catch { /* private mode */ }
+    if (state.panelOpen) { closePanel(); return; }
+    state.panelOpen = true;
+    try { localStorage.setItem('desk.panelOpen', '1'); } catch { /* private mode */ }
     applyLayoutPrefs();
-    if (state.panelOpen) openPanel('activity');
+    openPanel('activity');
   });
   $('show-process').addEventListener('change', (event) => {
     state.showProcess = Boolean(event.target.checked);

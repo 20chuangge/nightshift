@@ -3314,7 +3314,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('install: a bot that needs the browser meanwhile is told it is still installing', /browser_installing/.test(br));
       // Step 10 small fixes: the panel says "installing" instead of a black live view; a faster mirror for this install only.
       const ui = await readText('../public/index.html');
-      check('install: while the desktop installs, the panel shows the note, not the (black) live view', /const installing = state\.computer\?\.desktopSetup\?\.state === 'running';/.test(ui) && /!watching \|\| installing\)/.test(ui));
+      check('install: while the desktop installs, the panel shows the note, not the (black) live view', /const installing = state\.computer\?\.desktopSetup\?\.state === 'running';/.test(ui) && /!watching \|\| installing \|\|/.test(ui));
       check('install: a domestic mirror only when clearly faster, through its own lists, with a fallback', /pick_mirror\(\)/.test(sh) && /Dir::State::Lists=\/var\/lib\/apt\/desk-mirror-lists/.test(sh) && /a > 2 \* b/.test(sh) && /APT_SRC=""   # the mirror did not work/.test(sh) && /signed-by=/.test(sh));
       check('install: the speed check works with wget too, and elapsed time is the script\'s own', /fetch_time\(\)/.test(sh) && /wget -q -T 20 -O \/dev\/null/.test(sh) && /"elapsed":%s/.test(sh) && /"\$SECONDS"/.test(sh));
       check('install: the Chromium snap downloads while apt installs the rest', /snap install chromium >\/dev\/null 2>&1 &/.test(sh) && /wait "\$SNAP_PID"/.test(sh));
@@ -4280,6 +4280,27 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       activity.includes('d.voiceStart=async function()') && activity.includes('addWebViewListener'));
     check('mobile voice: the page prefers the shell recorder when the origin is not secure',
       page.includes('window.desk?.voiceStart') && page.includes('/api/voice/transcribe'));
+  }
+  {
+    // Mobile takeover: the sheet must actually open, the session must end when
+    // the pane closes, and the keys a remote session needs must be reachable.
+    const page = await readText('../public/index.html');
+    check('takeover: a takeover card opens the mobile sheet, not just state',
+      page.includes('openPanel(patch.tab)'));
+    check('takeover: closing the pane ends the session and unmounts the viewer',
+      page.includes('if (!watching || installing || (!takeover && !url))') &&
+      page.includes("state.panelOpen = false;") && page.includes('syncViewer();'));
+    check('takeover: phones get a permanent key strip wired to the noVNC UI',
+      page.includes('id="pc-mobile-bar"') && page.includes('showVirtualKeyboard()') &&
+      page.includes('toggleCtrl()') && page.includes('toggleAlt()') && page.includes("sendKey(0xff1b, 'Escape')"));
+    check('takeover: rotation is user-controlled CSS, never an orientation lock',
+      page.includes('body.panel-max.pc-rotated #pc-screen-wrap') && page.includes("classList.toggle('pc-rotated')") &&
+      !page.includes('orientation.lock'));
+    check('takeover: tapping the preview picture enters fullscreen on phones',
+      page.includes('pc-shield-hint') && page.includes('if (isMobile() && !desktopTakeover()) togglePanelMax(true)'));
+    check('takeover: the clipboard drawer works without navigator.clipboard',
+      page.includes('id="clip-drawer"') && page.includes('clipboardPasteFrom(') &&
+      page.includes("document.execCommand('copy')") && page.includes('latin1'));
   }
   {
     const srv = await readText('../src/server.mjs');
