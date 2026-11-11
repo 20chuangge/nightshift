@@ -3133,7 +3133,9 @@ function shanghaiWeekday(ts) {
     check('buttons on the accent use the on-accent colour, not white', html.includes('.usage-range button.on, .pc-mobile-bar button.on { color: var(--on-accent); }'));
     check('phone settings open on a list and have a way back', html.includes('id="settings-back"') && html.includes("$('settings-back')?.addEventListener('click', showSettingsHome)") && html.includes('if (isMobile() && !section) showSettingsHome();'));
     check('every settings page has a line icon', (html.match(/<button class="setnav[^>]*data-set-target="([a-z-]+)"/g) || []).every((b) => html.includes("'" + b.match(/data-set-target="([a-z-]+)"/)[1] + "':")));
-    check('both sides keep a bubble, the human one inverted', html.includes('--bubble-user: #E8E8E8;') && html.includes('--bubble-user: #1F1F1F;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
+    check('both sides keep a bubble, the human one a softer grey', html.includes('--bubble-user: #333333;') && html.includes('--bubble-user: #E3E3E3;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
+    check('settings icons are sized and only shown in the phone list', html.includes('<svg class="setnav-icon" width="20" height="20"') && html.includes('  .setnav-icon { display: none; }') && html.includes('.settings-modal.set-home .setnav svg { display: block;'));
+    check('the sidebar is set apart from the chat (darker grey in light, a divider line)', html.includes('--bg: #FFFFFF; --bg-2: #F0F0F0;') && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
     const launcher = await readText('../mobile/shell/launcher.js');
     check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.url);'));
   }

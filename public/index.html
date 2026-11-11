@@ -2333,6 +2333,7 @@
   }
   .settings-heading { font-size: 14px; font-weight: 600; }
   .set-back { display: none; }
+  .setnav-icon { display: none; }
   .settings-body { flex: 1; min-height: 0; display: flex; }
   .settings-nav {
     flex: none; width: 176px; padding: 10px; border-right: 1px solid var(--border-soft);
@@ -2843,12 +2844,12 @@
     --on-accent: #0A0A0A;
     --brand: #7C5CFF; --link: #A78BFA;
     --green: #22C55E; --amber: #F59E0B; --red: #EF4444;
-    --bubble-user: #E8E8E8; --bubble-user-border: transparent; --bubble-user-text: #0A0A0A;
-    --bubble-bot: #171717; --bubble-bot-border: transparent; --bubble-shadow: none;
+    --bubble-user: #333333; --bubble-user-border: transparent; --bubble-user-text: #F5F5F5;
+    --bubble-bot: #181818; --bubble-bot-border: transparent; --bubble-shadow: none;
     --float-shadow: none;
   }
   html[data-theme="light"] {
-    --bg: #FFFFFF; --bg-2: #F7F7F7;
+    --bg: #FFFFFF; --bg-2: #F0F0F0;
     --panel: #F5F5F5; --panel-2: #EDEDED; --panel-3: #E3E3E3;
     --border: rgba(0, 0, 0, 0.08); --border-soft: rgba(0, 0, 0, 0.06);
     --border-strong: rgba(0, 0, 0, 0.16);
@@ -2857,8 +2858,8 @@
     --on-accent: #FFFFFF;
     --brand: #6A4CFF; --link: #6A4CFF;
     --green: #16A34A; --amber: #B45309; --red: #DC2626;
-    --bubble-user: #1F1F1F; --bubble-user-border: transparent; --bubble-user-text: #FFFFFF;
-    --bubble-bot: #F3F3F3; --bubble-bot-border: transparent; --bubble-shadow: none;
+    --bubble-user: #E3E3E3; --bubble-user-border: transparent; --bubble-user-text: #0A0A0A;
+    --bubble-bot: #F4F4F4; --bubble-bot-border: transparent; --bubble-shadow: none;
     --float-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
   body { background: var(--bg); }
@@ -2871,6 +2872,7 @@
   .bubble.md code { background: var(--panel-2); }
   html[data-theme="light"] .bubble.md .md-code, .bubble.md .md-code { background: var(--panel); border-color: transparent; }
   .composer-box { box-shadow: var(--float-shadow); }
+  .sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }
   .row.user .bubble,
   html[data-theme="light"] .row.user .bubble { border: 0; border-radius: 20px 20px 6px 20px; }
   .row.assistant .bubble,
@@ -2955,7 +2957,7 @@
       content: ""; margin-left: auto; width: 7px; height: 7px; flex: none;
       border-right: 1.75px solid var(--dim); border-top: 1.75px solid var(--dim); transform: rotate(45deg);
     }
-    .settings-modal.set-home .setnav svg { width: 20px; height: 20px; flex: none; color: var(--muted); }
+    .settings-modal.set-home .setnav svg { display: block; width: 20px; height: 20px; flex: none; color: var(--muted); }
     .settings-modal.set-home .setnav[data-set-target="sec-model"],
     .settings-modal.set-home .setnav[data-set-target="sec-appearance"],
     .settings-modal.set-home .setnav[data-set-target="sec-pair"] { border-radius: 16px 16px 0 0; box-shadow: none; }
@@ -9300,7 +9302,7 @@ function decorateSettingsNav() {
   document.querySelectorAll('.setnav').forEach((btn) => {
     const shape = SETNAV_ICONS[btn.dataset.setTarget];
     if (!shape || btn.querySelector('svg')) return;
-    btn.insertAdjacentHTML('afterbegin', `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`);
+    btn.insertAdjacentHTML('afterbegin', `<svg class="setnav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`);
   });
 }
 
