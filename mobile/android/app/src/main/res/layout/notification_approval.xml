@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Expanded approval notification: the chat card's visual language, sized for
+     the shade. RemoteViews only supports a fixed view set, so this is built
+     from plain layouts/TextViews with shape drawables. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/notif_card"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/notif_card_bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/notif_kicker"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="需要你确认"
+            android:textColor="@color/notif_dim"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/notif_wait"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="在等你"
+            android:textColor="@color/notif_amber"
+            android:textSize="11sp"
+            android:gravity="center_vertical"
+            android:drawableStart="@drawable/notif_wait_dot"
+            android:drawablePadding="5dp"
+            android:background="@drawable/notif_wait_bg"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="3dp"
+            android:paddingBottom="3dp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/notif_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:textColor="@color/notif_text"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="2"
+        android:ellipsize="end" />
+
+    <LinearLayout
+        android:id="@+id/notif_detail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="vertical"
+        android:background="@drawable/notif_detail_bg"
+        android:padding="10dp">
+
+        <TextView
+            android:id="@+id/notif_detail_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/notif_dim"
+            android:textSize="10sp"
+            android:maxLines="1" />
+
+        <TextView
+            android:id="@+id/notif_detail_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:textColor="@color/notif_text"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:maxLines="2"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/notif_why"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="9dp"
+        android:textColor="@color/notif_muted"
+        android:textSize="12sp"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="3"
+        android:ellipsize="end" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/notif_allow"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="允许这一次"
+            android:textColor="@color/notif_green_ink"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:background="@drawable/notif_allow_bg" />
+
+        <TextView
+            android:id="@+id/notif_deny"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="拒绝"
+            android:textColor="@color/notif_text"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:background="@drawable/notif_deny_bg" />
+    </LinearLayout>
+</LinearLayout>

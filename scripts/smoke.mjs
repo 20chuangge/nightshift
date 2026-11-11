@@ -4241,14 +4241,24 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const receiver = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ApprovalActionReceiver.java');
     const manifest = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
     const page = await readText('../public/index.html');
+    const cardLayout = await readText('../mobile/android/app/src/main/res/layout/notification_approval.xml');
     check('notification: a tap carries the hub the event came from, not the most recently used one',
       watcher.includes('handleEvent(hub, line.substring(6))') && watcher.includes('openApp(int requestCode, String hub, String approvalId, String botId)') && !watcher.includes('hubs.get(0)'));
     check('notification: an approval tap lands on that bot and that card',
       activity.includes('desk.openApproval') && activity.includes('desk.openBot') && activity.includes('"&bot="') &&
       page.includes('function approvalTarget()') && page.includes('focusApprovalFromLink(target)'));
+    check('notification: the expanded card mirrors the chat card with two real buttons',
+      watcher.includes('R.layout.notification_approval') && watcher.includes('setCustomBigContentView(card)') &&
+      watcher.includes('R.id.notif_allow') && watcher.includes('R.id.notif_deny') &&
+      cardLayout.includes('@+id/notif_allow') && cardLayout.includes('@+id/notif_deny'));
     check('notification: 批准/拒绝 decide from a private receiver; the token never rides on the intent',
-      watcher.includes('addApprovalActions') && receiver.includes('"desk.token:" + hub') && receiver.includes('/api/approvals/') &&
+      receiver.includes('ACTION_DECIDE') && receiver.includes('"desk.token:" + hub') && receiver.includes('/api/approvals/') &&
       !/putExtra\([^)]*token/i.test(receiver) && manifest.includes('android:name=".ApprovalActionReceiver"') && manifest.includes('android:exported="false"'));
+    check('notification: each approval owns a group so ColorOS cannot collapse the buttons away',
+      watcher.includes('.setGroup("nightshift.approval." + approvalId)') && watcher.includes('cancelApprovalNotification(resolvedId)') &&
+      watcher.includes('getActiveNotifications()') && watcher.includes('manager.cancel(sbn.getId())'));
+    check('notification: the SSE read gives up before a zombie socket can silence approvals',
+      watcher.includes('setReadTimeout(45000)'));
     check('notification: a decision that cannot be delivered falls back to the card', receiver.includes('manager.notify(notificationId, fallback') && receiver.includes('desk.openApproval'));
   }
   {

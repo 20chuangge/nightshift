@@ -50,6 +50,7 @@ public class ApprovalActionReceiver extends BroadcastReceiver {
         final String decision = trim(intent.getStringExtra(EXTRA_DECISION));
         final int notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0);
         if (hub.isEmpty() || approvalId.isEmpty() || decision.isEmpty()) return;
+        Log.i(TAG, "decision " + decision + " on " + approvalId);
 
         final Context app = context.getApplicationContext();
         final PendingResult pending = goAsync();

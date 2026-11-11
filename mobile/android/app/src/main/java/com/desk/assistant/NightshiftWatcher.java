@@ -10,7 +10,10 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
+import android.service.notification.StatusBarNotification;
 import android.util.Log;
+import android.view.View;
+import android.widget.RemoteViews;
 
 import org.json.JSONObject;
 
@@ -333,7 +336,10 @@ public class NightshiftWatcher extends Service {
             conn.setRequestProperty("Accept", "text/event-stream");
             conn.setRequestProperty("Cache-Control", "no-cache");
             conn.setConnectTimeout(10000);
-            conn.setReadTimeout(0); // SSE: no read timeout
+            // The hub sends a comment every 15 s. Silence for 45 s means the
+            // socket is a zombie (Wi-Fi moved, NAT expired); without a timeout
+            // the read blocks forever and approvals stop arriving.
+            conn.setReadTimeout(45000);
             int status = conn.getResponseCode();
             if (status == 401) {
                 // Revoked on the computer: forget this hub's token, keep the others.
@@ -374,12 +380,20 @@ public class NightshiftWatcher extends Service {
             String type = event.optString("type", "");
             if ("approval.request".equals(type)) {
                 // Always worth a buzz: the turn is blocked on a decision.
-                String tool = event.optString("tool", "工具");
-                String reason = event.optString("reason", "这一步会动到你的东西。");
-                notify("要你确认一下", tool + "：" + reason, hub,
+                notifyApproval(hub,
                         event.optString("approvalId", ""),
                         event.optString("botId", ""),
-                        event.optString("botName", ""));
+                        event.optString("botName", ""),
+                        event.optString("tool", "工具"),
+                        event.optJSONObject("args"),
+                        event.optString("reason", ""));
+                return;
+            }
+            if ("approval.resolved".equals(type)) {
+                // Decided on the computer or in another client: the phone's card
+                // must go away too, or it keeps asking for an answer already given.
+                String resolvedId = event.optString("approvalId", "");
+                if (!resolvedId.isEmpty()) cancelApprovalNotification(resolvedId);
                 return;
             }
             if ("turn.end".equals(type)) {
@@ -445,11 +459,169 @@ public class NightshiftWatcher extends Service {
         return PendingIntent.getBroadcast(this, requestCode, intent, flags);
     }
 
-    private void addApprovalActions(Notification.Builder builder, int notificationId, String hub, String approvalId) {
-        builder.addAction(new Notification.Action.Builder(
-                null, "批准", approvalAction(notificationId * 2, hub, approvalId, "approve", notificationId)).build());
-        builder.addAction(new Notification.Action.Builder(
-                null, "拒绝", approvalAction(notificationId * 2 + 1, hub, approvalId, "deny", notificationId)).build());
+    /**
+     * The approval notification is a card, not the system template: the same
+     * shape as the chat's approval card (kicker, waiting pill, what it wants to
+     * do, why it stopped), with the two choices as real buttons. Both buttons
+     * post the existing explicit, immutable broadcast to ApprovalActionReceiver,
+     * so the device token still never leaves the app's private prefs.
+     */
+    private void notifyApproval(String hub, String approvalId, String botId, String botName,
+                                String tool, JSONObject args, String reason) {
+        int id = eventSeq++;
+        if (id > 4199) eventSeq = 4110;
+        String title = approvalTitle(tool);
+        String detail = approvalDetail(tool, args);
+        String why = reason == null || reason.trim().isEmpty()
+                ? "这一步会改动文件或对外发东西，所以先停下来问你。"
+                : "为什么停下来问你：" + reason.trim();
+
+        RemoteViews card = new RemoteViews(getPackageName(), R.layout.notification_approval);
+        card.setTextViewText(R.id.notif_kicker,
+                botName.isEmpty() ? "需要你确认" : "需要你确认 · " + botName);
+        card.setTextViewText(R.id.notif_title, title);
+        if (detail.isEmpty()) {
+            card.setViewVisibility(R.id.notif_detail, View.GONE);
+        } else {
+            card.setViewVisibility(R.id.notif_detail, View.VISIBLE);
+            card.setTextViewText(R.id.notif_detail_label, approvalDetailLabel(tool));
+            card.setTextViewText(R.id.notif_detail_value, detail);
+        }
+        card.setTextViewText(R.id.notif_why, why);
+
+        PendingIntent open = openApp(id, hub, approvalId, botId);
+        card.setOnClickPendingIntent(R.id.notif_card, open);
+        card.setOnClickPendingIntent(R.id.notif_title, open);
+        card.setOnClickPendingIntent(R.id.notif_detail, open);
+        card.setOnClickPendingIntent(R.id.notif_why, open);
+        card.setOnClickPendingIntent(R.id.notif_allow,
+                approvalAction(id * 2, hub, approvalId, "approve", id));
+        card.setOnClickPendingIntent(R.id.notif_deny,
+                approvalAction(id * 2 + 1, hub, approvalId, "deny", id));
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, CHANNEL_EVENTS)
+                : new Notification.Builder(this);
+        builder.setContentTitle(botName.isEmpty() ? "需要你确认" : "需要你确认 · " + botName)
+                .setContentText(detail.isEmpty() ? title : title + " · " + detail)
+                .setSmallIcon(R.drawable.ic_stat_nightshift)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setCustomBigContentView(card)
+                // Its own group: sharing the app's auto group with the foreground
+                // service buries the card behind a "Nightshift (2)" bundle, and a
+                // collapsed bundle cannot show the two buttons at all.
+                .setGroup("nightshift.approval." + approvalId);
+
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) manager.notify(id, builder.build());
+    }
+
+    /** Cancel this approval's card wherever it still sits in the shade. */
+    private void cancelApprovalNotification(String approvalId) {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        String group = "nightshift.approval." + approvalId;
+        StatusBarNotification[] active = manager.getActiveNotifications();
+        if (active == null) return;
+        for (StatusBarNotification sbn : active) {
+            Notification posted = sbn.getNotification();
+            if (posted != null && group.equals(posted.getGroup())) manager.cancel(sbn.getId());
+        }
+    }
+
+    /** Plain-language version of the tool name, mirroring the chat card. */
+    private static String approvalTitle(String tool) {
+        switch (tool) {
+            case "shell": return "想在这台电脑上运行一条命令";
+            case "fs_write": return "想写入一个文件";
+            case "fs_delete": return "想删除一个文件或文件夹";
+            case "fs_mkdir": return "想新建一个文件夹";
+            case "fs_read": return "想读取一个文件";
+            case "fs_list": return "想看看目录里有什么";
+            case "http_fetch": return "想访问一个网址";
+            case "browser_open": return "想打开一个网页";
+            case "browser_download": return "想下载一个文件";
+            case "browser_click": return "想点击网页上的一个位置";
+            case "browser_type": return "想在网页里输入文字";
+            case "browser_eval": return "想在网页里运行一段脚本";
+            case "memory_write": return "想记住一件事";
+            case "routine_create": return "想创建一个会自己重复跑的任务";
+            case "routine_run": return "想立刻运行一个定时任务";
+            case "bot_message": return "想把任务交给另一位助手";
+            case "bot_create": return "想新建一个助手";
+            case "bot_update": return "想改一个助手的设置";
+            case "bot_delete": return "想删除一个助手";
+            case "file_send": return "想把一个文件发到另一台机器";
+            case "file_fetch": return "想从另一台机器取回一个文件";
+            case "machine_switch": return "想把任务交给另一台机器";
+            case "image_generate": return "想生成图片";
+            case "video_generate": return "想生成一段视频";
+            default: return tool.isEmpty() ? "想动一步" : "想使用「" + tool + "」动一步";
+        }
+    }
+
+    private static String approvalDetailLabel(String tool) {
+        switch (tool) {
+            case "shell": return "命令";
+            case "fs_write":
+            case "fs_delete":
+            case "fs_mkdir":
+            case "fs_read":
+            case "fs_list":
+            case "file_send":
+            case "file_fetch": return "文件";
+            case "http_fetch":
+            case "browser_open":
+            case "browser_download": return "网址";
+            case "browser_click": return "目标";
+            case "browser_type": return "内容";
+            case "browser_eval": return "脚本";
+            case "memory_write": return "记住";
+            case "routine_create":
+            case "bot_message": return "任务";
+            case "routine_run": return "任务编号";
+            case "machine_switch": return "机器";
+            case "image_generate":
+            case "video_generate": return "描述";
+            default: return "工具";
+        }
+    }
+
+    /** The one argument that explains the action, capped for the shade. */
+    private static String approvalDetail(String tool, JSONObject args) {
+        if (args == null) return "";
+        String value;
+        switch (tool) {
+            case "shell": value = args.optString("command", ""); break;
+            case "fs_write":
+            case "fs_delete":
+            case "fs_mkdir":
+            case "fs_read":
+            case "fs_list":
+            case "file_send":
+            case "file_fetch": value = args.optString("path", ""); break;
+            case "http_fetch":
+            case "browser_open":
+            case "browser_download": value = args.optString("url", ""); break;
+            case "browser_click": value = args.optString("selector", args.optString("ref", args.optString("text", ""))); break;
+            case "browser_type": value = args.optString("text", ""); break;
+            case "browser_eval": value = args.optString("script", args.optString("code", "")); break;
+            case "memory_write": value = args.optString("text", ""); break;
+            case "routine_create": value = args.optString("name", args.optString("instruction", "")); break;
+            case "routine_run": value = args.optString("id", ""); break;
+            case "bot_message": value = args.optString("text", ""); break;
+            case "machine_switch": value = args.optString("machine", ""); break;
+            case "image_generate":
+            case "video_generate": value = args.optString("prompt", ""); break;
+            default: value = ""; break;
+        }
+        value = value.trim();
+        if (value.length() > 160) value = value.substring(0, 157) + "…";
+        return value;
     }
 
     private Notification serviceNotification(Context context) {
@@ -484,7 +656,6 @@ public class NightshiftWatcher extends Service {
                 .setSmallIcon(R.drawable.ic_stat_nightshift)
                 .setContentIntent(openApp(id, hub, approvalId, botId))
                 .setAutoCancel(true);
-        if (approvalId != null && !approvalId.isEmpty()) addApprovalActions(builder, id, hub, approvalId);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             builder.setVisibility(Notification.VISIBILITY_PRIVATE);
         }
