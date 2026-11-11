@@ -152,6 +152,12 @@
   /* machines this phone has connected to before */
   .machines { margin-top: 16px; }
   .machines[hidden] { display: none; }
+  #scan-view { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; }
+  #scan-view[hidden] { display: none; }
+  #scan-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #scan-view .scan-frame { position: relative; width: min(68vw, 300px); aspect-ratio: 1; border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45); border: 2px solid rgba(255, 255, 255, 0.85); }
+  #scan-status { position: absolute; left: 24px; right: 24px; top: calc(48px + env(safe-area-inset-top)); margin: 0; text-align: center; color: #fff; font-size: 15px; line-height: 1.5; }
+  #scan-cancel { width: auto; padding: 0 36px; position: absolute; left: 50%; bottom: calc(40px + env(safe-area-inset-bottom)); transform: translateX(-50%); min-width: 140px; color: #fff; border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(0, 0, 0, 0.45); }
   #connect-back[hidden] { display: none; }
   .machines-title { font-size: 11.5px; color: var(--dim); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
   .machines-hint { font-size: 11px; color: var(--dim); margin-top: 8px; }
@@ -386,6 +392,14 @@
   </section>
 
   <div class="foot" id="foot">Nightshift mobile</div>
+</div>
+
+<!-- Scanning with the camera inside the app (jsQR): no Google module needed. -->
+<div id="scan-view" hidden>
+  <video id="scan-video" playsinline muted></video>
+  <div class="scan-frame"></div>
+  <p id="scan-status">对准电脑上「设置 → 配对」里的二维码</p>
+  <button id="scan-cancel" class="ghost" type="button">取消</button>
 </div>
 <script src="launcher.js"></script>
 </body>

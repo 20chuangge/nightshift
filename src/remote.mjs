@@ -581,6 +581,13 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         // "na": Windows has no per-bot desktops yet; its bots browse headless.
         // "pending": the desktop and browser are installing in the background
         // after the Hub came up (the slow part); not a failure.
+        // Windows installs Tailscale in the foreground and says how it went.
+        const tsDone = /^DESK_TS=(done|failed)\s*(\S*)/m.exec(result.output || '');
+        if (tailscaleKey && !job.tailscale && tsDone) {
+          job.tailscale = tsDone[1] === 'done'
+            ? `Tailscale 装好了${tsDone[2] ? `：${tsDone[2]}` : ''}，在外面也能连上这台机器`
+            : `Tailscale 没装好（${tsDone[2] === 'key' ? '密钥不对或已用过' : tsDone[2] === 'download' ? '下载不了 Tailscale' : tsDone[2] === 'launch' ? '安装程序没能启动' : tsDone[2] || '原因不明'}）：到这台机器的 设置 → 手机和外网 里点「装上 Tailscale」再试`;
+        }
         if (tailscaleKey && !job.tailscale) {
           job.tailscale = /Tailscale 在后台安装/.test(result.output)
             ? 'Tailscale 正在后台安装并加入你的网络，几分钟后这台机器会出现 100 开头的地址'

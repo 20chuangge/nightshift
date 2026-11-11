@@ -14,6 +14,7 @@
  * the UI shows as a one-time button instead of retrying.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { P, nowIso, readJsonSync, writeJsonSyncAtomic } from './store.mjs';
@@ -65,12 +66,36 @@ function findHint(text) {
   return m ? m[0] : null;
 }
 
+/**
+ * Linux: tailscaled lets only root (or its "operator") change serve/funnel,
+ * and the hub runs as its own account ("Access denied: serve config denied …
+ * use 'sudo tailscale set --operator=$USER' once"). On a machine given to the
+ * bots the hub may use sudo without a password: make it the operator once.
+ */
+export function needsOperator(text) {
+  return /access denied/i.test(String(text || '')) && /operator/i.test(String(text || ''));
+}
+async function makeOperator(bin) {
+  if (process.platform !== 'linux') return false;
+  let user = '';
+  try { user = os.userInfo().username; } catch { return false; }
+  if (!user || user === 'root') return false;
+  const out = await run('sudo', ['-n', bin, 'set', `--operator=${user}`], 15000);
+  return out.ok;
+}
+async function runAsOperator(bin, args, timeoutMs) {
+  const first = await run(bin, args, timeoutMs);
+  if (first.ok || !needsOperator(`${first.stdout}\n${first.stderr}`)) return first;
+  if (!(await makeOperator(bin))) return first;
+  return run(bin, args, timeoutMs);
+}
+
 /** Enable the funnel for the public port; returns a view the UI can render. */
 export async function enableFunnel(port) {
   const bin = tailscaleBin();
   if (!bin) return saveState({ installed: false, enabled: false, error: null, hint: null });
   if (!port) return saveState({ installed: true, enabled: false, error: '公网端口还没有启动', hint: null });
-  const out = await run(bin, ['funnel', '--bg', String(port)], 15000);
+  const out = await runAsOperator(bin, ['funnel', '--bg', String(port)], 15000);
   const text = `${out.stdout}\n${out.stderr}`;
   const hint = findHint(text);
   if (!out.ok || hint) {
@@ -84,7 +109,7 @@ export async function enableFunnel(port) {
 export async function disableFunnel() {
   const bin = tailscaleBin();
   if (!bin) return saveState({ installed: false, enabled: false, hint: null, error: null });
-  const off = await run(bin, ['funnel', '--https=443', 'off', '--yes'], 15000);
+  const off = await runAsOperator(bin, ['funnel', '--https=443', 'off', '--yes'], 15000);
   if (!off.ok) {
     const status = await run(bin, ['funnel', 'status', '--json']);
     const json = status.ok ? parseJson(status.stdout) : null;
@@ -96,7 +121,7 @@ export async function disableFunnel() {
       return saveState({ enabled: false, hint: null, error: null });
     }
     if (ruleCount <= 1) {
-      const reset = await run(bin, ['funnel', 'reset'], 15000);
+      const reset = await runAsOperator(bin, ['funnel', 'reset'], 15000);
       if (reset.ok) return saveState({ enabled: false, hint: null, error: null });
     }
     return saveState({ enabled: false, hint: null, error: '无法自动移除（检测到其他 Funnel 规则），请在 Tailscale 里手动关闭' });

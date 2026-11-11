@@ -325,8 +325,20 @@ if ($TailscaleKeyFile -and (Test-Path $TailscaleKeyFile)) {
   $tsScript = Join-Path $AppDir 'hub\tailscale-windows.ps1'
   $tsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tsScript`"", '-KeyFile', "`"$TailscaleKeyFile`"")
   if ($TailscaleName) { $tsArgs += @('-Name', $TailscaleName) }
-  Start-Process powershell.exe -ArgumentList $tsArgs -WindowStyle Hidden
-  Say 'Tailscale 在后台安装并加入你的网络，装好后在外面也能连上这台机器'
+  # In the foreground: this script runs over SSH, and Windows ends every
+  # process the SSH session started when it closes - a background install was
+  # killed before it began (win11: key left behind, no Tailscale, no log).
+  Say '安装 Tailscale 并加入你的网络（1-3 分钟）…'
+  $tsLog = Join-Path $env:ProgramData 'Nightshift\tailscale.log'
+  Start-Process powershell.exe -ArgumentList $tsArgs -WindowStyle Hidden -Wait
+  $tsLine = ''
+  if (Test-Path $tsLog) { $tsLine = (Select-String -Path $tsLog -Pattern '^DESK_TS=' | Select-Object -Last 1).Line }
+  if (-not $tsLine) {
+    Remove-Item -Force $TailscaleKeyFile -ErrorAction SilentlyContinue
+    $tsLine = 'DESK_TS=failed launch'
+  }
+  Write-Output $tsLine
+  if ($tsLine -like 'DESK_TS=done*') { Say 'Tailscale 装好了，在外面也能连上这台机器' } else { Say "Tailscale 没装好（$tsLine）" }
 }
 
 Write-Output "DESK_OS=$osName"

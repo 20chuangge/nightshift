@@ -1519,6 +1519,18 @@ route('GET', /^\/api\/pairing$/, async (_req, _res, { state }) => pairingInfo(st
 
 // A QR code in Settings: a URL that pairs the phone by itself, once, in ten
 // minutes. Only the machine owner (or an already-paired device) can ask.
+/** `<lan>/?pair=T&alt=<tailnet>&alt=<public>`; null when there is no address. */
+function combinedPairUrl(links, token) {
+  const order = { lan: 0, tailnet: 1, public: 2 };
+  const sorted = [...(links || [])].filter((l) => l && l.url).sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3));
+  if (!sorted.length) return null;
+  const [first, ...rest] = sorted;
+  const url = new URL(`${String(first.url).replace(/\/+$/, '')}/`);
+  url.searchParams.set('pair', token);
+  for (const link of rest) url.searchParams.append('alt', new URL(link.url).origin);
+  return url.toString();
+}
+
 route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
   const publicUrl = funnelPublicUrl();
   if (!state.lanUrl && !publicUrl) {
@@ -1546,6 +1558,10 @@ route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
   return {
     links: withToken,
     url: preferred?.url || null,
+    // One code for every address: LAN first (what a phone at home opens), the
+    // others as alt=. The Nightshift app tries them all and keeps the one that
+    // answers - LAN when it is on the same network, Tailscale when it is not.
+    qr: combinedPairUrl(links, token),
     expiresAt: new Date(expiresAt).toISOString(),
     expiresInSec: Math.round((expiresAt - Date.now()) / 1000),
   };
@@ -1673,7 +1689,7 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, {
   // first one it can reach. A VM's LAN address is often the computer's internal
   // network, while its Tailscale one works from the phone.
   const links = Array.isArray(made.links) ? made.links.filter((l) => l && typeof l.url === 'string') : [];
-  return { ok: true, machine: peer.name, url: made.url, links, expiresAt: made.expiresAt };
+  return { ok: true, machine: peer.name, url: made.url, links, qr: made.qr || null, expiresAt: made.expiresAt };
 });
 
 // --- UI state / remote machines -------------------------------------------

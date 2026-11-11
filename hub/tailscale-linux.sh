@@ -16,10 +16,24 @@ KEY=/root/.desk-tailscale.key
 shred -u "$KEY_SRC" 2>/dev/null || rm -f "$KEY_SRC"
 trap 'shred -u "$KEY" 2>/dev/null || rm -f "$KEY"' EXIT
 
-if ! command -v tailscale >/dev/null 2>&1; then
+# Adding a machine installs the desktop and the browser at the same time; the
+# package manager allows one at a time ("Could not get lock
+# /var/lib/dpkg/lock-frontend" on Ubuntu). Wait for it, then try again.
+pkg_busy() {
+  pgrep -x apt-get >/dev/null 2>&1 || pgrep -x apt >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 \
+    || pgrep -x dnf >/dev/null 2>&1 || pgrep -x yum >/dev/null 2>&1 || pgrep -x rpm >/dev/null 2>&1
+}
+wait_pkg() {
+  for _ in $(seq 1 240); do pkg_busy || return 0; sleep 5; done   # up to 20 minutes
+}
+for attempt in 1 2 3; do
+  command -v tailscale >/dev/null 2>&1 && break
+  wait_pkg
+  echo "installing Tailscale (attempt $attempt)"
   if command -v curl >/dev/null 2>&1; then curl -fsSL https://tailscale.com/install.sh | sh
   else wget -qO- https://tailscale.com/install.sh | sh; fi
-fi
+  command -v tailscale >/dev/null 2>&1 || sleep 20
+done
 command -v tailscale >/dev/null 2>&1 || { echo "DESK_TS=failed download"; exit 1; }
 systemctl enable --now tailscaled >/dev/null 2>&1 || true
 

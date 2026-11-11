@@ -2480,6 +2480,21 @@ async function scenarioPairingLink() {
       String(made.json?.expiresInSec),
     );
 
+    {
+      // One QR for every address: LAN first, the rest as alt=, same one-time token.
+      const qr = made.json?.qr ? new URL(made.json.qr) : null;
+      const links = made.json?.links || [];
+      const lan = links.find((l) => l.kind === 'lan');
+      const others = links.filter((l) => l !== (lan || links[0])).map((l) => new URL(l.url).origin);
+      check(
+        'auto address: the QR carries every address (LAN first, the others as alt=) with the same token',
+        Boolean(qr) && qr.searchParams.get('pair') === new URL(made.json.url).searchParams.get('pair')
+          && qr.origin === new URL((lan || links[0]).url).origin
+          && JSON.stringify(qr.searchParams.getAll('alt')) === JSON.stringify(others),
+        made.json?.qr,
+      );
+    }
+
     const token = new URL(made.json.url).searchParams.get('pair');
     const paired = await api('/api/pair', {
       method: 'POST',
@@ -3138,12 +3153,12 @@ function shanghaiWeekday(ts) {
     check('the sidebar is set apart from the chat (darker grey in light, a divider line)', html.includes('--bg: #FFFFFF; --bg-2: #F0F0F0;') && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
     check('feishu apps of their own: the settings list, the add form and its button are wired', ['feishu-apps', 'feishu-app-bot', 'feishu-app-id', 'feishu-app-secret', 'feishu-app-save'].every((id) => html.includes(`id="${id}"`)) && html.includes("$('feishu-app-save')?.addEventListener('click', addFeishuApp)"));
     const launcher = await readText('../mobile/shell/launcher.js');
-    check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.url);'));
+    check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.best || entry.url);'));
     const shellHtml = await readText('../mobile/shell/index.html');
     {
       const srvSrc = await readText('../src/server.mjs');
       const page = await readText('../public/index.html');
-      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url, links, expiresAt: made.expiresAt };') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
+      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url, links, qr: made.qr || null, expiresAt: made.expiresAt };') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
       check('a long toast stays a rounded box, not an oval', /.toast {[^}]*border-radius: 16px;/.test(page));
     }
     check('opening a machine keeps the phone on the address it already uses (LAN, Tailscale) and takes the public one last', launcher.includes('return { lan: 1, tailnet: 2, public: 3 }[l.kind] ?? 2;') && launcher.includes('await pickReachableLink(links, safeOrigin(hub))') && !launcher.includes('await pickReachableLink(links)'));
@@ -3695,6 +3710,11 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const rm = await readText('../src/remote.mjs');
     check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
     const tsl = await readText('../hub/tailscale-linux.sh');
+    const setupWin = await readText('../hub/setup-windows.ps1');
+    const funnelSrc = await readText('../src/funnel.mjs');
+    check('funnel on Linux: on Access denied (operator) the hub makes its own account the Tailscale operator once (sudo -n) and tries again', funnelSrc.includes("run('sudo', ['-n', bin, 'set', `--operator=${user}`], 15000)") &&funnelSrc.includes("await runAsOperator(bin, ['funnel', '--bg', String(port)], 15000)"));
+    check('tailscale key: Linux waits for the package manager (desktop install runs at the same time) and retries', tsl.includes('wait_pkg') && tsl.includes('for attempt in 1 2 3; do') && tsl.includes('pgrep -x apt-get'));
+    check('tailscale key: Windows installs Tailscale in the foreground (an SSH session kills background children) and reports DESK_TS', setupWin.includes("Start-Process powershell.exe -ArgumentList $tsArgs -WindowStyle Hidden -Wait") && setupWin.includes('Write-Output $tsLine'));
     check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && tsl.includes('tailscale up --auth-key="file:$KEY"') && tsl.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup') && sh.includes('$APP_DIR/hub/tailscale-linux.sh'));
     const { createProvisioner } = await import('../src/remote.mjs').catch(() => ({}));
     if (typeof createProvisioner === 'function') {
@@ -4256,7 +4276,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N1: a visible bot browser has no "unsupported command-line flag" bar; Wayland still gets its flags', brN.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--test-type') && !brN.buildLaunchArgs({ port: 9, profileDir: 'x', headless: true }).includes('--test-type') && brN.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true }).includes('--ozone-platform=wayland'));
         check('N1: a phone settings page does not repeat its title under the top bar', pageN.includes('.settings-modal:not(.set-home) #settings-scroll > .dsec > .dsec-head:first-child { display: none; }'));
         check('N1: each machine learns the name it was given and uses it everywhere; the computer joins every list with a login of its own', srvN.includes("if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);") && srvN.includes('name: selfMachineName(),') && mainN.includes('const body = t.local ? { peers: others } : { peers: others, self: { name: t.name } };') && mainN.includes("deviceName: '其他机器（同步用）'") && mainN.includes('if (!t.local && self) others.unshift(self);'));
-        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('for (const alt of entry.alt || []) {') && launcherN.includes('await rememberHub(entry.url);'));
+        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('bestAddress([entry.url, ...(entry.alt || [])])') && launcherN.includes('await rememberHub(entry.url);'));
       }
       {
         // The phone's real merge, run on a list like the one a phone had: one
@@ -4291,6 +4311,48 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         await merge(store, KEYS, fakeFetch, async () => {});
         const rows = JSON.parse(mem.get('desk.hubs'));
         check('phone list: one row per machine with its other address kept, the hub names win, stale addresses go', rows.length === 3 && rows.map((r) => r.name).join(',') === 'LAPTOP,Rocky,win11' && rows.find((r) => r.name === 'Rocky').alt?.length === 1 && !rows.some((r) => r.name === 'localhost.localdomain'));
+      }
+      {
+        // N2: scanning without Google - our own pairing code, read back by the vendored jsQR.
+        const vm = await import('node:vm');
+        const box = { window: {}, self: {} };
+        box.self = box.window;
+        vm.createContext(box);
+        vm.runInContext(await readText('../public/vendor/qrcode.js') + '\nwindow.qrcode = qrcode;', box);
+        vm.runInContext(await readText('../mobile/shell/jsqr.js'), box);
+        const jsQR = box.jsQR || box.window.jsQR || box.self.jsQR;
+        const link = 'http://hub.test:4390/?pair=abcDEF123456';
+        const qr = box.window.qrcode(0, 'M');
+        qr.addData(link);
+        qr.make();
+        const n = qr.getModuleCount();
+        const scale = 6;
+        const quiet = 4;
+        const size = (n + quiet * 2) * scale;
+        const px = new Uint8ClampedArray(size * size * 4).fill(255);
+        for (let r = 0; r < n; r += 1) for (let c = 0; c < n; c += 1) {
+          if (!qr.isDark(r, c)) continue;
+          for (let y = 0; y < scale; y += 1) for (let x = 0; x < scale; x += 1) {
+            const i = (((r + quiet) * scale + y) * size + (c + quiet) * scale + x) * 4;
+            px[i] = 0; px[i + 1] = 0; px[i + 2] = 0;
+          }
+        }
+        const read = typeof jsQR === 'function' ? jsQR(px, size, size) : null;
+        const launcherS = await readText('../mobile/shell/launcher.js');
+        const shellS = await readText('../mobile/shell/index.html');
+        check('N2 scan: a pairing code the hub draws is read back by the in-app scanner (jsQR, no Google module)', read?.data === link);
+        check('N2 scan: the back key and 取消 both close the camera', launcherS.includes("history.pushState({ scan: true }, '');") && launcherS.includes("window.addEventListener('popstate', onBack);") && launcherS.includes('stream.getTracks().forEach((t) => t.stop());'));
+        check('auto address: the phone probes every address at once and keeps the closest that answers (LAN, then Tailscale, then public), for scanning and for opening a machine', launcherS.includes('async function bestAddress(urls)') && launcherS.includes("url.searchParams.getAll('alt')") && launcherS.includes('let hub = (await bestAddress([entry.url, ...(entry.alt || [])])) || entry.url;'));
+        check('auto address: each row is labelled by the address that answers now (局域网 / Tailscale)', launcherS.includes('if (best) { url.textContent = linkKind(best); url.title = best; }'));
+        check('auto address: the row shows how it was reached last time while checking, and remembers the new one', launcherS.includes('url.textContent = linkKind(entry.best || entry.url);') && launcherS.includes('row.best = best;'));
+        check('phone list: the 15 s redraw keeps the last state (no 检测中 flashing), and a relayed Tailscale address gets a second, longer try before 离线', launcherS.includes('const known = renderMachines.lastUp?.get(entry.url);') && launcherS.includes('const again = await Promise.all(slow.map((u) => probe(u, 10000)));') && launcherS.includes('async function probe(hub, timeoutMs = PROBE_TIMEOUT_MS) {'));
+        check('N2 list: a VM only the computer can reach says 仅电脑可达 and explains, instead of 离线', launcherS.includes('async function behindVia(entry)') && launcherS.includes("tag.textContent = '仅电脑可达';") && launcherS.includes('手机直接连不到'));
+        check('N2 scan: Google scanner when the phone has it, otherwise the camera inside the app', launcherS.includes('useGoogle = await ensureBarcodeModule().catch(() => false);') && launcherS.includes('const text = await cameraScan();') && shellS.includes('id="scan-view"') && launcherS.includes("tag.src = 'jsqr.js';"));
+        const pageT = await readText('../public/index.html');
+        check('machine menu: the machine we came from is not listed twice when it is already in the list', pageT.includes('if (list.some((m) => (back.name && m.name === back.name) || origins(m).includes(back.origin))) back = null;'));
+        check('N2 takeover: with the keyboard up, the bar (键盘 included) sits on top of it; the app counts a row online by either of its addresses', pageT.includes('body.pc-touching.kb-open .pc-mobile-bar {') && pageT.includes('const kbOpen = keyboard || window.innerHeight < apply.base - 120;') && launcherS.includes('const best = await bestAddress([entry.url, ...(entry.alt || [])]);'));
+        check('N2 takeover: phone touches go to a layer of our own (touchpad / direct, pinch zoom), the keyboard is a toggle, the bar can be hidden and holds 退出全屏', pageT.includes('id="pc-touch"') && pageT.includes('function setupPhoneTouch()') && pageT.includes("id=\"pcm-mode\"") && pageT.includes("id=\"pcm-full\"") && pageT.includes("id=\"pcm-hide\"") && pageT.includes("$('pcm-key').addEventListener('pointerdown', (event) => event.preventDefault());") && pageT.includes("const open = (input && doc.activeElement === input) || document.body.classList.contains('kb-open');") && pageT.includes('body.pc-touching .pc-exit { display: none !important; }'));
+        check('N2 takeover: the ring follows the picture after 全屏 or rotating (same remote point, re-placed on resize)', pageT.includes('function replaceCursor()') && pageT.includes('}).observe(layer);') && pageT.includes('phoneTouch.cursorAt = { fx: (phoneTouch.cursor.x - pic.left) / pic.width'));
       }
       check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("hint.hidden = mode !== 'light' && mode !== 'kiosk';") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
       check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);

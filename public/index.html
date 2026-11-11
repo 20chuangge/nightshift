@@ -951,6 +951,35 @@
     background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(10px);
     border-top: 1px solid rgba(255,255,255,.08);
   }
+  /* Phone takeover: our own touch layer turns fingers into a mouse (the
+     picture never sees the touches, so it cannot pop the keyboard up). */
+  .pc-touch { position: absolute; inset: 0; z-index: 3; touch-action: none; }
+  .pc-touch[hidden] { display: none; }
+  /* A ring on the spot a tap will click: the remote machine draws its own
+     pointer, so a second arrow next to it only confused (seen on a phone). */
+  .pc-cursor {
+    position: absolute; left: -12px; top: -12px; width: 24px; height: 24px; pointer-events: none;
+    border-radius: 50%; border: 2px solid #fff; box-sizing: border-box;
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55), inset 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+  }
+  .pc-touch.direct .pc-cursor { display: none; }
+  #pc-vnc-wrap { transform-origin: 0 0; }
+  body.pc-touching .pc-exit { display: none !important; }
+  .pcm-handle { display: none; }
+  /* The keyboard is up during a phone takeover: the bar sits right on top of
+     it (inside the sheet it ended up under the keyboard, 键盘 included). */
+  body.pc-touching.kb-open .pc-mobile-bar {
+    position: fixed; left: 0; right: 0; bottom: var(--kb-bottom, 0px); z-index: 120;
+    padding: 6px calc(8px + var(--safe-r)) 6px calc(8px + var(--safe-l));
+    background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(10px);
+  }
+  body.pcm-collapsed .pc-mobile-bar { display: none !important; }
+  body.pcm-collapsed.pc-touching .pcm-handle {
+    display: block; position: fixed; z-index: 96;
+    right: calc(10px + var(--safe-r)); bottom: calc(10px + var(--safe-b));
+    padding: 10px 14px; border-radius: 999px; font: 600 12px/1 var(--sans); color: #fff;
+    background: rgba(0, 0, 0, 0.55); border: 1px solid rgba(255, 255, 255, 0.18); backdrop-filter: blur(8px);
+  }
   /* User-controlled rotation: the picture turns, the controls stay upright.
      No orientation lock — the same button turns it back. */
   body.panel-max.pc-rotated #pc-screen-wrap {
@@ -963,11 +992,12 @@
   body.panel-max.pc-native-landscape #pc-screen-wrap { right: 76px; }
   body.panel-max.pc-landscape .pc-mobile-bar {
     left: auto; right: 0; top: 0; bottom: 0; width: 76px;
-    flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: center;
+    flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start;
+    overflow-y: auto; overscroll-behavior: contain;
     padding: calc(10px + var(--safe-t)) 8px calc(10px + var(--safe-b));
     border-top: 0; border-left: 1px solid rgba(255, 255, 255, 0.08);
   }
-  body.panel-max.pc-landscape .pc-mobile-bar button { width: 100%; min-width: 0; min-height: 44px; }
+  body.panel-max.pc-landscape .pc-mobile-bar button { width: 100%; min-width: 0; min-height: 40px; flex: none; }
   /* Clipboard drawer: explicit paste in, explicit copy out. Works on plain
      http where navigator.clipboard does not exist. */
   .clip-drawer {
@@ -3176,11 +3206,14 @@
               <div class="pc-shield-hint">点按画面进全屏</div>
               <button class="btn primary" id="pc-preview-take" type="button">接管桌面</button>
             </div>
+            <div class="pc-touch" id="pc-touch" hidden><i class="pc-cursor" id="pc-cursor"></i></div>
             <button class="pc-exit" id="pc-exit" type="button">退出全屏 (Esc)</button>
             <button class="pc-done" id="pc-done" type="button">我弄好了，继续</button>
           </div>
           <div class="pc-light-hint" id="pc-light-hint" hidden>轻量桌面：没有任务栏和图标，空着是正常的。机器人打开浏览器或程序时，窗口会出现在这里；接管后右键空白处有菜单。</div>
+          <button class="pcm-handle" id="pcm-handle" type="button">工具</button>
           <div class="pc-mobile-bar" id="pc-mobile-bar" hidden>
+            <button id="pcm-mode" type="button">触摸板</button>
             <button id="pcm-key" type="button">键盘</button>
             <button id="pcm-ctrl" type="button">Ctrl</button>
             <button id="pcm-alt" type="button">Alt</button>
@@ -3189,6 +3222,8 @@
             <button id="pcm-clip" type="button">剪贴板</button>
             <button id="pcm-rot" type="button">旋转</button>
             <button id="pcm-view" type="button">预览</button>
+            <button id="pcm-full" type="button">全屏</button>
+            <button id="pcm-hide" type="button">收起</button>
           </div>
           <div class="pc-stats" id="pc-stats"></div>
           <div class="section-head" id="pc-procs-head" style="margin-top:14px"><span>进程</span></div>
@@ -3771,6 +3806,7 @@
           </div>
           <div class="row-note" id="qr-iphone">iPhone 扫码后在 Safari 里打开，点「分享」→「添加到主屏幕」，以后从主屏幕一按就进来。</div>
           <div class="row-note" id="qr-tailnet-note" hidden>在外面用的时候，手机上也要装 Tailscale 并登录同一个账号，然后扫「在外面」那个码。</div>
+          <div class="row-note" id="qr-auto-note" hidden>这个码里带着这台机器的所有地址。用夜班 App 扫：和电脑在同一个局域网就走局域网，不在就自动走 Tailscale（手机上要装 Tailscale 并登录同一个账号）。</div>
           <div class="row-note" id="qr-error" hidden></div>
         </div>
       </div>
@@ -9204,9 +9240,23 @@ async function requestPairLink(preferredKind = '') {
   if ($('qr-count')) $('qr-count').textContent = '';
   try {
     const made = await api('/api/pairing/link', { method: 'POST' });
-    state.pairLinks = { links: made?.links || [], expiresAt: made?.expiresAt, url: made?.url };
+    state.pairLinks = { links: made?.links || [], expiresAt: made?.expiresAt, url: made?.url, qr: made?.qr || '' };
     state.pairLinksPrefer = preferredKind;
-    renderPairTabs(state.pairLinks.links, preferredKind);
+    if (made?.qr) {
+      // One code with every address: the phone app picks LAN when it is on the
+      // same network and Tailscale when it is not - nothing to choose here.
+      if ($('pair-tabs')) $('pair-tabs').hidden = true;
+      drawQr(made.qr, '手机扫这个码连接夜班');
+      $('qr-url').textContent = made.qr;
+      $('qr-copy').disabled = false;
+      $('qr-iphone').hidden = false;
+      $('qr-tailnet-note').hidden = true;
+      const note = $('qr-auto-note');
+      if (note) note.hidden = state.pairLinks.links.length < 2;
+      pairCountdown(made.expiresAt);
+    } else {
+      renderPairTabs(state.pairLinks.links, preferredKind);
+    }
   } catch (err) {
     setQrBox('<div class="qr-hint">还没有二维码</div>');
     showQrError(err);
@@ -11023,7 +11073,13 @@ function renderMachineMenu() {
     // the machine we were switched away from, so the way back is the same list
     // instead of a separate button.
     const list = (state.machinesCache && state.machinesCache.machines) || [];
-    const back = cameFromMachine();
+    let back = cameFromMachine();
+    // Every machine now lists every other one, so the machine we came from is
+    // usually in the list already (by name, or by one of its addresses): one row.
+    if (back) {
+      const origins = (m) => [m.url, m.tailnetUrl].filter(Boolean).map((u) => { try { return new URL(u).origin; } catch { return ''; } });
+      if (list.some((m) => (back.name && m.name === back.name) || origins(m).includes(back.origin))) back = null;
+    }
     // The way back is rendered exactly like any other machine row: name, an
     // "离线" tag when it does not answer, and its address. No arrow, no label -
     // it is just one more machine in the list.
@@ -11386,6 +11442,7 @@ function syncViewer() {
   const installing = state.computer?.desktopSetup?.state === 'running';
   const bar = $('pc-mobile-bar');
   if (bar) bar.hidden = !(isMobile() && takeover && watching);
+  syncPhoneTouch(isMobile() && takeover && watching);
   const url = currentViewerUrl();
   // Closing the pane ends the session even mid-takeover: a hidden iframe must
   // not keep a VNC websocket (and the remote input focus) alive.
@@ -11433,6 +11490,250 @@ function syncViewer() {
     }
   }
   if ($('pc-desktop')) $('pc-desktop').textContent = takeover ? '返回预览' : '接管桌面';
+}
+
+/*
+ * Phone takeover as a remote-control app does it. 触摸板 (default): drag moves a
+ * cursor, tap clicks, double-tap and hold drags, two-finger tap right-clicks,
+ * two fingers up/down scroll. 直接点: tap where you touch, drag holds the left
+ * button, long press right-clicks. Pinch zooms the picture; two fingers pan it
+ * while zoomed. noVNC gets plain mouse events in its canvas coordinates.
+ */
+const phoneTouch = {
+  mode: (() => { try { return localStorage.getItem('desk.touchMode') === 'direct' ? 'direct' : 'pad'; } catch { return 'pad'; } })(),
+  zoom: 1, tx: 0, ty: 0, cursor: null, on: false,
+};
+function vncRfb() { return document.querySelector('#pc-vnc-wrap iframe')?.contentWindow?.UI?.rfb || null; }
+/** Touch-layer pixels -> noVNC canvas pixels (through the zoom and the iframe). */
+function touchToCanvas(ox, oy) {
+  const frame = document.querySelector('#pc-vnc-wrap iframe');
+  const rfb = vncRfb();
+  if (!frame || !rfb?._canvas) return null;
+  const layer = $('pc-touch').getBoundingClientRect();
+  const fr = frame.getBoundingClientRect();
+  const z = fr.width / (frame.offsetWidth || fr.width || 1);
+  const ix = (layer.left + ox - fr.left) / z;
+  const iy = (layer.top + oy - fr.top) / z;
+  const cr = rfb._canvas.getBoundingClientRect();
+  return { x: ix - cr.left, y: iy - cr.top };
+}
+function touchMove(ox, oy) { const p = touchToCanvas(ox, oy); if (p) vncRfb()._handleMouseMove(p.x, p.y); }
+function touchButtons(ox, oy, mask) { const p = touchToCanvas(ox, oy); if (p) vncRfb()._handleMouseButton(p.x, p.y, mask); }
+function touchClick(ox, oy, mask = 1) {
+  touchMove(ox, oy);
+  touchButtons(ox, oy, mask);
+  setTimeout(() => touchButtons(ox, oy, 0), 40);
+}
+/** Where the remote picture sits inside the touch layer, in layer pixels. */
+function canvasInLayer() {
+  const frame = document.querySelector('#pc-vnc-wrap iframe');
+  const rfb = vncRfb();
+  const layer = $('pc-touch');
+  if (!frame || !rfb?._canvas || !layer) return null;
+  const lr = layer.getBoundingClientRect();
+  const fr = frame.getBoundingClientRect();
+  const z = fr.width / (frame.offsetWidth || fr.width || 1);
+  const cr = rfb._canvas.getBoundingClientRect();
+  if (!cr.width || !cr.height) return null;
+  return { left: fr.left + cr.left * z - lr.left, top: fr.top + cr.top * z - lr.top, width: cr.width * z, height: cr.height * z };
+}
+function placeCursor() {
+  const c = $('pc-cursor');
+  if (c && phoneTouch.cursor) c.style.translate = `${phoneTouch.cursor.x}px ${phoneTouch.cursor.y}px`;
+  // Remember the spot as a share of the picture, so a layout change (全屏,
+  // rotating the phone) can put the ring back over the same remote point.
+  const pic = canvasInLayer();
+  if (pic && phoneTouch.cursor) phoneTouch.cursorAt = { fx: (phoneTouch.cursor.x - pic.left) / pic.width, fy: (phoneTouch.cursor.y - pic.top) / pic.height };
+}
+/** After the picture moved or changed size: same remote point, new screen spot. */
+function replaceCursor() {
+  const pic = canvasInLayer();
+  if (!pic || !phoneTouch.on) return;
+  // Not placed over the picture yet (it was still connecting): the middle of it.
+  const fresh = !phoneTouch.cursorAt;
+  const at = phoneTouch.cursorAt || { fx: 0.5, fy: 0.5 };
+  phoneTouch.cursor = { x: pic.left + at.fx * pic.width, y: pic.top + at.fy * pic.height };
+  placeCursor();
+  if (fresh) touchMove(phoneTouch.cursor.x, phoneTouch.cursor.y);
+}
+function applyZoom() {
+  const wrap = $('pc-vnc-wrap');
+  if (!wrap) return;
+  wrap.style.transform = phoneTouch.zoom > 1.001 ? `translate(${phoneTouch.tx}px, ${phoneTouch.ty}px) scale(${phoneTouch.zoom})` : '';
+}
+function syncPhoneTouch(on) {
+  const layer = $('pc-touch');
+  if (!layer) return;
+  layer.hidden = !on;
+  layer.classList.toggle('direct', phoneTouch.mode === 'direct');
+  document.body.classList.toggle('pc-touching', on);
+  if ($('pcm-mode')) $('pcm-mode').textContent = phoneTouch.mode === 'direct' ? '直接点' : '触摸板';
+  if ($('pcm-full')) $('pcm-full').textContent = document.body.classList.contains('panel-max') ? '退出全屏' : '全屏';
+  if (on && !phoneTouch.on) {
+    const r = layer.getBoundingClientRect();
+    phoneTouch.cursor = { x: r.width / 2, y: r.height / 2 };
+    phoneTouch.on = true;
+    placeCursor();
+    // The remote pointer starts where the ring is.
+    touchMove(phoneTouch.cursor.x, phoneTouch.cursor.y);
+  }
+  if (!on && phoneTouch.on) { phoneTouch.zoom = 1; phoneTouch.tx = 0; phoneTouch.ty = 0; phoneTouch.cursorAt = null; applyZoom(); }
+  phoneTouch.on = on;
+}
+function setupPhoneTouch() {
+  const layer = $('pc-touch');
+  if (!layer) return;
+  const pts = new Map();
+  let g = null;
+  let lastTapAt = 0;
+  let holdTimer = null;
+  // 全屏 / rotating resizes the picture a moment after the layer: follow both.
+  if (window.ResizeObserver) {
+    let settle = null;
+    new ResizeObserver(() => {
+      replaceCursor();
+      clearTimeout(settle);
+      settle = setTimeout(replaceCursor, 350);
+    }).observe(layer);
+  }
+  const local = (e) => { const r = layer.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const clampCursor = () => {
+    const r = layer.getBoundingClientRect();
+    phoneTouch.cursor.x = Math.max(0, Math.min(r.width - 1, phoneTouch.cursor.x));
+    phoneTouch.cursor.y = Math.max(0, Math.min(r.height - 1, phoneTouch.cursor.y));
+  };
+  const clampPan = () => {
+    const r = layer.getBoundingClientRect();
+    phoneTouch.tx = Math.min(0, Math.max(r.width - r.width * phoneTouch.zoom, phoneTouch.tx));
+    phoneTouch.ty = Math.min(0, Math.max(r.height - r.height * phoneTouch.zoom, phoneTouch.ty));
+  };
+  layer.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { layer.setPointerCapture(e.pointerId); } catch { /* synthetic event */ }
+    const p = local(e);
+    pts.set(e.pointerId, { x: p.x, y: p.y, sx: p.x, sy: p.y });
+    if (pts.size === 1) {
+      g = { kind: 'one', start: Date.now(), moved: false, dragging: false, right: false, last: p };
+      if (phoneTouch.mode === 'pad') {
+        // Double tap and hold: drag with the left button down.
+        if (Date.now() - lastTapAt < 320) { g.dragging = true; touchButtons(phoneTouch.cursor.x, phoneTouch.cursor.y, 1); }
+      } else {
+        holdTimer = setTimeout(() => { if (g?.kind === 'one' && !g.moved) { g.right = true; touchClick(p.x, p.y, 4); } }, 600);
+      }
+    } else if (pts.size === 2) {
+      clearTimeout(holdTimer);
+      if (g?.dragging) {
+        const at = phoneTouch.mode === 'pad' ? phoneTouch.cursor : g.last;
+        touchButtons(at.x, at.y, 0);
+      }
+      const [a, b] = [...pts.values()];
+      g = { kind: 'two', start: Date.now(), moved: false, pinch: false, d0: dist(a, b), z0: phoneTouch.zoom, m0: mid(a, b), last: mid(a, b), tx0: phoneTouch.tx, ty0: phoneTouch.ty, acc: 0 };
+    }
+  });
+  layer.addEventListener('pointermove', (e) => {
+    const pt = pts.get(e.pointerId);
+    if (!pt || !g) return;
+    e.preventDefault();
+    const p = local(e);
+    pt.x = p.x;
+    pt.y = p.y;
+    if (g.kind === 'one') {
+      const dx = p.x - g.last.x;
+      const dy = p.y - g.last.y;
+      g.last = p;
+      if (!g.moved && Math.hypot(p.x - pt.sx, p.y - pt.sy) > 8) {
+        g.moved = true;
+        clearTimeout(holdTimer);
+        if (phoneTouch.mode === 'direct' && !g.right) { touchMove(pt.sx, pt.sy); touchButtons(pt.sx, pt.sy, 1); g.dragging = true; }
+      }
+      if (phoneTouch.mode === 'pad') {
+        phoneTouch.cursor.x += dx * 1.6;
+        phoneTouch.cursor.y += dy * 1.6;
+        clampCursor();
+        placeCursor();
+        touchMove(phoneTouch.cursor.x, phoneTouch.cursor.y);
+      } else if (g.dragging) {
+        touchMove(p.x, p.y);
+      }
+    } else if (g.kind === 'two' && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = dist(a, b);
+      const m = mid(a, b);
+      if (Math.hypot(m.x - g.m0.x, m.y - g.m0.y) > 8 || Math.abs(d - g.d0) > 8) g.moved = true;
+      if (g.pinch || Math.abs(d - g.d0) > 28) {
+        g.pinch = true;
+        const z = Math.max(1, Math.min(4, g.z0 * d / g.d0));
+        phoneTouch.tx = g.m0.x - (g.m0.x - g.tx0) * (z / g.z0) + (m.x - g.m0.x);
+        phoneTouch.ty = g.m0.y - (g.m0.y - g.ty0) * (z / g.z0) + (m.y - g.m0.y);
+        phoneTouch.zoom = z;
+        clampPan();
+        applyZoom();
+      } else if (phoneTouch.zoom > 1.001) {
+        phoneTouch.tx = g.tx0 + (m.x - g.m0.x);
+        phoneTouch.ty = g.ty0 + (m.y - g.m0.y);
+        clampPan();
+        applyZoom();
+      } else {
+        // Two fingers up/down: the wheel, like a laptop touchpad.
+        g.acc += m.y - g.last.y;
+        const at = phoneTouch.mode === 'pad' ? phoneTouch.cursor : g.m0;
+        while (Math.abs(g.acc) >= 36) {
+          const up = g.acc > 0; // fingers move down = content moves down = wheel up
+          touchMove(at.x, at.y);
+          touchButtons(at.x, at.y, up ? 8 : 16);
+          touchButtons(at.x, at.y, 0);
+          g.acc += up ? -36 : 36;
+        }
+      }
+      g.last = m;
+    }
+  });
+  const end = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    if (!g) return;
+    if (g.kind === 'one' && pts.size === 0) {
+      clearTimeout(holdTimer);
+      const quick = Date.now() - g.start < 300;
+      if (phoneTouch.mode === 'pad') {
+        const c = phoneTouch.cursor;
+        if (g.dragging) touchButtons(c.x, c.y, 0);
+        else if (!g.moved && quick) { touchClick(c.x, c.y, 1); lastTapAt = Date.now(); }
+      } else if (g.dragging) {
+        touchButtons(g.last.x, g.last.y, 0);
+      } else if (!g.moved && !g.right && quick) {
+        touchClick(g.last.x, g.last.y, 1);
+      }
+      g = null;
+    } else if (g.kind === 'two') {
+      if (!g.moved && !g.pinch && Date.now() - g.start < 400) {
+        const at = phoneTouch.mode === 'pad' ? phoneTouch.cursor : g.m0;
+        touchClick(at.x, at.y, 4);
+      }
+      g = pts.size === 0 ? null : { kind: 'done' };
+    } else if (g.kind === 'done' && pts.size === 0) {
+      g = null;
+    }
+  };
+  layer.addEventListener('pointerup', end);
+  layer.addEventListener('pointercancel', end);
+
+  $('pcm-mode')?.addEventListener('click', () => {
+    phoneTouch.mode = phoneTouch.mode === 'pad' ? 'direct' : 'pad';
+    try { localStorage.setItem('desk.touchMode', phoneTouch.mode); } catch { /* private mode */ }
+    syncPhoneTouch(phoneTouch.on);
+    toast(phoneTouch.mode === 'pad'
+      ? '触摸板：拖动移动光标，轻点是左键，双击按住可以拖动，双指轻点是右键，双指上下滑是滚动'
+      : '直接点：点哪里就点哪里，按住拖动，长按是右键，双指上下滑是滚动');
+  });
+  $('pcm-full')?.addEventListener('click', () => {
+    togglePanelMax(!document.body.classList.contains('panel-max'));
+    setTimeout(() => syncPhoneTouch(phoneTouch.on), 60);
+  });
+  $('pcm-hide')?.addEventListener('click', () => document.body.classList.add('pcm-collapsed'));
+  $('pcm-handle')?.addEventListener('click', () => document.body.classList.remove('pcm-collapsed'));
 }
 
 function unmountViewer() {
@@ -11877,6 +12178,14 @@ function setupViewport() {
     const height = vv ? vv.height : window.innerHeight;
     const keyboard = Boolean(vv && vv.height < window.innerHeight - 120);
     const root = document.documentElement;
+    // The phone app resizes the page for the keyboard ("native"), so the
+    // visual viewport alone cannot tell: compare with the tallest page seen.
+    apply.base = Math.max(apply.base || 0, window.innerHeight);
+    const kbOpen = keyboard || window.innerHeight < apply.base - 120;
+    document.body.classList.toggle('kb-open', kbOpen);
+    root.style.setProperty('--kb-bottom', `${vv ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)) : 0}px`);
+    // Takeover: the 键盘 button shows whether the remote keyboard is up.
+    if ($('pcm-key')) $('pcm-key').classList.toggle('on', kbOpen && document.body.classList.contains('pc-touching'));
     if (keyboard) root.style.setProperty('--app-height', `${Math.round(height)}px`);
     else root.style.removeProperty('--app-height');
     if (keyboard) {
@@ -11889,7 +12198,7 @@ function setupViewport() {
     raf = requestAnimationFrame(apply);
   };
   window.addEventListener('resize', schedule);
-  window.addEventListener('orientationchange', schedule);
+  window.addEventListener('orientationchange', () => { apply.base = 0; schedule(); });
   // Layout changes (including window zoom) must never leave a scrim behind.
   let overlayRaf = 0;
   const syncOverlays = () => {
@@ -11980,7 +12289,25 @@ function wireChrome() {
     if (isMobile() && !desktopTakeover()) togglePanelMax(true);
   });
   const vncUI = () => document.querySelector('#pc-vnc-wrap iframe')?.contentWindow?.UI || null;
-  $('pcm-key').addEventListener('click', () => vncUI()?.showVirtualKeyboard());
+  // Touching the button must not take focus from the remote keyboard's input:
+  // that would close the keyboard first, and the tap would open it again.
+  $('pcm-key').addEventListener('pointerdown', (event) => event.preventDefault());
+  $('pcm-key').addEventListener('mousedown', (event) => event.preventDefault());
+  $('pcm-key').addEventListener('click', (event) => {
+    // A toggle: the keyboard comes up only from this button and goes away from it.
+    const ui = vncUI();
+    const doc = document.querySelector('#pc-vnc-wrap iframe')?.contentDocument;
+    const input = doc?.getElementById('noVNC_keyboardinput');
+    if (!ui) return;
+    const open = (input && doc.activeElement === input) || document.body.classList.contains('kb-open');
+    if (open) {
+      ui.hideVirtualKeyboard();
+      input?.blur();
+    } else ui.showVirtualKeyboard();
+    const btn = event.currentTarget;
+    setTimeout(() => btn.classList.toggle('on', !open && Boolean(input && doc.activeElement === input)), 80);
+  });
+  setupPhoneTouch();
   $('pcm-ctrl').addEventListener('click', (event) => { vncUI()?.toggleCtrl(); event.currentTarget.classList.toggle('on'); });
   $('pcm-alt').addEventListener('click', (event) => { vncUI()?.toggleAlt(); event.currentTarget.classList.toggle('on'); });
   $('pcm-esc').addEventListener('click', () => vncUI()?.sendKey(0xff1b, 'Escape'));

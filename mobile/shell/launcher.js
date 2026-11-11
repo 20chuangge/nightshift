@@ -198,12 +198,14 @@
     return single ? [{ url: single, name: hostLabel(single) }] : [];
   }
 
-  async function rememberHub(hub) {
+  async function rememberHub(hub, alt) {
     const all = await readHubs();
     // Keep what the row already knows (its name, its other address, the hub it came from).
     const old = all.find((h) => h.url === hub) || {};
     const hubs = all.filter((h) => h.url !== hub);
-    hubs.unshift({ ...old, url: hub, name: old.name || hostLabel(hub), lastUsedAt: new Date().toISOString() });
+    const row = { ...old, url: hub, name: old.name || hostLabel(hub), lastUsedAt: new Date().toISOString() };
+    if (Array.isArray(alt) && alt.length) row.alt = [...new Set([...(old.alt || []), ...alt])].filter((u) => u !== hub);
+    hubs.unshift(row);
     await store.set(KEYS.hubs, JSON.stringify(hubs.slice(0, 12)));
     await store.set(KEYS.hub, hub);
   }
@@ -333,13 +335,18 @@
       name.textContent = entry.name || hostLabel(entry.url);
       const url = document.createElement('div');
       url.className = 'u';
-      url.textContent = linkKind(entry.url);
-      url.title = entry.url;
+      // How it was reached last time, until this check says otherwise.
+      url.textContent = linkKind(entry.best || entry.url);
+      url.title = entry.best || entry.url;
       who.append(name, url);
 
       const tag = document.createElement('span');
-      tag.className = 'pill warn';
-      tag.textContent = '检测中';
+      // The list is redrawn every 15 s: keep what the last check said instead
+      // of flashing 检测中 (and a slow answer must not read as 离线 meanwhile).
+      const known = renderMachines.lastUp?.get(entry.url);
+      tag.className = `pill${known === true ? '' : ' warn'}`;
+      tag.textContent = known === true ? '在线' : known === 'behind' ? '仅电脑可达' : known === false ? '离线' : '检测中';
+      if (known === true) dot.classList.add('up');
       row.append(dot, who, tag);
 
       let timer = null;
@@ -375,11 +382,34 @@
 
       dom.machineList.appendChild(row);
       // Show which ones answer right now, without blocking the render.
-      void probe(entry.url).then(async (up) => {
+      // Either address counts: a VM's LAN address is often only reachable from
+      // the computer, while its Tailscale one answers the phone.
+      // The label says how the phone reaches it right now (局域网 at home,
+      // Tailscale elsewhere), not which address happened to be saved first.
+      const anyUp = async () => {
+        const best = await bestAddress([entry.url, ...(entry.alt || [])]);
+        if (best) { url.textContent = linkKind(best); url.title = best; }
+        if (best && best !== entry.best) {
+          // Remember it for the next time this list opens.
+          const all = await readHubs();
+          const row = all.find((h) => h.url === entry.url);
+          if (row) { row.best = best; await store.set(KEYS.hubs, JSON.stringify(all)); }
+        }
+        return Boolean(best);
+      };
+      void anyUp().then(async (up) => {
+        if (!renderMachines.lastUp) renderMachines.lastUp = new Map();
+        renderMachines.lastUp.set(entry.url, up);
+        if (!row.isConnected) return; // redrawn meanwhile
         dot.classList.toggle('up', up);
         tag.className = `pill${up ? '' : ' warn'}`;
         tag.textContent = up ? '在线' : '离线';
-        if (!up) return;
+        if (!up) {
+          // Not off: it lives behind the computer that told us about it (a VM on
+          // that computer's private network). Say so instead of "离线".
+          if (await behindVia(entry)) { tag.textContent = '仅电脑可达'; renderMachines.lastUp.set(entry.url, 'behind'); }
+          return;
+        }
         // A hub we hold a token for can tell us its own name (hostname), which
         // is nicer in this list than an address.
         const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
@@ -466,19 +496,40 @@
     }
   }
 
+  /**
+   * A machine this phone cannot reach while the computer that listed it can:
+   * a VM on that computer's private (NAT) network, with no Tailscale address.
+   */
+  async function behindVia(entry) {
+    if (!entry.via || entry.via === entry.url) return false;
+    const urls = [entry.url, ...(entry.alt || [])];
+    if (urls.some((u) => linkKind(u) !== '局域网')) return false;
+    return probe(entry.via);
+  }
+
   async function enterMachine(entry, tag) {
-    let hub = entry.url;
-    let up = await probe(hub);
-    // The machine's other address (LAN vs Tailscale) when this one does not answer.
-    for (const alt of entry.alt || []) {
-      if (up) break;
-      if (await probe(alt)) { hub = alt; up = true; }
-    }
+    // Same network: LAN. Elsewhere: Tailscale. The phone decides, every time.
+    let hub = (await bestAddress([entry.url, ...(entry.alt || [])])) || entry.url;
+    let up = hub !== entry.url || (await probe(hub));
     if (!up) {
       // A Tailscale address needs a moment after the VPN comes up; one retry
       // beats telling the user a machine is off when it is not.
       await new Promise((r) => setTimeout(r, 700));
       up = await probe(hub);
+    }
+    if (!up && (await behindVia(entry))) {
+      if (tag) {
+        tag.className = 'pill warn';
+        tag.textContent = '仅电脑可达';
+      }
+      // eslint-disable-next-line no-alert
+      window.alert(
+        `「${entry.name || hub}」开着，但它在「${entry.viaName || '那台电脑'}」的内部网络里（例如虚拟机的 NAT 网卡），手机直接连不到。
+
+` +
+          '在这台机器上装 Tailscale 并登录同一个账号，它就会有一个手机也能连的地址，回到这里刷新即可。',
+      );
+      return;
     }
     if (!up) {
       if (tag) {
@@ -573,9 +624,9 @@
    * a live HTTP listener, which is all "is it up?" needs. /api/auth is used
    * because it is the one API path that answers without a credential.
    */
-  async function probe(hub) {
+  async function probe(hub, timeoutMs = PROBE_TIMEOUT_MS) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       await fetch(`${hub}/api/auth`, {
         mode: 'no-cors',
@@ -589,6 +640,28 @@
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The address to use right now, decided by the phone: every address is
+   * probed at once, and of those that answer the closest wins - LAN (same
+   * network), then Tailscale, then the public one. '' when none answers.
+   */
+  async function bestAddress(urls) {
+    const list = [...new Set((urls || []).filter(Boolean))];
+    if (!list.length) return '';
+    const kindRank = { '局域网': 0, Tailscale: 1, '外网': 2 };
+    const up = await Promise.all(list.map((u) => probe(u)));
+    if (!up.some(Boolean)) {
+      // A Tailscale connection that goes through a relay (DERP) can need more
+      // than the first few seconds to answer: one longer try before "离线".
+      const slow = list.filter((u) => linkKind(u) !== '局域网');
+      const again = await Promise.all(slow.map((u) => probe(u, 10000)));
+      slow.forEach((u, i) => { if (again[i]) up[list.indexOf(u)] = true; });
+    }
+    const ok = list.filter((_, i) => up[i]);
+    ok.sort((a, b) => (kindRank[linkKind(a)] ?? 3) - (kindRank[linkKind(b)] ?? 3));
+    return ok[0] || '';
   }
 
   async function loadInfo() {
@@ -752,9 +825,15 @@
       setError(`这个码不是夜班的连接码：${text.slice(0, 80)}`);
       return;
     }
-    const hub = url.origin;
+    // The code carries every address of the machine (alt=): use the one this
+    // phone reaches now, keep the others for later (home vs. away).
+    const all = [url.origin];
+    for (const alt of url.searchParams.getAll('alt')) {
+      try { all.push(new URL(alt).origin); } catch { /* skip */ }
+    }
+    const hub = (await bestAddress(all)) || url.origin;
     const token = url.searchParams.get('pair') || '';
-    await rememberHub(hub);
+    await rememberHub(hub, all.filter((u) => u !== hub));
     await renderMachines();
     try {
       await openChat(hub, token);
@@ -791,25 +870,97 @@
     return false;
   }
 
+  /** jsQR, loaded the first time the camera scanner is used. */
+  function loadJsQR() {
+    if (window.jsQR) return Promise.resolve(window.jsQR);
+    return new Promise((resolve, reject) => {
+      const tag = document.createElement('script');
+      tag.src = 'jsqr.js';
+      tag.onload = () => (window.jsQR ? resolve(window.jsQR) : reject(new Error('jsQR did not load')));
+      tag.onerror = () => reject(new Error('jsQR did not load'));
+      document.head.appendChild(tag);
+    });
+  }
+
+  /**
+   * Scan with the camera inside the app: the WebView's camera + jsQR. Works on
+   * phones without Google Play services, where the ML Kit module never downloads.
+   * -> the QR text, or '' when the human cancels.
+   */
+  async function cameraScan() {
+    const view = document.getElementById('scan-view');
+    const video = document.getElementById('scan-video');
+    const status = document.getElementById('scan-status');
+    const jsQR = await loadJsQR();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
+    } catch (err) {
+      throw new Error(/NotAllowed|Permission/i.test(String(err && (err.name || err.message))) ? 'NO_CAMERA_PERMISSION' : String((err && err.message) || err));
+    }
+    view.hidden = false;
+    status.textContent = '对准电脑上「设置 → 配对」里的二维码';
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    return new Promise((resolve) => {
+      let done = false;
+      // The phone's back key closes the camera: it goes back over this entry
+      // instead of leaving the page with the camera still running.
+      history.pushState({ scan: true }, '');
+      const onBack = () => finish('', true);
+      window.addEventListener('popstate', onBack);
+      const finish = (value, fromBack = false) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('popstate', onBack);
+        if (!fromBack && history.state && history.state.scan) history.back();
+        stream.getTracks().forEach((t) => t.stop());
+        video.srcObject = null;
+        view.hidden = true;
+        resolve(value);
+      };
+      document.getElementById('scan-cancel').onclick = () => finish('');
+      const tick = () => {
+        if (done) return;
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w && h) {
+          // The middle of the picture, scaled down: fast enough on a mid-range phone.
+          const side = Math.min(w, h);
+          const size = Math.min(side, 720);
+          canvas.width = size;
+          canvas.height = size;
+          ctx.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+          const found = jsQR(ctx.getImageData(0, 0, size, size).data, size, size, { inversionAttempts: 'dontInvert' });
+          if (found && found.data) { finish(found.data); return; }
+        }
+        setTimeout(tick, 150);
+      };
+      tick();
+    });
+  }
+
   async function scanToConnect() {
     setError('');
-    if (!scanner) {
-      setError('这个版本没有扫码模块（例如网页预览）。请手动填地址，或在手机浏览器里打开电脑上的二维码链接。');
-      return;
-    }
     if (dom.scanBtn) dom.scanBtn.disabled = true;
     try {
-      const permission = await scanner.requestPermissions().catch(() => null);
-      if (permission && permission.camera !== 'granted' && permission.camera !== 'limited') {
-        setError('没有相机权限，扫不了码。到系统设置里给夜班打开「相机」再试一次。');
-        return;
+      // Google's scanner when this phone has it (faster, better in low light);
+      // otherwise the camera inside the app.
+      let useGoogle = false;
+      if (scanner) {
+        const permission = await scanner.requestPermissions().catch(() => null);
+        if (permission && permission.camera !== 'granted' && permission.camera !== 'limited') {
+          setError('没有相机权限，扫不了码。到系统设置里给夜班打开「相机」再试一次。');
+          return;
+        }
+        useGoogle = await ensureBarcodeModule().catch(() => false);
       }
-      if (!(await ensureBarcodeModule())) {
-        setError(
-          '这台手机的扫码组件还没装好（需要 Google 条码扫描模块，国内机型通常下载不到）。\n' +
-            '下面直接填地址也能连，或者在手机浏览器里打开电脑上那个二维码链接。',
-        );
-        dom.hubUrl?.focus();
+      if (!useGoogle) {
+        const text = await cameraScan();
+        if (!text) { setError('扫码已取消。'); return; }
+        await connectFromScan(text);
         return;
       }
       const result = await scanner.scan({ formats: ['QR_CODE'] });
@@ -817,6 +968,10 @@
       await connectFromScan(value);
     } catch (err) {
       const message = String(err?.message || err || '');
+      if (message === 'NO_CAMERA_PERMISSION') {
+        setError('没有相机权限，扫不了码。到系统设置里给夜班打开「相机」再试一次。');
+        return;
+      }
       if (/barcode scanner module/i.test(message)) {
         setError(
           '这台手机的扫码组件还没装好（需要 Google 条码扫描模块，国内机型通常下载不到）。\n' +
