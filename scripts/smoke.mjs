@@ -3126,6 +3126,17 @@ function shanghaiWeekday(ts) {
     check('the one bot is called 助理', seed.name === '助理' && seed.primary === true);
   }
 
+  // Design v2 (Notion §97.5): one brand colour, surfaces, a settings list on phones.
+  {
+    const html = await readText('../public/index.html');
+    check('design v2 layer is present with light and dark tokens', html.includes('v7 · design v2') && html.includes('--on-accent: #0A0A0A;') && html.includes('--on-accent: #FFFFFF;'));
+    check('buttons on the accent use the on-accent colour, not white', html.includes('.usage-range button.on, .pc-mobile-bar button.on { color: var(--on-accent); }'));
+    check('phone settings open on a list and have a way back', html.includes('id="settings-back"') && html.includes("$('settings-back')?.addEventListener('click', showSettingsHome)") && html.includes('if (isMobile() && !section) showSettingsHome();'));
+    check('every settings page has a line icon', (html.match(/<button class="setnav[^>]*data-set-target="([a-z-]+)"/g) || []).every((b) => html.includes("'" + b.match(/data-set-target="([a-z-]+)"/)[1] + "':")));
+    const launcher = await readText('../mobile/shell/launcher.js');
+    check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.url);'));
+  }
+
   // One machine concept: the old "看谁的屏幕" take-over list must not come back.
   {
     const html = await readText('../public/index.html');

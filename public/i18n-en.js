@@ -1426,4 +1426,5 @@ window.DESK_I18N_EN = {
   "没改成：{0}": "Not changed: {0}",
   "复制失败": "Copy failed",
   "语言、主题、是否显示工具过程和时区只存在这台设备上，不会同步到别的设备。": "Language, theme, showing tool steps and the time zone live only on this device; they do not sync to other devices.",
+  "返回设置列表": "Back to settings",
 };

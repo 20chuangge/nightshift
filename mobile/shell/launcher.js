@@ -265,6 +265,22 @@
     if ((await store.get(KEYS.hub)) === hub) await store.remove(KEYS.hub);
   }
 
+  /** How this phone reaches a machine, in words: 局域网 / Tailscale / 外网. */
+  function linkKind(raw) {
+    let host = '';
+    try { host = new URL(raw).hostname; } catch { return raw; }
+    if (/\.ts\.net$/i.test(host)) return raw.startsWith('https:') ? '外网' : 'Tailscale';
+    const m = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+    if (m) {
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      if (a === 100 && b >= 64 && b <= 127) return 'Tailscale';
+      if (a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return '局域网';
+    }
+    if (host === 'localhost') return '局域网';
+    return '外网';
+  }
+
   /** Tap a machine to go in; long press offers to forget. */
   async function renderMachines() {
     if (!dom.machines || !dom.machineList) return;
@@ -286,7 +302,8 @@
       name.textContent = entry.name || hostLabel(entry.url);
       const url = document.createElement('div');
       url.className = 'u';
-      url.textContent = entry.url;
+      url.textContent = linkKind(entry.url);
+      url.title = entry.url;
       who.append(name, url);
 
       const tag = document.createElement('span');
