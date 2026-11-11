@@ -464,7 +464,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       workspaceDir,
     }),
     workspaceDir,
-    machineName: () => state.uiState?.machine?.name || os.hostname(),
+    machineName: () => selfMachineName(),
     // Voice messages in and out, through this machine's voice service.
     transcribe: (bytes, mime) => voiceModule.transcribe(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), bytes, mime),
     speak: async (text) => {
@@ -863,6 +863,8 @@ route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
     lanUrl: state.lanUrl,
     // Reachable from the owner's other devices anywhere (Tailscale), when on a tailnet.
     tailnetUrl: tailnetUrl(state),
+    // What this machine is called in the owner's lists.
+    name: selfMachineName(),
     recoveredTurns: state.recoveredTurns.length,
     // How busy the machine is (a one-core VM with Windows Update running made everything crawl).
     load: machineLoad(),
@@ -1050,6 +1052,9 @@ route('GET', /^\/api\/peers$/, async (_req, _res, { state }) => ({ peers: state.
 route('GET', /^\/api\/peers\/bots$/, async (_req, _res, { state }) => ({ machines: await state.peers.rosters().catch(() => []) }));
 
 route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
+  // The computer that shares the list also says what this machine is called
+  // (the name given in "添加机器"), so every list shows that name.
+  if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);
   const peers = await state.peers.set(body?.peers);
   state.bus.emit({ type: 'settings.changed', section: 'machines' });
   return { peers };
@@ -1472,7 +1477,9 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
 
   // Every paired client gets its own session, so Settings can list the phones
   // and remove one without logging the others out.
-  const { device, sessionToken } = state.devices.add({ name: describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
+  // A client may name its device (the computer's entry for the other machines).
+  const deviceName = String(body?.deviceName || '').trim().slice(0, 40);
+  const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
   res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) || Boolean(req.viaPublic) }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
@@ -1595,15 +1602,32 @@ const MACHINE_PROBE_TIMEOUT_MS = 900;
 //   GET  /api/machines                  [{name, url, online, self}]
 //   POST /api/machines/:name/handoff    {url} - a one-time link into that machine
 
+/**
+ * This machine's name in the owner's lists: the one given when it was added
+ * (pushed by the computer that added it), else the hostname - with a VM
+ * hostname like "ubuntu-VMware-Virtual-Platform" cut down to "ubuntu". Never
+ * the product name: every hub is "Nightshift".
+ */
+let selfNameCache;
+function selfMachineName() {
+  if (selfNameCache === undefined) {
+    selfNameCache = '';
+    try { selfNameCache = String(JSON.parse(fs.readFileSync(path.join(P.dataDir, 'machine.json'), 'utf8')).name || '').trim(); } catch { /* not named */ }
+  }
+  if (selfNameCache) return selfNameCache;
+  const hostname = os.hostname();
+  return /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(hostname)?.[1] || hostname;
+}
+function setSelfMachineName(name) {
+  const clean = String(name).trim().slice(0, 40);
+  if (!clean || clean === selfNameCache) return;
+  selfNameCache = clean;
+  try { writeJsonSyncAtomic(path.join(P.dataDir, 'machine.json'), { name: clean }); } catch { /* still applies until a restart */ }
+}
+
 route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const peers = state.peers.list();
-  // This machine's own row: the hostname, not the product name - every hub is
-  // called "Nightshift", which made the list say "Nightshift / you are using
-  // this one" on every machine. A VM hostname like
-  // "ubuntu-VMware-Virtual-Platform" is cut down to "ubuntu".
-  const hostname = os.hostname();
-  const shortHost = /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(hostname)?.[1] || hostname;
-  const self = { name: shortHost, url: state.pairingUrl || null, online: true, self: true };
+  const self = { name: selfMachineName(), url: state.pairingUrl || null, online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it
@@ -2334,6 +2358,9 @@ function publicPolicy(policy) {
     folders: (policy?.folders || []).map((f) => ({ id: f.id, path: f.path, write: Boolean(f.write) })),
     outside: policy?.outside === 'deny' ? 'deny' : 'ask',
     sudo: policy?.sudo === 'allow' ? 'allow' : 'ask',
+    // The primary bot past the machine boundary (sudo, places outside the
+    // workspace); the dangerous-command list still asks.
+    trustPrimary: Boolean(policy?.trustPrimary),
     platform: process.platform,
   };
 }
@@ -2402,10 +2429,11 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
     if (!['ask', 'allow'].includes(body.sudo)) throw httpError(400, 'BAD_SUDO', "sudo must be 'ask' or 'allow'");
     next.sudo = body.sudo;
   }
+  if (body?.trustPrimary !== undefined) next.trustPrimary = Boolean(body.trustPrimary);
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
   const change = {};
-  for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo']) {
+  for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo', 'trustPrimary']) {
     if (body?.[k] !== undefined) change[k] = body[k];
   }
   await audit({ kind: 'policy.changed', change });

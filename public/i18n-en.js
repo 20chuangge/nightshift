@@ -1462,4 +1462,11 @@ window.DESK_I18N_EN = {
   "轻量桌面：没有任务栏和图标，空着是正常的。机器人打开浏览器或程序时，窗口会出现在这里；接管后右键空白处有菜单。": "Light desktop: no taskbar or icons, so an empty screen is normal. Windows appear here when a bot opens a browser or program; after taking over, right-click the empty area for a menu.",
   "这台机器的屏幕只显示机器人的浏览器，没有桌面；空着（黑屏）是正常的，机器人打开浏览器时会铺满这里。": "This machine’s screen shows only the bot’s browser, with no desktop; an empty (black) screen is normal, and the browser fills it when a bot opens one.",
   "Tailscale 地址要手机也装 Tailscale 并登录同一个账号；局域网地址只有电脑能访问时（虚拟机内网），把虚拟机网络改成「桥接」": "A Tailscale address needs Tailscale on the phone, signed in to the same account; a LAN address only the computer can reach (a VM’s internal network) needs the VM network set to bridged",
+  "主助理完全信任": "Fully trust the main assistant",
+  "主助理用 sudo、动工作区以外的位置，都直接做": "The main assistant uses sudo and works outside the workspace without asking",
+  "只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。": "Only the main assistant; other bots are unchanged. Dangerous commands (formatting a disk, deleting system folders, shutting down or restarting) and your own \"ask me first\" rules still ask.",
+  "主助理": "Main assistant",
+  "完全信任": "fully trusted",
+  "已打开：主助理只有危险命令还会问你": "On: the main assistant now asks only before dangerous commands",
+  "已关闭：主助理的 sudo 和其他位置恢复先问": "Off: the main assistant asks again before sudo and places outside the workspace",
 };

@@ -3313,6 +3313,15 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const sudo = await api('/api/policy', { method: 'PUT', body: { sudo: 'allow', outside: 'deny' } });
       check('policy: sudo and "everywhere else" are settings of their own', sudo.json?.sudo === 'allow' && sudo.json?.outside === 'deny');
       await api('/api/policy', { method: 'PUT', body: { removeFolder: f?.id, sudo: 'ask', outside: 'ask' } });
+      {
+        // 「主助理完全信任」: the primary bot is not fenced (sudo, other places); the level and the denylist still apply.
+        const on = await api('/api/policy', { method: 'PUT', body: { trustPrimary: true } });
+        const agentSrc = await readText('../src/agent.mjs');
+        const page = await readText('../public/index.html');
+        check('trust: the main assistant can be trusted past sudo and other places, only that bot, and the switch is in Settings', on.json?.trustPrimary === true && agentSrc.includes("Boolean(bot.primary || (this.config.primaryBotId && bot.id === this.config.primaryBotId))") && agentSrc.includes('if (verdict.decision !== DECISION.DENY && !trusted) {') && page.includes('id="trust-primary"'));
+        const off = await api('/api/policy', { method: 'PUT', body: { trustPrimary: false } });
+        check('trust: off again by default and in one-click strict', off.json?.trustPrimary === false && page.includes("takeover: 'view', trustPrimary: false }"));
+      }
     }
     // Small fixes carried into step 8 (Feishu).
     {
@@ -3638,7 +3647,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     check('peers: work from another machine keeps the chain limits and says where it came from', srv.includes('Math.min(3, Math.max(1, Number(h.depth)') && srv.includes("source: h ? 'peer' : 'chat'"));
     const main = await readText('../desktop/main.mjs');
-    check('peers: the client hands every hub the other machines, at start, every 10 min and on changes', main.includes('async function sharePeers()') && main.includes("'/api/peers', { peers: others }") && main.includes('sharePeersTimer = setTimeout') && main.includes('setInterval(() => sharePeers()'));
+    check('peers: the client hands every hub the other machines, at start, every 10 min and on changes', main.includes('async function sharePeers()') && main.includes("'/api/peers', body)") && main.includes('{ peers: others }') && main.includes('sharePeersTimer = setTimeout') && main.includes('setInterval(() => sharePeers()'));
     const agentSrc = await readText('../src/agent.mjs');
     const vj = await readText('../src/videojobs.mjs');
     check('peers: bots are told teammates work on other machines; delegated videos report to the origin bot', agentSrc.includes('function peersLine(peers, canHandOff)') && vj.includes('reportTo') && srv.includes('const tellUpstream = async'));
@@ -4237,6 +4246,51 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         const bsrc = await readText('../src/browser.mjs');
         check('desktops: overlapping requests share one start of a bot screen (they used to kill each other)', dsrc.includes('if (starting.has(botId)) return starting.get(botId);') && dsrc.includes('async function ensureDesktopOnce(botId) {'));
         check('desktops (Rocky 10): a browser that dies right after starting on a Wayland screen gets the screen restarted and one more launch', bsrc.includes('if (child.exitCode !== null || child.signalCode) {') && bsrc.includes('desk.stopDesktop(this.key);'));
+      }
+      {
+        const pageN = await readText('../public/index.html');
+        const brN = await import('../src/browser.mjs');
+        const launcherN = await readText('../mobile/shell/launcher.js');
+        const mainN = await readText('../desktop/main.mjs');
+        const srvN = await readText('../src/server.mjs');
+        check('N1: a visible bot browser has no "unsupported command-line flag" bar; Wayland still gets its flags', brN.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--test-type') && !brN.buildLaunchArgs({ port: 9, profileDir: 'x', headless: true }).includes('--test-type') && brN.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true }).includes('--ozone-platform=wayland'));
+        check('N1: a phone settings page does not repeat its title under the top bar', pageN.includes('.settings-modal:not(.set-home) #settings-scroll > .dsec > .dsec-head:first-child { display: none; }'));
+        check('N1: each machine learns the name it was given and uses it everywhere; the computer joins every list with a login of its own', srvN.includes("if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);") && srvN.includes('name: selfMachineName(),') && mainN.includes('const body = t.local ? { peers: others } : { peers: others, self: { name: t.name } };') && mainN.includes("deviceName: '其他机器（同步用）'") && mainN.includes('if (!t.local && self) others.unshift(self);'));
+        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('for (const alt of entry.alt || []) {') && launcherN.includes('await rememberHub(entry.url);'));
+      }
+      {
+        // The phone's real merge, run on a list like the one a phone had: one
+        // machine saved under two addresses, an old hostname, a stale address.
+        const lsrc = await readText('../mobile/shell/launcher.js');
+        const grab = (name) => {
+          const i = lsrc.indexOf('function ' + name + '('); const start = lsrc.lastIndexOf('\n', i) + 1;
+          let depth = 0; let j = lsrc.indexOf('{', i);
+          for (; j < lsrc.length; j++) { if (lsrc[j] === '{') depth++; else if (lsrc[j] === '}' && --depth === 0) break; }
+          return lsrc.slice(start, j + 1);
+        };
+        const HUB = 'http://hub.test:4390';
+        const mem = new Map([
+          ['desk.hubs', JSON.stringify([
+            { url: HUB, name: 'pc' },
+            { url: 'http://old-addr.test:4390', name: 'localhost.localdomain', via: HUB },
+            { url: 'http://rocky-lan.test:4390', name: 'Rocky', via: HUB },
+            { url: 'http://rocky-ts.test:4390', name: 'localhost.localdomain', via: HUB },
+            { url: 'http://win11-ts.test:4390', name: 'win11', via: HUB },
+            { url: 'http://win11-lan.test:4390', name: 'win11', via: HUB },
+          ])],
+          ['desk.token:' + HUB, 't'],
+        ]);
+        const store = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => mem.set(k, v), remove: async (k) => mem.delete(k) };
+        const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs', tokenFor: (h) => 'desk.token:' + h };
+        const fakeFetch = async () => ({ ok: true, json: async () => ({ machines: [
+          { name: 'LAPTOP', self: true, url: HUB },
+          { name: 'Rocky', url: 'http://rocky-lan.test:4390', tailnetUrl: 'http://rocky-ts.test:4390' },
+          { name: 'win11', url: 'http://win11-lan.test:4390', tailnetUrl: 'http://win11-ts.test:4390' },
+        ] }) });
+        const merge = new Function('store', 'KEYS', 'fetch', 'renderMachines', [grab('hostLabel'), grab('readHubs'), grab('mergePeerMachines')].join('\n') + '\nreturn mergePeerMachines();');
+        await merge(store, KEYS, fakeFetch, async () => {});
+        const rows = JSON.parse(mem.get('desk.hubs'));
+        check('phone list: one row per machine with its other address kept, the hub names win, stale addresses go', rows.length === 3 && rows.map((r) => r.name).join(',') === 'LAPTOP,Rocky,win11' && rows.find((r) => r.name === 'Rocky').alt?.length === 1 && !rows.some((r) => r.name === 'localhost.localdomain'));
       }
       check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("hint.hidden = mode !== 'light' && mode !== 'kiosk';") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
       check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);

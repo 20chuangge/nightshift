@@ -925,7 +925,11 @@ export class AgentRuntime {
 
     // The machine's boundary (opened folders, sudo) comes last: no approval
     // level or "直接做" rule lets a bot past it without the human.
-    if (verdict.decision !== DECISION.DENY) {
+    // "主助理完全信任": the primary bot is not fenced (sudo, places outside the
+    // workspace). The level and the dangerous-command list above still apply,
+    // so formatting a disk or deleting system folders keeps asking.
+    const trusted = Boolean(this.config.policy?.trustPrimary) && Boolean(bot.primary || (this.config.primaryBotId && bot.id === this.config.primaryBotId));
+    if (verdict.decision !== DECISION.DENY && !trusted) {
       const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote' });
       if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
       else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };

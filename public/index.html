@@ -2945,6 +2945,8 @@
     .set-back { display: inline-flex; }
     .settings-modal, html[data-theme="light"] .settings-modal { background: var(--bg); }
     .settings-modal.set-home .set-back { display: none; }
+    /* The top bar already names the page: the page's own first heading would say it twice. */
+    .settings-modal:not(.set-home) #settings-scroll > .dsec > .dsec-head:first-child { display: none; }
     .settings-modal.set-home .settings-top { padding: 14px 12px 6px 20px; }
     .settings-heading { flex: 1; min-width: 0; }
     .settings-modal:not(.set-home) .settings-nav { display: none; }
@@ -3468,6 +3470,9 @@
           <option value="allow">直接用</option>
         </select>
         <div class="row-note">用 sudo、以管理员身份运行之类的命令，默认每次都先问你。</div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">主助理完全信任</div>
+        <label class="switch-row"><input type="checkbox" id="trust-primary" /> 主助理用 sudo、动工作区以外的位置，都直接做</label>
+        <div class="row-note">只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。</div>
         <input type="checkbox" id="auto-approve-all" hidden />
       </section>
 
@@ -10232,6 +10237,7 @@ function renderFolders(policy) {
   }
   if ($('folder-outside')) $('folder-outside').value = policy?.outside || 'ask';
   if ($('sudo-mode')) $('sudo-mode').value = policy?.sudo || 'ask';
+  if ($('trust-primary')) $('trust-primary').checked = Boolean(policy?.trustPrimary);
 }
 
 async function savePolicy(next, okText = '') {
@@ -10293,6 +10299,7 @@ function renderPermOverview() {
     ['生成媒体', { level: '跟随级别', ask: '每次先问', auto: '直接生成' }[policy.generate] || '跟随级别', policy.generate === 'auto'],
     ['其他位置', policy.outside === 'deny' ? '一律不许' : '先问我', false],
     ['sudo', policy.sudo === 'allow' ? '直接用' : '先问我', policy.sudo === 'allow'],
+    ...(policy.trustPrimary ? [['主助理', '完全信任', true]] : []),
     ['我的规则', `${(policy.rules || []).length} 条`, false],
     ['禁止命令', `${(policy.extraDeny || []).length} 条自定义`, false],
   ];
@@ -10332,7 +10339,7 @@ function renderPermOverview() {
     body.appendChild(row);
   }
   const strictEnough = level === 'careful' && policy.generate === 'ask' &&
-    policy.outside === 'deny' && policy.sudo === 'ask' && policy.takeover === 'view';
+    policy.outside === 'deny' && policy.sudo === 'ask' && policy.takeover === 'view' && !policy.trustPrimary;
   const note = $('perm-strict-note');
   if (note) note.hidden = strictEnough;
   const button = $('perm-strict');
@@ -10347,7 +10354,7 @@ async function applyStrictPermissions() {
   });
   if (!ok) return;
   await savePolicy(
-    { level: 'careful', generate: 'ask', outside: 'deny', sudo: 'ask', takeover: 'view' },
+    { level: 'careful', generate: 'ask', outside: 'deny', sudo: 'ask', takeover: 'view', trustPrimary: false },
     '已收紧：谨慎 · 生成先问 · 其他位置不许 · sudo 先问 · 接管只看',
   );
 }
@@ -12062,6 +12069,7 @@ function wireChrome() {
   });
   $('folder-outside')?.addEventListener('change', (e) => savePolicy({ outside: e.target.value }, '已保存'));
   $('sudo-mode')?.addEventListener('change', (e) => savePolicy({ sudo: e.target.value }, '已保存'));
+  $('trust-primary')?.addEventListener('change', (e) => savePolicy({ trustPrimary: e.target.checked }, e.target.checked ? '已打开：主助理只有危险命令还会问你' : '已关闭：主助理的 sudo 和其他位置恢复先问'));
   $('feishu-save')?.addEventListener('click', saveFeishu);
   $('feishu-app-save')?.addEventListener('click', addFeishuApp);
   $('desktop-mode')?.addEventListener('change', saveDesktopMode);

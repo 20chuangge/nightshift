@@ -266,8 +266,12 @@ export function buildLaunchArgs({ port, profileDir: profile, headless = false, w
     '--hide-crash-restore-bubble',
   ];
   if (headless) args.push('--headless=new', '--disable-gpu', '--hide-scrollbars');
+  // A visible window otherwise carries a yellow bar across the top: "you are
+  // using an unsupported command-line flag" (for the AutomationControlled one
+  // above). --test-type is what test drivers pass to suppress that bar.
+  else args.push('--test-type');
   // A Wayland-only screen (cage on Rocky/RHEL 10): draw natively, full screen.
-  else if (wayland) args.push('--ozone-platform=wayland', '--start-maximized');
+  if (!headless && wayland) args.push('--ozone-platform=wayland', '--start-maximized');
   args.push(...extraArgs, 'about:blank');
   return args;
 }

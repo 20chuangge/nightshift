@@ -199,8 +199,11 @@
   }
 
   async function rememberHub(hub) {
-    const hubs = (await readHubs()).filter((h) => h.url !== hub);
-    hubs.unshift({ url: hub, name: hostLabel(hub), lastUsedAt: new Date().toISOString() });
+    const all = await readHubs();
+    // Keep what the row already knows (its name, its other address, the hub it came from).
+    const old = all.find((h) => h.url === hub) || {};
+    const hubs = all.filter((h) => h.url !== hub);
+    hubs.unshift({ ...old, url: hub, name: old.name || hostLabel(hub), lastUsedAt: new Date().toISOString() });
     await store.set(KEYS.hubs, JSON.stringify(hubs.slice(0, 12)));
     await store.set(KEYS.hub, hub);
   }
@@ -215,48 +218,60 @@
   /**
    * Fold in the machines the hub knows about (its peers). The phone has only
    * paired with some of them; the rest still belong in this list, with the hub
-   * that can hand out an entry ("via"). Names learned here also replace the
-   * address a previous handoff left behind.
+   * that can hand out an entry ("via").
+   *
+   * One row per machine: a machine has a LAN and a Tailscale address, and the
+   * phone may have saved either (or both, as two rows). The hub's name for it
+   * always wins - it is the name given when the machine was added, so an old
+   * hostname like "localhost.localdomain" goes away. Rows this hub taught us
+   * that it no longer lists (an old address) are dropped.
    */
   async function mergePeerMachines() {
-    const hubs = await readHubs();
-    const byUrl = new Map(hubs.map((h) => [h.url, h]));
-    const looksLikeAddress = (name) => !name || /^[\d.]+(:\d+)?$/.test(name) || /^\[/.test(name);
-    for (const entry of hubs) {
+    const strip = (u) => String(u || '').replace(/\/+$/, '');
+    for (const entry of await readHubs()) {
       const token = await store.get(KEYS.tokenFor(entry.url)).catch(() => null);
       if (!token) continue;
+      let data;
       try {
-        const res = await fetch(`${entry.url}/api/machines`, { headers: { authorization: `Bearer ${token}` } });
+        const res = await fetch(entry.url + '/api/machines', { headers: { authorization: 'Bearer ' + token } });
         if (!res.ok) continue;
-        const data = await res.json();
-        let changed = false;
-        const next = [...hubs];
-        for (const machine of data?.machines || []) {
-          if (machine.self) continue;
-          // A tailnet address works from anywhere; the LAN one may not be routable.
-          const url = String(machine.tailnetUrl || machine.url || '').replace(/\/+$/, '');
-          if (!url) continue;
-          const known = byUrl.get(url);
-          if (known) {
-            if (machine.name && looksLikeAddress(known.name) && known.name !== machine.name) {
-              known.name = machine.name;
-              known.via = known.via || entry.url;
-              changed = true;
-            }
-            continue;
-          }
-          const fresh = { url, name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) };
-          byUrl.set(url, fresh);
-          next.push(fresh);
-          changed = true;
-        }
-        if (changed) {
-          await store.set(KEYS.hubs, JSON.stringify(next.slice(0, 12)));
-          await renderMachines();
-          return;
-        }
+        data = await res.json();
       } catch {
-        /* offline hub: nothing to learn from it */
+        continue; // offline hub: nothing to learn from it
+      }
+      let list = await readHubs();
+      const before = JSON.stringify(list);
+      const listed = new Set();
+      for (const machine of data?.machines || []) {
+        const urls = [machine.tailnetUrl, machine.url].map(strip).filter(Boolean);
+        if (machine.self) {
+          // The hub itself: its own name for the row we opened it by.
+          for (const h of list) if (urls.includes(h.url) || h.url === entry.url) { if (machine.name) h.name = machine.name; }
+          continue;
+        }
+        if (!urls.length) continue;
+        urls.forEach((u) => listed.add(u));
+        const matches = list.filter((h) => urls.includes(h.url));
+        if (!matches.length) {
+          // A tailnet address works from anywhere; the LAN one may not be routable.
+          list.push({ url: urls[0], alt: urls.slice(1), name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) });
+          continue;
+        }
+        // Keep the row this phone holds a login for; fold the others into it.
+        let keep = matches[0];
+        for (const m of matches) {
+          if (await store.get(KEYS.tokenFor(m.url)).catch(() => null)) { keep = m; break; }
+        }
+        if (machine.name) keep.name = machine.name;
+        keep.alt = urls.filter((u) => u !== keep.url);
+        if (!keep.via && keep.url !== entry.url) { keep.via = entry.url; keep.viaName = entry.name || hostLabel(entry.url); }
+        list = list.filter((h) => h === keep || !matches.includes(h));
+      }
+      // Learned from this hub but no longer in its list: an old address.
+      list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url) && !(h.alt || []).some((u) => listed.has(u))));
+      if (JSON.stringify(list) !== before) {
+        await store.set(KEYS.hubs, JSON.stringify(list.slice(0, 12)));
+        await renderMachines();
       }
     }
   }
@@ -452,8 +467,13 @@
   }
 
   async function enterMachine(entry, tag) {
-    const hub = entry.url;
+    let hub = entry.url;
     let up = await probe(hub);
+    // The machine's other address (LAN vs Tailscale) when this one does not answer.
+    for (const alt of entry.alt || []) {
+      if (up) break;
+      if (await probe(alt)) { hub = alt; up = true; }
+    }
     if (!up) {
       // A Tailscale address needs a moment after the VPN comes up; one retry
       // beats telling the user a machine is off when it is not.
@@ -469,8 +489,10 @@
       window.alert(`「${entry.name || hub}」现在连不上（关机、休眠或不在同一个网络）。`);
       return;
     }
-    await rememberHub(hub);
-    const token = await store.get(KEYS.tokenFor(hub));
+    // The row stays under its own address even when the other one answered;
+    // a login is the machine's, whichever address carries it.
+    await rememberHub(entry.url);
+    const token = (await store.get(KEYS.tokenFor(hub))) || (await store.get(KEYS.tokenFor(entry.url)));
     // Whoever we came through gets a row in the target's switcher.
     const origin = await originFor(hub);
     if (token) {

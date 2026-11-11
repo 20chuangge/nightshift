@@ -13,6 +13,7 @@
  */
 import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification } from 'electron';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -120,13 +121,51 @@ async function sharePeers() {
     const token = raw[0]?.value || '';
     if (token) machines.push({ name: m.name || m.url, url: m.url, tailnetUrl: m.tailnetUrl || '', token });
   }
+  // This computer, when it accepts other devices (LAN or Tailscale): it goes in
+  // every other machine's list too, so all the lists are the same and a phone
+  // on any machine can switch back to it.
+  const self = await thisComputerAsPeer().catch(() => null);
   const targets = [{ url: localUrl().replace(/\/+$/, ''), local: true }, ...machines];
   for (const t of targets) {
     const others = machines.filter((m) => m.url !== t.url);
+    if (!t.local && self) others.unshift(self);
     const base = t.local ? t.url : ((await reachMachine(t.url)) || t.url);
-    const r = await putToMachine(base.replace(/\/+$/, ''), '/api/peers', { peers: others });
+    // Each machine also learns the name it was given here.
+    const body = t.local ? { peers: others } : { peers: others, self: { name: t.name } };
+    const r = await putToMachine(base.replace(/\/+$/, ''), '/api/peers', body);
     if (!r.ok) bootLog(`share peers with ${t.url}: ${r.error}`);
   }
+}
+
+/**
+ * This computer as an entry for the other machines' lists: its address and a
+ * login of its own (a paired device called "其他机器（同步用）", visible and
+ * removable in Settings like a phone). Null while it only listens on 127.0.0.1.
+ */
+const PEER_TOKEN_FILE = path.join(app.getPath('userData'), 'peer-token.json');
+async function thisComputerAsPeer() {
+  const local = localUrl().replace(/\/+$/, '');
+  const health = await (await net.fetch(`${local}/api/health`, { signal: AbortSignal.timeout(5000) })).json();
+  const url = health?.lanUrl || health?.tailnetUrl || '';
+  if (!url) return null;
+  let token = '';
+  try { token = JSON.parse(fs.readFileSync(PEER_TOKEN_FILE, 'utf8')).token || ''; } catch { /* first time */ }
+  if (!token) {
+    // A one-time link from this computer's own hub, spent right away on a device of its own.
+    const link = await (await net.fetch(`${local}/api/pairing/link`, { method: 'POST', signal: AbortSignal.timeout(5000) })).json();
+    const code = link?.url ? new URL(link.url).searchParams.get('pair') : '';
+    if (!code) return null;
+    const paired = await (await net.fetch(`${local}/api/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, client: 'app', deviceName: '其他机器（同步用）' }),
+      signal: AbortSignal.timeout(5000),
+    })).json();
+    token = paired?.token || '';
+    if (!token) return null;
+    try { fs.writeFileSync(PEER_TOKEN_FILE, JSON.stringify({ token })); } catch { /* asked again next time */ }
+  }
+  return { name: health.name || os.hostname(), url, tailnetUrl: health.tailnetUrl || '', token };
 }
 
 /** Add or update one machine. A name the human gave is never overwritten. */
@@ -1085,6 +1124,10 @@ async function autoUpdateMachine(machine) {
     if (out.ok && out.updated) {
       updateAttempts.delete(url);
       bootLog(`update ${url}: now ${out.to}`);
+      // A newer version may understand more of the shared list (its own name,
+      // this computer's entry): share it again now, not in ten minutes.
+      clearTimeout(sharePeersTimer);
+      sharePeersTimer = setTimeout(() => sharePeers().catch(() => {}), 5000);
       if (remoteHub === url && win && !win.isDestroyed()) {
         win.webContents.reload();
         setTimeout(() => notifyPage(L(`「${name}」已更新到 ${out.to}`, `"${name}" is now on ${out.to}`)), 3000);
