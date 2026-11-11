@@ -25,7 +25,7 @@ Set-Service sshd -StartupType Automatic; Start-Service sshd
 | 命令 | 覆盖 |
 | --- | --- |
 | `npm run check` | 语法 |
-| `npm run smoke` | 724 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 / 手机附件与语音 |
+| `npm run smoke` | 730 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 / 手机附件与语音 / 手机接管 |
 | `npm run smoke:remote-mock` | 假 SSH 主机上走完"添加机器"：Linux、Windows、不支持的系统、Hub 起不来 |
 | `npm run check:i18n` | 所有界面中文都有英文 |
 
@@ -95,6 +95,10 @@ DESK_TARGET_HOST=<ip> DESK_TARGET_USER=<user> DESK_TARGET_PASS=<pass> npm run ve
 | 4.11 | 审批等待期间切换 Wi-Fi / 断开网络再恢复 | App 在 45 秒内发现断流并重连；新审批仍能到达通知栏 |
 | 4.12 | 手机聊天里点 📎 选一张图发送 | 系统选择器弹出；输入框上方出现缩略图芯片；气泡带图；助理用 image_view 说出图片内容 |
 | 4.13 | 手机聊天里点 🎤 说一句话再点停止 | 首次弹系统麦克风授权；允许后录音，停止后转写文字落入输入框（http 局域网下走原生录音桥） |
+| 4.14 | 手机上点接管卡的「接管屏幕」 | 面板立即滑出并进入全屏接管，画面下方常驻工具条（键盘/Ctrl/Alt/Esc/Tab/剪贴板/旋转/预览） |
+| 4.15 | 接管中点工具条「键盘」再输入 | 系统输入法弹出，按键进入远端（终端回显）；点「旋转」画面转 90°、工具条保持 upright，再点切回 |
+| 4.16 | 接管中点「剪贴板」粘贴文本并发送 | 抽屉打开；发送后远端剪贴板收到原文（VNC 标准通道为 latin1，中文提示改用键盘）；「复制到手机」可用 |
+| 4.17 | 接管中关闭面板 | iframe 与 VNC 连接立即卸载，不再后台耗流量；重开预览点画面即进全屏 |
 
 ## 5. 异常与恢复
 
