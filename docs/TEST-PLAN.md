@@ -25,7 +25,7 @@ Set-Service sshd -StartupType Automatic; Start-Service sshd
 | 命令 | 覆盖 |
 | --- | --- |
 | `npm run check` | 语法 |
-| `npm run smoke` | 736 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 / 手机附件与语音 / 手机接管 / 权限总览 |
+| `npm run smoke` | 742 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 / 手机附件与语音 / 手机接管 / 权限总览 / 成本 |
 | `npm run smoke:remote-mock` | 假 SSH 主机上走完"添加机器"：Linux、Windows、不支持的系统、Hub 起不来 |
 | `npm run check:i18n` | 所有界面中文都有英文 |
 
@@ -46,6 +46,7 @@ Set-Service sshd -StartupType Automatic; Start-Service sshd
 | 2.9 | 关掉窗口再开 | 聊天记录、Bot、群都还在 |
 | 2.10 | 覆盖安装新版本 | 数据保留（`%APPDATA%\Desk`） |
 | 2.11 | 设置 → 权限 | 顶部先是「权限总览」：芯片显示审批级别/接管/生成/其他位置/sudo/规则数；表格按 Bot 列出 8 项能力，并按当前级别显示 ✓ 直接做 / 问 先问你 / — 未授权（切换级别实时变化）；新增或删除 Bot 后表格行同步增减；点「一键 strict」二次确认后五项边界收紧，审计出现一条 `policy.changed`，Bot 工具授权不变 |
+| 2.12 | 设置 → 成本 | 发几句话后：今日/14 天 tokens 与估算、按 Bot 表格、按天条形出现；给模型填单价并保存后估算变为金额，未定价 tokens 归零；把每日提醒设成很小值再发一句话，弹出提醒并写一条 `usage.alert` 审计（当天只记一次）；测试后把单价与提醒还原 |
 
 ## 3. 添加远程机（每个远程系统各跑一遍）
 
