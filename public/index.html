@@ -2696,6 +2696,37 @@
 
   /* permissions --------------------------------------------------------- */
   .level-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
+  .perm-card {
+    border: 1px solid var(--border-soft); border-radius: 12px; padding: 12px;
+    background: var(--panel-2); margin: 8px 0 4px;
+  }
+  .perm-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .perm-chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px;
+    border-radius: 999px; border: 1px solid var(--border-soft);
+    font-size: 11.5px; color: var(--muted); background: var(--bg);
+  }
+  .perm-chip b { color: var(--text); font-weight: 600; }
+  .perm-chip.warn { border-color: rgba(240, 167, 44, .4); color: #e6c48b; }
+  .perm-table-wrap { overflow-x: auto; }
+  .perm-table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 12px; }
+  .perm-table th, .perm-table td {
+    border-bottom: 1px solid var(--border-soft); padding: 7px 8px;
+    text-align: center; white-space: nowrap;
+  }
+  .perm-table th:first-child, .perm-table td:first-child {
+    text-align: left; position: sticky; left: 0; background: var(--panel-2);
+  }
+  .perm-table th { color: var(--dim); font-weight: 600; font-size: 11px; }
+  .perm-table td.on { color: var(--green, #2fbf71); font-weight: 700; }
+  .perm-table td.ask { color: var(--amber, #f0a72c); font-weight: 700; }
+  .perm-table td.off { color: var(--dim); }
+  .perm-legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 11.5px; }
+  .perm-key { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+  .perm-key.on { color: var(--green, #2fbf71); }
+  .perm-key.ask { color: var(--amber, #f0a72c); }
+  .perm-key.off { color: var(--dim); }
+  .perm-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .level-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 12px; cursor: pointer; }
   .level-opt:has(input:checked) { border-color: var(--accent, #8b7cf6); background: var(--panel-2); }
   .level-opt input { margin-top: 3px; }
@@ -3176,6 +3207,25 @@
 
       <section class="dsec" id="sec-run">
         <div class="dsec-head">权限</div>
+        <div class="perm-card">
+          <div class="perm-summary" id="perm-summary"></div>
+          <div class="perm-table-wrap">
+            <table class="perm-table" id="perm-table" aria-label="机器人能力总览">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="perm-legend" id="perm-legend">
+            <span class="perm-key on">✓ 直接做</span>
+            <span class="perm-key ask">问 先问你</span>
+            <span class="perm-key off">— 未授权</span>
+            <span class="row-note" style="flex:1;min-width:200px;margin:0">改审批级别会实时反映在这里；危险命令和你的规则仍可能单独拦截。</span>
+          </div>
+          <div class="perm-foot">
+            <div class="row-note" id="perm-strict-note">一键 strict：审批层面的最小权限——审批改为谨慎、生成先问、其他位置一律不许、sudo 先问、接管只看；机器人能力（工具授权）不变。改动会写进审计。</div>
+            <button class="btn danger" id="perm-strict" type="button">一键 strict</button>
+          </div>
+        </div>
         <div class="row-note" id="policy-note">这台机器上，机器人做事前要不要先问你。每台机器单独设置。</div>
         <div class="level-list" id="level-list" role="radiogroup" aria-label="审批级别">
           <label class="level-opt"><input type="radio" name="approval-level" value="careful" />
@@ -5536,6 +5586,7 @@ function renderBots() {
     });
     list.appendChild(row);
   }
+  if ($('perm-summary')) renderPermOverview();
 }
 
 async function selectBot(id) {
@@ -9677,6 +9728,7 @@ function renderPolicy(policy) {
       list.appendChild(row);
     }
   }
+  renderPermOverview();
 }
 
 function renderFolders(policy) {
@@ -9723,6 +9775,109 @@ async function savePolicy(next, okText = '') {
     loadPolicy().catch(() => {});
     return null;
   }
+}
+
+/* One page: what each bot may do, what the machine's approval boundary is.
+   The strict preset tightens the boundary only — it never strips a bot's
+   tools, which would silently break work the human already delegated. */
+const PERM_CAPS = [
+  { label: '执行命令', tools: ['shell'], risk: 'high' },
+  { label: '写文件', tools: ['fs_write', 'fs_mkdir'], risk: 'medium' },
+  { label: '删文件', tools: ['fs_delete'], risk: 'high' },
+  { label: '发消息', tools: ['bot_message', 'group_post'], risk: 'medium' },
+  { label: '发文件', tools: ['file_send'], risk: 'medium' },
+  { label: '生成媒体', tools: ['image_generate', 'video_generate'], risk: 'media' },
+  { label: '切机器', tools: ['machine_switch'], risk: 'medium' },
+  { label: '浏览器', tools: ['browser_open', 'browser_click', 'browser_type'], risk: 'medium' },
+];
+const PERM_LEVEL = { careful: '谨慎', standard: '标准', auto: '放手' };
+
+/** What a granted capability actually does under this machine level. Mirrors
+ *  src/approvals.mjs: careful asks for everything, standard asks above LOW
+ *  unless the bot is trusted, auto runs it; generation has its own switch. */
+function permDecision(cap, bot, policy) {
+  const level = policy.level || (policy.autoApproveAll ? 'auto' : 'standard');
+  if (cap.risk === 'media') {
+    const mode = policy.generate || 'level';
+    if (mode === 'ask') return 'ask';
+    if (mode === 'auto') return 'auto';
+    return level === 'auto' ? 'auto' : 'ask';
+  }
+  if (level === 'careful') return 'ask';
+  if (level === 'auto') return 'auto';
+  if (cap.risk === 'high') return 'ask';
+  return bot.policy?.autoApproveMedium ? 'auto' : 'ask';
+}
+
+function renderPermOverview() {
+  const summary = $('perm-summary');
+  const table = $('perm-table');
+  if (!summary || !table || !state.policy) return;
+  const policy = state.policy;
+  const level = policy.level || (policy.autoApproveAll ? 'auto' : 'standard');
+  const chips = [
+    ['审批级别', PERM_LEVEL[level] || level, level === 'auto'],
+    ['接管桌面', policy.takeover === 'view' ? '只能看' : '能看能控', false],
+    ['生成媒体', { level: '跟随级别', ask: '每次先问', auto: '直接生成' }[policy.generate] || '跟随级别', policy.generate === 'auto'],
+    ['其他位置', policy.outside === 'deny' ? '一律不许' : '先问我', false],
+    ['sudo', policy.sudo === 'allow' ? '直接用' : '先问我', policy.sudo === 'allow'],
+    ['我的规则', `${(policy.rules || []).length} 条`, false],
+    ['禁止命令', `${(policy.extraDeny || []).length} 条自定义`, false],
+  ];
+  summary.innerHTML = '';
+  for (const [key, value, warn] of chips) {
+    const chip = el('span', `perm-chip${warn ? ' warn' : ''}`);
+    chip.appendChild(el('span', '', key));
+    chip.appendChild(el('b', '', value));
+    summary.appendChild(chip);
+  }
+  const bots = Array.isArray(state.bots) ? state.bots : [];
+  const head = table.querySelector('thead');
+  const body = table.querySelector('tbody');
+  head.innerHTML = '';
+  const headRow = document.createElement('tr');
+  headRow.appendChild(el('th', '', '机器人'));
+  for (const cap of PERM_CAPS) headRow.appendChild(el('th', '', cap.label));
+  head.appendChild(headRow);
+  body.innerHTML = '';
+  for (const bot of bots) {
+    const row = document.createElement('tr');
+    row.appendChild(el('td', '', bot.name || bot.id));
+    const tools = new Set(Array.isArray(bot.tools) ? bot.tools : []);
+    for (const cap of PERM_CAPS) {
+      const granted = cap.tools.some((name) => tools.has(name));
+      if (!granted) { row.appendChild(el('td', 'off', '—')); continue; }
+      const decision = permDecision(cap, bot, policy);
+      row.appendChild(el('td', decision === 'auto' ? 'on' : 'ask', decision === 'auto' ? '✓' : '问'));
+    }
+    body.appendChild(row);
+  }
+  if (!bots.length) {
+    const row = document.createElement('tr');
+    const cell = el('td', 'row-note', '还没有机器人');
+    cell.colSpan = PERM_CAPS.length + 1;
+    row.appendChild(cell);
+    body.appendChild(row);
+  }
+  const strictEnough = level === 'careful' && policy.generate === 'ask' &&
+    policy.outside === 'deny' && policy.sudo === 'ask' && policy.takeover === 'view';
+  const note = $('perm-strict-note');
+  if (note) note.hidden = strictEnough;
+  const button = $('perm-strict');
+  if (button) button.disabled = strictEnough;
+}
+
+async function applyStrictPermissions() {
+  const ok = await askConfirm({
+    title: '收紧这台机器？',
+    text: '审批级别改为「谨慎」，生成图片/视频每次先问，其他位置一律不许，sudo 先问，接管桌面改为「只能看」。机器人的工具授权不变；这些改动会写进审计。',
+    confirmLabel: '一键 strict',
+  });
+  if (!ok) return;
+  await savePolicy(
+    { level: 'careful', generate: 'ask', outside: 'deny', sudo: 'ask', takeover: 'view' },
+    '已收紧：谨慎 · 生成先问 · 其他位置不许 · sudo 先问 · 接管只看',
+  );
 }
 
 function setStatus(kind, text) {  const node = $('set-status');
@@ -11127,6 +11282,7 @@ function wireChrome() {
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
     radio.addEventListener('change', () => { if (radio.checked) savePolicy({ level: radio.value }); });
   });
+  $('perm-strict')?.addEventListener('click', applyStrictPermissions);
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
   $('folder-add-btn')?.addEventListener('click', async () => {
     const p = $('folder-input').value.trim();

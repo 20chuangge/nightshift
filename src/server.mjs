@@ -2157,7 +2157,7 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
   const change = {};
-  for (const k of ['level', 'takeover', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo']) {
+  for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo']) {
     if (body?.[k] !== undefined) change[k] = body[k];
   }
   await audit({ kind: 'policy.changed', change });

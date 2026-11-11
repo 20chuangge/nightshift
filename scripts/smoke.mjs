@@ -4100,6 +4100,33 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('activity log: permission changes are recorded', changes.some((r) => r.kind === 'policy.changed' && r.change?.addRule?.text === '发邮件先问我'));
     check('activity log: a takeover is recorded with its mode; filters keep to their kind', takeovers[0]?.kind === 'desktop.takeover' && takeovers[0]?.mode === 'view' && takeovers.every((r) => r.kind === 'desktop.takeover') && changes.every((r) => /policy.changed|bot.abilities/.test(r.kind)) && Array.isArray(raw));
     check('rules API: add, refuse empty, remove', add.json?.rules?.[0]?.action === 'ask' && bad.status === 400 && del.json?.rules?.length === 0);
+    // Permission overview + one-tap strict: the boundary tightens in one call,
+    // lands in the audit with every field, and never strips a bot's tools.
+    const beforePolicy = (await api('/api/policy')).json || {};
+    const strictSaved = await api('/api/policy', { method: 'PUT', body: { level: 'careful', generate: 'ask', outside: 'deny', sudo: 'ask', takeover: 'view' } });
+    check('strict preset: one call tightens level, generation, outside, sudo and takeover',
+      strictSaved.json?.level === 'careful' && strictSaved.json?.generate === 'ask' && strictSaved.json?.outside === 'deny' &&
+      strictSaved.json?.sudo === 'ask' && strictSaved.json?.takeover === 'view');
+    const strictAudit = (await api('/api/audit?view=changes&limit=20')).json || [];
+    check('strict preset: the change lands in the audit with every field',
+      strictAudit.some((r) => r.kind === 'policy.changed' && r.change?.level === 'careful' &&
+        r.change?.generate === 'ask' && r.change?.outside === 'deny' &&
+        r.change?.sudo === 'ask' && r.change?.takeover === 'view'));
+    const botsAfterStrict = (await api('/api/bots')).json || [];
+    check('strict preset: bot tool grants are untouched',
+      Array.isArray(botsAfterStrict) && botsAfterStrict.every((b) => Array.isArray(b.tools)));
+    await api('/api/policy', { method: 'PUT', body: { level: beforePolicy.level, generate: beforePolicy.generate, outside: beforePolicy.outside, sudo: beforePolicy.sudo, takeover: beforePolicy.takeover } });
+    const pageSrc = await readText('../public/index.html');
+    check('permission overview: one page lists bots × capabilities and offers the preset',
+      pageSrc.includes('id="perm-table"') && pageSrc.includes('PERM_CAPS') && pageSrc.includes('id="perm-strict"') && pageSrc.includes('applyStrictPermissions'));
+    const apv = await import('../src/approvals.mjs');
+    const strictMachine = apv.effectivePolicy({ level: 'careful' });
+    const strictMedium = apv.classify('fs_write', {}, { baseRisk: apv.RISK.MEDIUM, granted: true, autoApproveMedium: false, autoApproveAll: strictMachine.autonomous });
+    const strictHigh = apv.classify('shell', { command: 'ls' }, { baseRisk: apv.RISK.HIGH, granted: true, autoApproveMedium: false, autoApproveAll: strictMachine.autonomous });
+    check('strict preset: least privilege at runtime — even a trusted bot asks for medium and high work',
+      strictMachine.careful === true && strictMedium.decision === 'ask' && strictHigh.decision === 'ask');
+    check('permission overview: the matrix follows the level (direct / ask / not granted)',
+      pageSrc.includes('function permDecision') && pageSrc.includes('permDecision(cap, bot, policy)') && pageSrc.includes("'问'"));
   }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
   {
