@@ -166,7 +166,11 @@ export function desktopSupport() {
   }
   const missing = ['Xvfb', 'x11vnc', 'websockify'].filter((b) => !hasBinary(b));
   if (missing.length) {
-    return { available: false, reason: `missing ${missing.join(', ')} (apt install xvfb x11vnc novnc websockify)` };
+    // Say the install command of this machine's package manager (Rocky/RHEL use dnf).
+    const hint = hasBinary('apt-get')
+      ? 'apt install xvfb x11vnc novnc websockify'
+      : hasBinary('dnf') ? 'dnf install xorg-x11-server-Xvfb x11vnc novnc python3-websockify' : 'install Xvfb, x11vnc, noVNC and websockify';
+    return { available: false, reason: `missing ${missing.join(', ')} (${hint})` };
   }
   return { available: true, reason: '' };
 }

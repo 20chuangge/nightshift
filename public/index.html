@@ -911,6 +911,13 @@
   .pc-shield-hint { display: none; color: #cfd4e2; font-size: 11px; letter-spacing: .02em; }
   @media (max-width: 860px) { .pc-shield-hint { display: block; } }
   .pc-vnc-shield[hidden] { display: none; }
+  /* Light (openbox) desktops are a plain grey field until a bot opens a window. */
+  .pc-light-hint {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -60%);
+    width: min(78%, 360px); text-align: center; color: #c3c8d4; font-size: 12px; line-height: 1.6;
+    pointer-events: none;
+  }
+  .pc-light-hint[hidden] { display: none; }
   .pc-preview-badge {
     position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 9px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.14);
@@ -3164,6 +3171,7 @@
             <div class="pc-vnc-layer" id="pc-vnc-wrap" hidden></div>
             <div class="pc-vnc-shield" id="pc-vnc-shield" hidden>
               <div class="pc-preview-badge"><i></i><span id="pc-preview-name">实时画面</span></div>
+              <div class="pc-light-hint" id="pc-light-hint" hidden>轻量桌面：没有任务栏和图标，空着是正常的。机器人打开浏览器或程序时，窗口会出现在这里；接管后右键空白处有菜单。</div>
               <div class="pc-shield-hint">点按画面进全屏</div>
               <button class="btn primary" id="pc-preview-take" type="button">接管桌面</button>
             </div>
@@ -11395,6 +11403,7 @@ function syncViewer() {
     shield.hidden = takeover;
     if (!takeover && $('pc-preview-name')) $('pc-preview-name').textContent = `实时画面 · ${machineDisplayName()}`;
   }
+  if ($('pc-light-hint')) $('pc-light-hint').hidden = state.computer?.desktop?.mode !== 'light';
   if ($('pc-desktop')) $('pc-desktop').textContent = takeover ? '返回预览' : '接管桌面';
 }
 

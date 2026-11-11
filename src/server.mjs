@@ -2236,7 +2236,7 @@ route('GET', /^\/api\/computer$/, async (req, _res, { state, query }) => {
       perBot = { botId, running: false, error: err.message };
     }
     if (perBot?.url) {
-      snap.desktop = { url: perBot.url, botId, perBot: true, display: perBot.display };
+      snap.desktop = { url: perBot.url, botId, perBot: true, display: perBot.display, mode: perBot.mode || 'full' };
     }
     snap.perBotDesktop = { ...perBot, support: desktopSupport() };
   }

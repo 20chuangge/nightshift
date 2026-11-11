@@ -4210,6 +4210,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('desktops: new Linux machines get openbox for light desktops', setup.includes('has openbox || pm_install openbox x11-xserver-utils') && setup.includes('has openbox || pm_install openbox xsetroot'));
       check('desktops: new Linux machines no longer install XFCE; the bot session falls back to openbox without it', !/pm_install xfce4|groupinstall "Xfce"/.test(setup) && setup.includes('exec openbox') && !/for bin in Xvfb x11vnc websockify xfce4-session/.test(setup));
       const deskSrc = await readText('../src/desktops.mjs');
+      check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("$('pc-light-hint').hidden = state.computer?.desktop?.mode !== 'light'") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
       check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);
     }
     const page = await readText('../public/index.html');
