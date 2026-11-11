@@ -659,6 +659,11 @@
     box-shadow: 0 0 0 1px rgba(240, 167, 44, 0.05) inset;
   }
   .approval.resolved { border-color: var(--border); background: var(--panel); opacity: 0.85; }
+  /* Landed here from a notification: make it obvious which card asked. */
+  .approval.is-focus {
+    border-color: rgba(240, 167, 44, 0.9);
+    box-shadow: 0 0 0 3px rgba(240, 167, 44, 0.16), 0 8px 28px rgba(0, 0, 0, 0.35);
+  }
   .approval-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 6px; flex-wrap: wrap; }
   .approval-title { font-weight: 650; font-size: 13px; }
   .approval-wait {
@@ -5196,11 +5201,16 @@ async function boot() {
   // Before the chat renders: whether replies get a "read aloud" button.
   try { await loadVoice(); } catch { /* older server: no voice */ }
 
+  const target = approvalTarget();
   renderBots();
   await loadGroups();
   const primary = state.bots.find((b) => b.primary) || state.bots[0];
-  if (primary) await selectBot(primary.id);
+  // A notification tap names the bot it came from: the approval card lives in
+  // that transcript, so landing on the primary bot would hide the destination.
+  const dest = (target && target.botId && state.bots.find((b) => b.id === target.botId)) || primary;
+  if (dest) await selectBot(dest.id);
   else renderMessages();
+  if (target) focusApprovalFromLink(target);
 
   await Promise.allSettled([loadSkills(), loadRoutines(), loadActivity()]);
   state.ready = true;
@@ -5486,7 +5496,7 @@ async function selectBot(id) {
 
   await Promise.allSettled([loadMessages(), loadMemory()]);
   loadSkills();
-  refreshPendingApprovals();
+  await refreshPendingApprovals();
   markSeen();
 }
 
@@ -7790,6 +7800,52 @@ async function refreshPendingApprovals() {
       reason: approval.reason,
       args: safeParse(approval.args),
     });
+  }
+}
+
+/**
+ * The approval a notification tap points at (?approval=<id>&bot=<id>).
+ * The Android shell opens the hub itself; the query is how the tap says
+ * which card it meant.
+ */
+function approvalTarget() {
+  try {
+    const params = new URL(location.href).searchParams;
+    const approvalId = (params.get('approval') || '').trim();
+    if (!approvalId) return null;
+    return { approvalId, botId: (params.get('bot') || '').trim() };
+  } catch {
+    return null;
+  }
+}
+
+/** Bring the card a notification asked for into view, then drop the query. */
+async function focusApprovalFromLink(target) {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete('approval');
+    url.searchParams.delete('bot');
+    history.replaceState(null, '', url.toString());
+  } catch { /* an unclean URL still works */ }
+
+  const card = await waitForApprovalCard(target.approvalId, 2500);
+  if (!card) {
+    toast('这条审批不在了，可能已经处理过。');
+    return;
+  }
+  card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  card.classList.add('is-focus');
+  setTimeout(() => card.classList.remove('is-focus'), 3000);
+}
+
+async function waitForApprovalCard(approvalId, timeoutMs) {
+  const selector = `[data-approval="${CSS.escape(approvalId)}"]`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const card = messagesEl.querySelector(selector);
+    if (card) return card;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 120));
   }
 }
 

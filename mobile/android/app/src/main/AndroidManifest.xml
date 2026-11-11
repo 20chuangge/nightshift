@@ -31,6 +31,11 @@
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
 
+        <!-- 通知里的批准/拒绝: explicit only, never exported. -->
+        <receiver
+            android:name=".ApprovalActionReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

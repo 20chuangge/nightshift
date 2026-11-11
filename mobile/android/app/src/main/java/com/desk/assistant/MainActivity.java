@@ -51,19 +51,40 @@ public class MainActivity extends BridgeActivity {
         NightshiftWatcher.appVisible = hasFocus;
     }
 
-    /** A notification tap carries the hub to open; land in it, not on the picker. */
+    /**
+     * A notification tap carries the machine the event came from, and for an
+     * approval the exact card to land on - otherwise a phone paired with two
+     * computers would open the wrong one (or the picker) and the tap would be
+     * useless exactly when the turn is blocked.
+     */
     private void openFromNotification(Intent intent) {
         if (intent == null) return;
         String hub = intent.getStringExtra("desk.openHub");
+        String approvalId = intent.getStringExtra("desk.openApproval");
+        String botId = intent.getStringExtra("desk.openBot");
         if (hub == null || hub.isEmpty()) return;
         intent.removeExtra("desk.openHub");
+        intent.removeExtra("desk.openApproval");
+        intent.removeExtra("desk.openBot");
         Bridge bridge = getBridge();
         if (bridge == null || bridge.getWebView() == null) return;
-        final String url = hub.endsWith("/") ? hub : hub + "/";
+        final String url = hubWithTarget(hub, approvalId, botId);
         bridge.getWebView().postDelayed(() -> {
             String current = bridge.getWebView().getUrl();
-            if (current == null || !current.startsWith(url)) bridge.getWebView().loadUrl(url);
+            // Exact match: the same hub with a different approval is a different
+            // destination, and startsWith would skip the load.
+            if (current == null || !current.equals(url)) bridge.getWebView().loadUrl(url);
         }, 350);
+    }
+
+    /** hub root, plus the approval the tap came from (when there is one). */
+    private String hubWithTarget(String hub, String approvalId, String botId) {
+        String base = hub.endsWith("/") ? hub : hub + "/";
+        if (approvalId == null || approvalId.isEmpty()) return base;
+        StringBuilder url = new StringBuilder(base)
+                .append("?approval=").append(android.net.Uri.encode(approvalId));
+        if (botId != null && !botId.isEmpty()) url.append("&bot=").append(android.net.Uri.encode(botId));
+        return url.toString();
     }
 
     /** Ask once (Android 13+); a denial just means quiet, never a crash. */

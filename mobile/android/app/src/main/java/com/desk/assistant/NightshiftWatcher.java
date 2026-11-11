@@ -346,7 +346,7 @@ public class NightshiftWatcher extends Service {
             BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
             String line;
             while (running && (line = reader.readLine()) != null) {
-                if (line.startsWith("data: ")) handleEvent(line.substring(6));
+                if (line.startsWith("data: ")) handleEvent(hub, line.substring(6));
             }
             return true;
         } finally {
@@ -368,7 +368,7 @@ public class NightshiftWatcher extends Service {
     }
 
     /** One SSE event: decide whether the human needs to be told. */
-    private void handleEvent(String json) {
+    private void handleEvent(String hub, String json) {
         try {
             JSONObject event = new JSONObject(json);
             String type = event.optString("type", "");
@@ -376,7 +376,10 @@ public class NightshiftWatcher extends Service {
                 // Always worth a buzz: the turn is blocked on a decision.
                 String tool = event.optString("tool", "工具");
                 String reason = event.optString("reason", "这一步会动到你的东西。");
-                notify("要你确认一下", tool + "：" + reason, event.optString("botName", ""));
+                notify("要你确认一下", tool + "：" + reason, hub,
+                        event.optString("approvalId", ""),
+                        event.optString("botId", ""),
+                        event.optString("botName", ""));
                 return;
             }
             if ("turn.end".equals(type)) {
@@ -385,7 +388,8 @@ public class NightshiftWatcher extends Service {
                 String status = event.optString("status", "success");
                 String summary = event.optString("summary", "");
                 String title = "success".equals(status) ? "这一轮做完了" : "这一轮结束了：" + status;
-                notify(title, summary.isEmpty() ? "打开夜班看看结果。" : summary, event.optString("botName", ""));
+                notify(title, summary.isEmpty() ? "打开夜班看看结果。" : summary, hub,
+                        "", event.optString("botId", ""), event.optString("botName", ""));
             }
         } catch (Exception err) {
             Log.d(TAG, "bad event: " + err.getMessage());
@@ -410,17 +414,42 @@ public class NightshiftWatcher extends Service {
         manager.createNotificationChannel(events);
     }
 
-    private PendingIntent openApp(int flags) {
+    /**
+     * A tap carries the exact machine the event came from, plus the approval to
+     * focus. Request codes must differ per notification: PendingIntent identity
+     * ignores extras, so a shared code would make the newest extras win for
+     * every notification still on screen.
+     */
+    private PendingIntent openApp(int requestCode, String hub, String approvalId, String botId) {
         Intent intent = new Intent(this, MainActivity.class);
         intent.setAction(Intent.ACTION_MAIN);
         intent.addCategory(Intent.CATEGORY_LAUNCHER);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        // Tapping goes straight to the machine being watched, not the picker.
-        java.util.List<String> hubs = hubsWithToken(prefs(this));
-        if (!hubs.isEmpty()) intent.putExtra("desk.openHub", hubs.get(0));
+        if (hub != null && !hub.isEmpty()) intent.putExtra("desk.openHub", hub);
+        if (approvalId != null && !approvalId.isEmpty()) intent.putExtra("desk.openApproval", approvalId);
+        if (botId != null && !botId.isEmpty()) intent.putExtra("desk.openBot", botId);
         int pending = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) pending |= PendingIntent.FLAG_IMMUTABLE;
-        return PendingIntent.getActivity(this, 0, intent, pending);
+        return PendingIntent.getActivity(this, requestCode, intent, pending);
+    }
+
+    private PendingIntent approvalAction(int requestCode, String hub, String approvalId, String decision, int notificationId) {
+        Intent intent = new Intent(this, ApprovalActionReceiver.class);
+        intent.setAction(ApprovalActionReceiver.ACTION_DECIDE);
+        intent.putExtra(ApprovalActionReceiver.EXTRA_HUB, hub);
+        intent.putExtra(ApprovalActionReceiver.EXTRA_APPROVAL_ID, approvalId);
+        intent.putExtra(ApprovalActionReceiver.EXTRA_DECISION, decision);
+        intent.putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, notificationId);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getBroadcast(this, requestCode, intent, flags);
+    }
+
+    private void addApprovalActions(Notification.Builder builder, int notificationId, String hub, String approvalId) {
+        builder.addAction(new Notification.Action.Builder(
+                null, "批准", approvalAction(notificationId * 2, hub, approvalId, "approve", notificationId)).build());
+        builder.addAction(new Notification.Action.Builder(
+                null, "拒绝", approvalAction(notificationId * 2 + 1, hub, approvalId, "deny", notificationId)).build());
     }
 
     private Notification serviceNotification(Context context) {
@@ -430,7 +459,7 @@ public class NightshiftWatcher extends Service {
         builder.setContentTitle("夜班在后台盯着")
                 .setContentText("有结果会提醒你")
                 .setSmallIcon(R.drawable.ic_stat_nightshift)
-                .setContentIntent(openApp(0))
+                .setContentIntent(openApp(0, null, null, null))
                 .setOngoing(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Intent stop = new Intent(context, NightshiftWatcher.class);
@@ -443,7 +472,9 @@ public class NightshiftWatcher extends Service {
         return builder.build();
     }
 
-    private void notify(String title, String body, String botName) {
+    private void notify(String title, String body, String hub, String approvalId, String botId, String botName) {
+        int id = eventSeq++;
+        if (id > 4199) eventSeq = 4110;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_EVENTS)
                 : new Notification.Builder(this);
@@ -451,16 +482,13 @@ public class NightshiftWatcher extends Service {
                 .setContentText(body)
                 .setStyle(new Notification.BigTextStyle().bigText(body))
                 .setSmallIcon(R.drawable.ic_stat_nightshift)
-                .setContentIntent(openApp(0))
+                .setContentIntent(openApp(id, hub, approvalId, botId))
                 .setAutoCancel(true);
+        if (approvalId != null && !approvalId.isEmpty()) addApprovalActions(builder, id, hub, approvalId);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             builder.setVisibility(Notification.VISIBILITY_PRIVATE);
         }
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) {
-            int id = eventSeq++;
-            if (id > 4199) eventSeq = 4110;
-            manager.notify(id, builder.build());
-        }
+        if (manager != null) manager.notify(id, builder.build());
     }
 }

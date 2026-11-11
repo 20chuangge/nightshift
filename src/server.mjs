@@ -2176,10 +2176,13 @@ route('GET', /^\/api\/approvals$/, async (_req, _res, { query, state }) => {
   });
 });
 
-route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {
+route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
   const decision = body?.decision;
   if (!decision) throw httpError(400, 'DECISION_REQUIRED', 'body needs { decision: "approve" | "deny" }');
-  const record = state.approvals.decide(params.id, decision, body?.note || '');
+  // A device token means the answer came from the phone (a notification action
+  // or the app's own card); a loopback browser is the person at this computer.
+  const by = req.auth?.deviceId ? 'device' : 'human';
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by);
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', `no approval with id "${params.id}"`);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
 

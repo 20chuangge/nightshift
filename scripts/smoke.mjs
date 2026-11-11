@@ -20,6 +20,14 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * Repo source, with LF endings. Assertions quote source lines, and a Windows
+ * checkout (core.autocrlf=true) writes CRLF - the product is the same file.
+ */
+async function readText(rel) {
+  return (await fsp.readFile(new URL(rel, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+}
+
 // ---------------------------------------------------------------------------
 // tiny assertion harness
 // ---------------------------------------------------------------------------
@@ -3098,7 +3106,7 @@ function shanghaiWeekday(ts) {
   // A removed element must not break boot: every `$('id').addEventListener`
   // without optional chaining has to point at markup that still exists.
   {
-    const html = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const html = await readText('../public/index.html');
     const ids = [...html.matchAll(/\$\('([A-Za-z0-9_-]+)'\)\.addEventListener/g)].map((m) => m[1]);
     const missing = [...new Set(ids)].filter((id) => !html.includes(`id="${id}"`));
     check('no unguarded listener wiring for removed elements', missing.length === 0, `missing: ${missing.join(', ')}`);
@@ -3110,7 +3118,7 @@ function shanghaiWeekday(ts) {
   {
     const seeded = (await fsp.readdir(new URL('../config/bots/', import.meta.url))).filter((n) => n.endsWith('.json'));
     check('config ships exactly one bot', seeded.length === 1 && seeded[0] === 'chief.json', seeded.join(','));
-    const seed = JSON.parse(await fsp.readFile(new URL('../config/bots/chief.json', import.meta.url), 'utf8'));
+    const seed = JSON.parse(await readText('../config/bots/chief.json'));
     const needed = ['shell', 'fs_write', 'fs_delete', 'browser_open', 'http_fetch', 'bot_create', 'group_create', 'routine_create', 'settings_update', 'ui_set'];
     check('the one bot is granted every capability', needed.every((n) => seed.tools.includes(n)), needed.filter((n) => !seed.tools.includes(n)).join(','));
     check('the one bot is called 助理', seed.name === '助理' && seed.primary === true);
@@ -3118,9 +3126,9 @@ function shanghaiWeekday(ts) {
 
   // One machine concept: the old "看谁的屏幕" take-over list must not come back.
   {
-    const html = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const html = await readText('../public/index.html');
     check('no separate take-over target list in the UI', !/desk.vncTargets|id="pc-target"/.test(html));
-    const preload = await fsp.readFile(new URL('../desktop/shell-preload.cjs', import.meta.url), 'utf8');
+    const preload = await readText('../desktop/shell-preload.cjs');
     check(
       'the desktop bridge can add, rename and remove machines',
       ['addMachine', 'renameMachine', 'removeMachine', 'switchHub', 'listMachines'].every((k) => preload.includes(k)),
@@ -3129,7 +3137,7 @@ function shanghaiWeekday(ts) {
 
   // The machine controls must actually be wired; "no reaction" is a bug.
   {
-    const html = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const html = await readText('../public/index.html');
     for (const id of ['set-add-machine', 'set-machines-list', 'machine-btn', 'machine-menu']) {
       check(`machine control ${id} is wired`, html.includes(`$('${id}')?.addEventListener`) || html.includes(`$('${id}').addEventListener`));
     }
@@ -3145,8 +3153,8 @@ function shanghaiWeekday(ts) {
     }
     check('offline: only silence counts (an HTTP error means the machine answered)', /if \(!err\.status\) setConnected\(false\)/.test(html) && /setConnected\(true\)/.test(html));
     check('takeover: a request in the open chat pops the full-window takeover, elsewhere it notifies', /if \(takeover\) popupTakeover\(\)/.test(html) && /notifyHuman\(\{/.test(html) && /onActionRequest\(ev\)/.test(html));
-    const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
-    const preload = await fsp.readFile(new URL('../desktop/shell-preload.cjs', import.meta.url), 'utf8');
+    const main = await readText('../desktop/main.mjs');
+    const preload = await readText('../desktop/shell-preload.cjs');
     check('notifications: the shell shows them and a click comes back to the page', /ipcMain\.handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /flashFrame\(true\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
   }
 
@@ -3246,7 +3254,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const { buildLaunchArgs } = await import('../src/browser.mjs');
       const args = buildLaunchArgs({ port: 1, profileDir: 'x' });
       check('bot browser: no Edge auto sign-in, no sync', args.includes('--disable-sync') && args.some((a) => /msImplicitSignin/.test(a)));
-      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      const agentSrc = await readText('../src/agent.mjs');
       check('task end: a summary is not repeated when the model already answered in that step', /if \(!ctx\?\.spokeThisStep\) await this\.streamText/.test(agentSrc));
       check('takeover: a copied "点「接管屏幕」" reply still gets the takeover card', /auto_takeover_/.test(agentSrc) && /waitingFor = 'takeover';/.test(agentSrc));
     }
@@ -3267,7 +3275,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('boundary: an opened folder can be read; a read-only one cannot be written', B.checkBoundary('fs_read', { path: path.join(docs, 'r.txt') }, opened) === null && B.checkBoundary('fs_write', { path: path.join(docs, 'w.txt') }, opened)?.code === 'FOLDER_READ_ONLY');
       check('boundary: a command naming a place outside asks; climbing out with .. too; plain commands do not', B.checkBoundary('shell', { command: `cat "${secret}"` }, pol())?.decision === 'ask' && B.checkBoundary('shell', { command: 'cat ../../x.txt' }, pol())?.decision === 'ask' && B.checkBoundary('shell', { command: 'node -v && git status' }, pol()) === null);
       check('boundary: sudo / admin asks first unless allowed', B.checkBoundary('shell', { command: 'sudo apt-get install -y htop' }, pol())?.code === 'SUDO_ASKS' && B.checkBoundary('shell', { command: 'Start-Process powershell -Verb RunAs' }, pol())?.code === 'SUDO_ASKS' && B.checkBoundary('shell', { command: 'sudo ls' }, pol({ sudo: 'allow' })) === null);
-      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      const agentSrc = await readText('../src/agent.mjs');
       check('boundary: applied after the rules, so "直接做" cannot open a folder', agentSrc.indexOf('checkBoundary(name') > agentSrc.indexOf('applyRules(verdict'));
       const add = await api('/api/policy', { method: 'PUT', body: { addFolder: { path: docs, write: true } } });
       const bad = await api('/api/policy', { method: 'PUT', body: { addFolder: { path: 'relative/dir' } } });
@@ -3284,17 +3292,17 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const f = FS.createFeishu({ file: 'x', bus: null });
       const t = f._stripPaths('画好了 🐱\ngenerated/2026-11-08/image-a.png\n橘白小猫蜷在窗台上。', ['generated/2026-11-08/image-a.png']);
       check('feishu: the picture is sent, its local path is left out of the text', t === '画好了 🐱\n\n橘白小猫蜷在窗台上。');
-      const feishuSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+      const feishuSrc = await readText('../src/feishu.mjs');
       check('feishu: saving the same settings again does not drop the connection', /const changed = `\$\{cfg\.appId\}\|\$\{cfg\.appSecret\}\|\$\{cfg\.enabled\}` !== before;/.test(feishuSrc));
     }
     // Step 9: faster installs (Hub first, desktop + browser in the background; Node from the client).
     {
-      const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
+      const sh = await readText('../hub/setup-linux.sh');
       const hubStart = sh.indexOf('say "6/7');
       const bg = sh.indexOf('systemd-run --unit=desk-desktop-setup');
       check('install: desktop and browser install after the Hub is up, in their own unit', hubStart > 0 && bg > hubStart && /DESKTOP_OK=pending/.test(sh) && !/^\s*pm_install xfce4 xfce4-terminal\s*$/m.test(sh.slice(0, hubStart)));
       check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用夜班带过来的 Node/.test(sh));
-      const ps1 = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
+      const ps1 = await readText('../hub/setup-windows.ps1');
       check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用夜班带过来的 Node/.test(ps1));
       const fsx = await import('node:fs');
       const setupFile = path.join(home, 'data', 'desktop-setup.json');
@@ -3302,10 +3310,10 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const pc = await api('/api/computer');
       fsx.rmSync(setupFile, { force: true });
       check('install: the screen panel hears that the desktop is still installing', pc.json?.desktopSetup?.state === 'running' && /XFCE/.test(pc.json.desktopSetup.detail));
-      const br = await fsp.readFile(new URL('../src/browser.mjs', import.meta.url), 'utf8');
+      const br = await readText('../src/browser.mjs');
       check('install: a bot that needs the browser meanwhile is told it is still installing', /browser_installing/.test(br));
       // Step 10 small fixes: the panel says "installing" instead of a black live view; a faster mirror for this install only.
-      const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+      const ui = await readText('../public/index.html');
       check('install: while the desktop installs, the panel shows the note, not the (black) live view', /const installing = state\.computer\?\.desktopSetup\?\.state === 'running';/.test(ui) && /!watching \|\| installing\)/.test(ui));
       check('install: a domestic mirror only when clearly faster, through its own lists, with a fallback', /pick_mirror\(\)/.test(sh) && /Dir::State::Lists=\/var\/lib\/apt\/desk-mirror-lists/.test(sh) && /a > 2 \* b/.test(sh) && /APT_SRC=""   # the mirror did not work/.test(sh) && /signed-by=/.test(sh));
       check('install: the speed check works with wget too, and elapsed time is the script\'s own', /fetch_time\(\)/.test(sh) && /wget -q -T 20 -O \/dev\/null/.test(sh) && /"elapsed":%s/.test(sh) && /"\$SECONDS"/.test(sh));
@@ -3317,9 +3325,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const f = A.looksLikeMadeUpRun;
       check('made-up results: a run reported with no tool call is caught', f('执行这条命令：sudo bash x.sh', '执行完成，输出如下：\n```\nok\n```', true) && f('run `ls /tmp`', 'exit=0', true));
       check('made-up results: ordinary answers and bots that cannot run are left alone', !f('今天天气怎么样', '```js\nconsole.log(1)\n```', true) && !f('执行这条命令', '执行完成', false) && !f('执行一下', '好的，我需要先确认你要执行哪条命令？', true));
-      const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+      const agentSrc = await readText('../src/agent.mjs');
       check('made-up results: taken back from the chat and retried once, only in a turn that ran nothing', /type: 'message\.retract'/.test(agentSrc) && /!trail\.length && !fabricationNudged/.test(agentSrc));
-      const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+      const page = await readText('../public/index.html');
       check('made-up results: the page drops the retracted bubble', /case 'message\.retract':/.test(page));
       // Hand-offs: a team works as a chain (chief -> director -> writer), bounded.
       {
@@ -3344,7 +3352,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('away: the hub reports a Tailscale address field (null when not on a tailnet or loopback-only)', health.status === 200 && 'tailnetUrl' in (health.json || {}));
       const { tailnetAddress } = await import('../src/auth.mjs');
       check('away: tailnet detection does not crash and only returns 100.64/10 addresses', (() => { const a = tailnetAddress(); return a === null || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a); })());
-      const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+      const main = await readText('../desktop/main.mjs');
       check('away: the client falls back to the Tailscale address and carries the pairing over', /async function reachMachine\(url\)/.test(main) && /cookies\.set\(\{\s*url: alt/.test(main) && /const reach = target \? await reachMachine\(target\)/.test(main) && /patchMachine\(url, \{ tailnetUrl/.test(main));
       check('away: a system proxy that does not bypass 100.64/10 is bypassed in this app only; addresses are relearned every few minutes', main.includes('async function tailnetDirect()') && main.includes('100.64.0.0/10;*.local') && main.includes('for (const m of readMachines()) learnTailnet(m.url)'));
       check('away: the page knows which machine it is when opened through Tailscale', /m\.tailnetUrl === location\.origin/.test(page) && /id="pair-tailnet"/.test(page));
@@ -3599,12 +3607,12 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const back = await api('/api/peers');
     check('peers: PUT/GET /api/peers, tokens never come back', put.status === 200 && back.json?.peers?.[0]?.name === 'box' && !JSON.stringify(back.json).includes('secret-peer-token-1'));
     await api('/api/peers', { method: 'PUT', body: { peers: [] } });
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('peers: work from another machine keeps the chain limits and says where it came from', srv.includes('Math.min(3, Math.max(1, Number(h.depth)') && srv.includes("source: h ? 'peer' : 'chat'"));
-    const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    const main = await readText('../desktop/main.mjs');
     check('peers: the client hands every hub the other machines, at start, every 10 min and on changes', main.includes('async function sharePeers()') && main.includes("'/api/peers', { peers: others }") && main.includes('sharePeersTimer = setTimeout') && main.includes('setInterval(() => sharePeers()'));
-    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
-    const vj = await fsp.readFile(new URL('../src/videojobs.mjs', import.meta.url), 'utf8');
+    const agentSrc = await readText('../src/agent.mjs');
+    const vj = await readText('../src/videojobs.mjs');
     check('peers: bots are told teammates work on other machines; delegated videos report to the origin bot', agentSrc.includes('function peersLine(peers, canHandOff)') && vj.includes('reportTo') && srv.includes('const tellUpstream = async'));
   }
   // Step 13: the page library (reports, dashboards a bot makes as web pages).
@@ -3637,19 +3645,19 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // Routes: listed, served sandboxed (its scripts cannot use the app's login), deleted.
     const hubPages = (await api('/api/pages'));
     check('pages: GET /api/pages answers', hubPages.status === 200 && Array.isArray(hubPages.json?.pages));
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('pages: a page is served with a sandbox policy (opaque origin) and can be downloaded or deleted', PG.PAGE_HEADERS['content-security-policy'].startsWith('sandbox allow-scripts') && !PG.PAGE_HEADERS['content-security-policy'].includes('allow-same-origin') && srv.includes("route('DELETE', /^\\/api\\/pages\\/") && srv.includes("query.get('download')"));
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('pages: a page named in a reply becomes a card; it opens in a sandboxed frame; Settings has the library', page.includes("out.push({ path: p, page: m[1]") && /<iframe sandbox="allow-scripts allow-popups[^"]*"/.test(page) && !/<iframe sandbox="[^"]*allow-same-origin/.test(page) && page.includes('id="sec-pages"') && page.includes('data-set-target="sec-pages"'));
     // Results reach the human, not just "done".
-    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
-    const toolSrc = await fsp.readFile(new URL('../src/tools.mjs', import.meta.url), 'utf8');
+    const agentSrc = await readText('../src/agent.mjs');
+    const toolSrc = await readText('../src/tools.mjs');
     check('results: the last message must carry the result itself (content, paths), never only "done"', agentSrc.includes('Never only "done"') && toolSrc.includes('the summary IS what the human reads') && toolSrc.includes('file_fetch what the human needs, then tell them'));
     // Tailscale key when adding a Linux machine.
-    const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
-    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    const sh = await readText('../hub/setup-linux.sh');
+    const rm = await readText('../src/remote.mjs');
     check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
-    const tsl = await fsp.readFile(new URL('../hub/tailscale-linux.sh', import.meta.url), 'utf8');
+    const tsl = await readText('../hub/tailscale-linux.sh');
     check('tailscale key: the script installs Tailscale in the background, reads the key from a root-only file and removes it', sh.includes('--tailscale-key-file)') && tsl.includes('tailscale up --auth-key="file:$KEY"') && tsl.includes("trap 'shred -u \"$KEY\"") && sh.includes('desk-tailscale-setup') && sh.includes('$APP_DIR/hub/tailscale-linux.sh'));
     const { createProvisioner } = await import('../src/remote.mjs').catch(() => ({}));
     if (typeof createProvisioner === 'function') {
@@ -3726,12 +3734,12 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const before = Boolean(att.snapshot().items['bot:chief']?.unread);
     att.quiet('bot:chief');
     check('change-only: a quiet run leaves no "new result" badge', before && !att.snapshot().items['bot:chief']);
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('change-only: the run is told the last result and may answer "没有变化"; then no badge and no Feishu push', srv.includes('只回复「没有变化」四个字') && srv.includes("attention.quiet(") && srv.includes('else if (routine.pushFeishu && report && refs.feishu)'));
-    const agentSrc14 = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const agentSrc14 = await readText('../src/agent.mjs');
     check('change-only: "no change" counts only when the run really checked (used a tool); otherwise it runs once more', srv.includes('NO_CHANGE.test(report) && tools === 0') && srv.includes('NO_CHANGE.test(report) && tools > 0') && srv.includes('不要凭聊天记录判断'));
     check('change-only: the last result goes to the model only, not into the chat', srv.includes('hiddenNote: changeNote') && agentSrc14.includes("content: String(text) + (hiddenNote ?") && agentSrc14.includes("await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });"));
-    const fsSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+    const fsSrc = await readText('../src/feishu.mjs');
     check('feishu: results can go to every paired person directly (open_id)', fsSrc.includes('receive_id_type=open_id') && fsSrc.includes('async push(text)'));
     // Routes.
     const bad = await api('/api/briefing', { method: 'PUT', body: { enabled: true, time: '25:00' } });
@@ -3745,7 +3753,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const facts = await api('/api/briefing/data?hours=6');
     check('briefing: each machine answers with its own facts', facts.status === 200 && Array.isArray(facts.json?.bots) && 'waitingOnYou' in facts.json);
     await api(`/api/routines/${encodeURIComponent(briefRoutine.id)}`, { method: 'DELETE' });
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('briefing: the 任务 panel has the switch, time, Feishu and a try-now button; routines get the two options', ['brief-on', 'brief-time', 'brief-feishu', 'brief-try', 'rt-only-changes', 'rt-feishu'].every((id) => page.includes(`id="${id}"`)) && page.includes('没有变化（没打扰你）'));
   }
   // Step 15: replies read aloud, voice messages in Feishu, files on other machines.
@@ -3816,9 +3824,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const loc = await api('/api/peers/locate?path=../etc/passwd');
     const none = await api('/api/peers/locate?path=pages/nowhere.html');
     check('other machines: a path outside the workspace is refused; a file no machine has is a 404', loc.status === 400 && none.status === 404);
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('other machines: pages from there stay sandboxed; HTML/SVG/XML from there is never served as such', srv.includes('? { ...PAGE_HEADERS }') && srv.includes("/html|svg|xml|javascript/i.test(r.headers.get('content-type') || '') ? 'text/plain; charset=utf-8'"));
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
     check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
@@ -3832,16 +3840,16 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const ended = await RM._execStream(catClient, 'cat > f', { stdin: 'tskey-auth-x\n', endInput: true, timeoutMs: 500 }).then((r) => r.code, (e) => e.code);
     const hung = await RM._execStream(catClient, 'cat > f', { stdin: 'tskey-auth-x\n', timeoutMs: 300 }).then((r) => r.code, (e) => e.code);
     check('tailscale key: the key write closes its input (without that, cat waits and times out)', ended === 0 && hung === 'REMOTE_TIMEOUT');
-    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    const rm = await readText('../src/remote.mjs');
     check('tailscale key: a key that did not reach the machine, or a script that did not start Tailscale, is reported (never skipped silently)', rm.includes('endInput: true, timeoutMs: 15000') && rm.includes("Tailscale 没装：密钥没能交给那台机器") && rm.includes("'Tailscale 没装：安装脚本没有收到密钥'") && rm.includes("if (/没装/.test(job.tailscale) && job.state === 'done') job.state = 'warning';") && rm.includes("tailscale: job.tailscale || ''"));
-    const ui = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const ui = await readText('../public/index.html');
     check('tailscale key: the add-machine dialog says how Tailscale went', ui.includes("job.tailscale ? "));
   }
   // Step 16: chat fixes (cut-off tool calls, cards, the working hint, new bots, opening files, video progress).
   {
     const MD = await import('../src/model.mjs');
     check('cut-off calls: arguments that do not parse are marked as cut off, never passed on as {}', MD.toolArgs('{"title":"x","html":"<h1>very lo').__truncated === true && MD.toolArgs('{"a":1}').a === 1 && Object.keys(MD.toolArgs('')).length === 0);
-    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const agentSrc = await readText('../src/agent.mjs');
     check('cut-off calls: the bot is told it was cut off and how to do it in parts', agentSrc.includes("code: 'ARGS_TRUNCATED'") && agentSrc.includes('fs_write (mode "append" for the next parts)'));
     const T = await import('../src/tools.mjs');
     const { createPages } = await import('../src/pages.mjs');
@@ -3853,25 +3861,25 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     let emptyMsg = '';
     try { await reg.get('page_save').run({ title: 'x' }, { bot: { id: 'b' }, workspaceDir: ws }); } catch (e) { emptyMsg = e.code + ' ' + e.message; }
     check('pages: a long page can be saved from a workspace file; an empty one says how to do it', saved.path === 'pages/long-page.html' && fsx.readFileSync(path.join(ws, saved.path), 'utf8').includes('长页面') && emptyMsg.startsWith('PAGE_EMPTY') && emptyMsg.includes('pass file'));
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('stuck: three identical calls read as "同一个操作重复了", not as the step limit', page.includes("item.status === 'max_steps' && /^Stopped: repeated /.test(item.summary || '')") && page.includes('同一个操作重复了，先停下了'));
     check('cards: a takeover/login card follows what the bot said in that turn, in the replies\' column', page.includes('if (last > i) { items.splice(i, 1); items.splice(last, 0, it); }') && page.includes("const row = el('div', 'row assistant card-row');"));
     check('working hint: always under the newest message, also after the human sends one', page.includes('if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);') && page.includes('keepTypingLast();\n  scrollToBottom(true);'));
     const ti = page.indexOf('const TOOL_TEXT');
     const labelled = new Set([...page.slice(ti, page.indexOf('\n};', ti)).matchAll(/^  ([a-z_]+):/gm)].map((m) => m[1]));
-    const toolSrc = await fsp.readFile(new URL('../src/tools.mjs', import.meta.url), 'utf8');
+    const toolSrc = await readText('../src/tools.mjs');
     const unlabelled = [...toolSrc.matchAll(/name: '([a-z_]+)',\n\s+description/g)].map((m) => m[1]).filter((n) => !labelled.has(n));
     check('working hint: every tool has a Chinese name (no "正在image_view…")', unlabelled.length === 0, unlabelled.join(','));
     check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: var\(--text\); color: var\(--bg\);/.test(page));
     check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
-    const main = await fsp.readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+    const main = await readText('../desktop/main.mjs');
     check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("ipcMain.handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
     const jobs = await api('/api/media/jobs?botId=chief');
     check('video progress: the chat asks how its videos are going, with a typical time from recent ones', jobs.status === 200 && Array.isArray(jobs.json?.jobs) && 'typicalSec' in (jobs.json || {}) && page.includes('async function renderVideoJobs()') && page.includes("'通常 3–15 分钟'"), `status ${jobs.status} ${JSON.stringify(jobs.json).slice(0,160)}`);
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('other machines: a page found there keeps its own title', srv.includes("find((x) => x.name === page)?.title") && page.includes('elsewhereTitles.get(file.path)'));
     check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  state.messages = messages;'));
-    const fsSrc = await fsp.readFile(new URL('../src/feishu.mjs', import.meta.url), 'utf8');
+    const fsSrc = await readText('../src/feishu.mjs');
     check('feishu: the bot is told the channel carries pictures, videos and voice (it said "only text")', fsSrc.includes('飞书这条通道能收文字、图片和语音') && fsSrc.includes('所以别说飞书只能发文字'));
   }
   // Step 17: settings and permissions (live model list, key boxes, looking around, generation, Windows add).
@@ -3888,9 +3896,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('models: a wrong key says so; the built-in DeepSeek list is the two real ones', bad === '密钥不对或没有权限' && PR.providerPreset('deepseek').models.join(',') === 'deepseek-flash,deepseek-v4-pro');
     const noKey = await api('/api/providers/models', { method: 'POST', body: { provider: 'openai' } });
     check('models: without a key the form keeps the common ones and says a key shows all', noKey.status === 200 && noKey.json?.live === false && Array.isArray(noKey.json.models) && /密钥/.test(noKey.json.error || ''));
-    const srv17 = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv17 = await readText('../src/server.mjs');
     check('models: the saved key is used when it belongs to that provider', srv17.includes('const savedFits = state.settings?.provider === provider;'));
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('models: the form reads the live list (on provider change and typed key), no gpt-4o-mini placeholder', page.includes("api('/api/providers/models'") && page.includes("$('set-apikey').addEventListener('input', () => loadLiveModels(900));") && page.includes('id="set-model" placeholder="模型名"'));
     check('key boxes: every password box gets a show/hide button, hidden by default', page.includes('function addRevealButtons(root)') && page.includes("input.type = show ? 'text' : 'password';") && page.includes('new MutationObserver('));
     // Looking around needs no approval; reading a file's contents on this computer still asks.
@@ -3911,36 +3919,36 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const g1 = await api('/api/policy', { method: 'PUT', body: { generate: 'ask' } });
     const g2 = await api('/api/policy', { method: 'PUT', body: { generate: 'nope' } });
     await api('/api/policy', { method: 'PUT', body: { generate: 'level' } });
-    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const agentSrc = await readText('../src/agent.mjs');
     check('generation: ask every time / follow the level / just make them; a one-sentence rule can still ask', g1.json?.generate === 'ask' && g2.status === 400 && agentSrc.indexOf("if (generate === 'ask')") < agentSrc.indexOf("// The human's one-sentence rules") && page.includes('name="generate-mode"'));
     // Adding a Windows machine: wait for the hub, then the code; say which check failed.
-    const ps1 = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
-    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    const ps1 = await readText('../hub/setup-windows.ps1');
+    const rm = await readText('../src/remote.mjs');
     check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'夜班服务没能启动起来或没有应答'"));
   }
   // Step 18: cloud hosts, Tailscale on Windows and on machines already added, Rocky 10, busy machines.
   {
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     const fnSrc = /function isPublicAddress\(host\) \{[\s\S]*?\n\}\n/.exec(page)?.[0] || '';
     const isPublic = new Function(fnSrc + 'return isPublicAddress;')();
     check('cloud hosts: a public address is told apart from the LAN, Tailscale and this computer', isPublic('47.100.1.2') && isPublic('my-vps.example.com') && !isPublic('192.168.1.20') && !isPublic('10.0.0.5') && !isPublic('172.20.1.1') && !isPublic('100.100.1.2') && !isPublic('localhost') && !isPublic('win11') && !isPublic('box.tail1234.ts.net'));
     check('cloud hosts: adding one warns the connection is not encrypted and opens the Tailscale option; settings say so too', page.includes('id="vnc-public"') && page.includes("if (pub) $('vnc-ts').open = true;") && page.includes('这台机器用的是公网地址：连接没有加密'));
     const RM = await import('../src/remote.mjs');
     check('tailscale: the device is named after the machine (letters, digits, dashes)', RM.tailscaleDeviceName('Rocky') === 'rocky' && RM.tailscaleDeviceName('My Box 2') === 'my-box-2' && RM.tailscaleDeviceName('动画机') === '');
-    const ps = await fsp.readFile(new URL('../hub/tailscale-windows.ps1', import.meta.url), 'utf8');
-    const winSetup = await fsp.readFile(new URL('../hub/setup-windows.ps1', import.meta.url), 'utf8');
-    const rm = await fsp.readFile(new URL('../src/remote.mjs', import.meta.url), 'utf8');
+    const ps = await readText('../hub/tailscale-windows.ps1');
+    const winSetup = await readText('../hub/setup-windows.ps1');
+    const rm = await readText('../src/remote.mjs');
     check('tailscale on Windows: ASCII-only installer (PowerShell 5 safe), key from a file, unattended, key removed', ![...ps].some((c) => c.charCodeAt(0) > 127) && ps.includes('"--auth-key=file:$KeyFile"') && ps.includes("'--unattended'") && ps.includes('Remove-Item -Force $KeyFile'));
     check('tailscale on Windows: the key goes over SSH stdin into an admins-only file, and setup starts the installer', rm.includes("icacls $p /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F'") && rm.includes('endInput: true, timeoutMs: 30000') && winSetup.includes('[string]$TailscaleKeyFile') && winSetup.includes("hub\\tailscale-windows.ps1"));
-    check('tailscale on Windows: the installer downloads with curl.exe (PowerShell 5 downloads crawl), and a key that waits for the last step is not taken away', ps.includes("'System32\\curl.exe'") && ps.includes("$ProgressPreference = 'SilentlyContinue'") && (await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8')).includes('if (/^start \\d{4}-/m.test(log)) return;'));
+    check('tailscale on Windows: the installer downloads with curl.exe (PowerShell 5 downloads crawl), and a key that waits for the last step is not taken away', ps.includes("'System32\\curl.exe'") && ps.includes("$ProgressPreference = 'SilentlyContinue'") && (await readText('../src/server.mjs')).includes('if (/^start \\d{4}-/m.test(log)) return;'));
     const ts = await api('/api/tailscale');
     const local = await api('/api/tailscale/install', { method: 'POST', body: { authKey: 'tskey-auth-abcdefghijkl' } });
     check('tailscale on a machine already added: offered only on machines given to the bots; this computer is told to install the app', ts.status === 200 && ts.json?.canInstall === false && 'status' in ts.json && local.status === 400 && local.json?.error?.code === 'TS_LOCAL');
-    const srv = await fsp.readFile(new URL('../src/server.mjs', import.meta.url), 'utf8');
+    const srv = await readText('../src/server.mjs');
     check('tailscale on a machine already added: key file 0600, sudo -n systemd-run on Linux, the installer on Windows; results worded from DESK_TS codes', srv.includes('{ mode: 0o600 }') && srv.includes("spawnChild('sudo', ['-n', 'systemd-run'") && srv.includes("path.join(hubDir, 'tailscale-windows.ps1')") && srv.includes("m[2] === 'key' ?") && page.includes("api('/api/tailscale/install'"));
     const winLaunch = srv.split('\n').find((l) => l.includes("'tailscale-windows.ps1'), '-KeyFile', keyFile")) || '';
     check('tailscale on a machine already added: Windows launches the installer attached (a detached one runs nothing from the hub task); a key the installer never took is deleted after 90 s and reported', winLaunch && !winLaunch.includes('detached: true') && srv.includes('if (!fs.existsSync(keyFile)) return;') && srv.includes('DESK_TS=failed launch') && srv.includes('const TS_LAUNCH_FAILED'));
-    const sh = await fsp.readFile(new URL('../hub/setup-linux.sh', import.meta.url), 'utf8');
+    const sh = await readText('../hub/setup-linux.sh');
     check('Rocky / RHEL 10: no X11 desktop to install, so only Chromium, and an honest "not supported" instead of "add it again"', sh.includes('EL_MAJOR:-0}" -ge 10 ]; then') && sh.includes('status unsupported') && page.includes("setup.state === 'unsupported'"));
     const h = await api('/api/health');
     check('busy machines: health reports CPU, cores and memory; the page warns when it stays near 100%', h.json?.load && typeof h.json.load.cores === 'number' && typeof h.json.load.memFreeMB === 'number' && 'busy' in h.json.load && page.includes('async function checkBusy()') && page.includes('id="busy-banner"'));
@@ -4013,7 +4021,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('groups: a member on another machine answers there with the recent group talk, and is posted here under its name', turn.status === 'success' && got.messages[0]?.text.includes('动画组') && got.messages[0].text.includes('助理：我这边好了') && posted.at(-1)?.from === 'bot-w@Ubuntu' && posted.at(-1).kind === 'assistant' && posted.at(-1).text.includes('写好了') && posted.at(-1).text.includes('已经取回这台机器') && events.some((e) => e.type === 'turn.end' && e.groupId === 'g1'));
     const gone = await A.AgentRuntime.prototype.runRemoteGroupTurn.call({ ...fakeRt, getPeers: () => ({ find: () => null }) }, { group: grp, member: grp.members[1], text: 'x', role: 'speaker' });
     check('groups: a machine that cannot be reached says so in the group instead of hanging', gone.status === 'failed' && /没能联系上/.test(posted.at(-1).text));
-    const agentSrc = await fsp.readFile(new URL('../src/agent.mjs', import.meta.url), 'utf8');
+    const agentSrc = await readText('../src/agent.mjs');
     check('groups: the group loop sends far members their turn; the coordinator is told who works elsewhere', agentSrc.includes('member.remote ? await this.runRemoteGroupTurn(') && agentSrc.includes('works on the machine'));
     // Feishu: "@name" reaches any bot.
     const FS = await import('../src/feishu.mjs');
@@ -4053,7 +4061,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('feishu: "机器人列表" says who can be reached, on which machine', /这台机器：助理、剪辑/.test(sent.at(-1) || '') && /「Ubuntu」：编剧、美术/.test(sent.at(-1)));
     fz.stop();
     srv19.close();
-    const page = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    const page = await readText('../public/index.html');
     check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));
   }
   // One-sentence rules: matched by meaning (a stand-in model here), ask wins.
@@ -4168,7 +4176,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
 
   // Bot desktops are reachable only through the hub's authenticated relay.
   {
-    const desktopsSrc = await fsp.readFile(new URL('../src/desktops.mjs', import.meta.url), 'utf8');
+    const desktopsSrc = await readText('../src/desktops.mjs');
     check('websockify binds loopback only', /spawnChild\('websockify', \[`127\.0\.0\.1:\$\{webPort\}`/.test(desktopsSrc));
     check('the bot desktop URL goes through the hub relay', desktopsSrc.includes('desktop/ws') && !/http:\/\/\$\{lanAddress\(\)\}:\$\{entry\.webPort\}/.test(desktopsSrc));
     const unauth = await new Promise((resolve) => {
@@ -4209,7 +4217,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
 
   // The assistant can see the human's machines and hand work to one.
   {
-    const seed = JSON.parse(await fsp.readFile(new URL('../config/bots/chief.json', import.meta.url), 'utf8'));
+    const seed = JSON.parse(await readText('../config/bots/chief.json'));
     check('the assistant is granted machine_list and machine_switch', ['machine_list', 'machine_switch'].every((t) => seed.tools.includes(t)));
     const reported = await api('/api/ui/state', { method: 'POST', body: { patch: { machines: [{ name: '本机', url: 'local', current: true }, { name: 'Ubuntu', url: 'http://10.0.0.5:4390' }] } } });
     check('the window can report its machine list', reported.json?.ui?.machines?.length === 2, reported.text);
@@ -4223,6 +4231,31 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('machine_switch refuses an unknown machine', missing === 'MACHINE_NOT_FOUND', missing);
     const stored = await api('/api/ui/state');
     check('a switch command is never stored as UI state', !('switchMachine' in (stored.json || {})));
+  }
+
+  // A phone notification is a door, not a dead end: it names the machine and
+  // the exact approval, and can answer without opening the app.
+  {
+    const watcher = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+    const activity = await readText('../mobile/android/app/src/main/java/com/desk/assistant/MainActivity.java');
+    const receiver = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ApprovalActionReceiver.java');
+    const manifest = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
+    const page = await readText('../public/index.html');
+    check('notification: a tap carries the hub the event came from, not the most recently used one',
+      watcher.includes('handleEvent(hub, line.substring(6))') && watcher.includes('openApp(int requestCode, String hub, String approvalId, String botId)') && !watcher.includes('hubs.get(0)'));
+    check('notification: an approval tap lands on that bot and that card',
+      activity.includes('desk.openApproval') && activity.includes('desk.openBot') && activity.includes('"&bot="') &&
+      page.includes('function approvalTarget()') && page.includes('focusApprovalFromLink(target)'));
+    check('notification: 批准/拒绝 decide from a private receiver; the token never rides on the intent',
+      watcher.includes('addApprovalActions') && receiver.includes('"desk.token:" + hub') && receiver.includes('/api/approvals/') &&
+      !/putExtra\([^)]*token/i.test(receiver) && manifest.includes('android:name=".ApprovalActionReceiver"') && manifest.includes('android:exported="false"'));
+    check('notification: a decision that cannot be delivered falls back to the card', receiver.includes('manager.notify(notificationId, fallback') && receiver.includes('desk.openApproval'));
+  }
+  {
+    const srv = await readText('../src/server.mjs');
+    check('approval: a decision from a paired device is audited as "device"',
+      srv.includes("req.auth?.deviceId ? 'device' : 'human'") &&
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by)"));
   }
 
 }
