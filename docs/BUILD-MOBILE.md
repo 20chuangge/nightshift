@@ -1,10 +1,10 @@
-# Desk 移动端打包
+# Nightshift 移动端打包
 
-桌面端是「Node 服务 + 单文件 UI」。手机端要解决的就两件事：**连上哪台电脑上的 Desk**，以及**把一个能装到手机上的包做出来**。
+桌面端是「Node 服务 + 单文件 UI」。手机端要解决的就两件事：**连上哪台电脑上的 Nightshift**，以及**把一个能装到手机上的包做出来**。
 
 这个仓库里 `mobile/` 是 Capacitor 外壳（Android + iOS 原生工程已生成并入库），`public/` 是那份单文件 UI。本文档把三条落地路径、签名、CI、以及上架时真正会卡住的地方写清楚。
 
-> 事实先摆在前面：本机（Windows）没有 JDK、没有 Android SDK、没有 Xcode/CocoaPods，所以**这里没有、也不应该有 APK/IPA 产物**。产物只有两种来路：装了工具链的机器上本地构建，或者 GitHub Actions。本文档的每条命令都在 CI 里跑过（YAML 已解析校验），但本机只验证到「工程生成 + web 资源同步 + 外壳逻辑」这一层。
+> 仓库**不提交** APK/IPA 产物。产物只有两种来路：装了工具链的机器上本地构建（JDK 21 + Android SDK），或者 GitHub Actions。本地构建的命令见 §2，装好工具链后可直接产出可安装的 APK。
 
 ---
 
@@ -19,7 +19,7 @@ Capacitor 的两种做法只有一种是能用的：
 
 (b) 不可行的原因是硬的，不是偏好：
 
-1. **Hub 没有任何 CORS 头**。`src/server.mjs` 是零依赖 node:http，不处理 `OPTIONS`，不返回 `Access-Control-Allow-Origin`，`/api/stream` 还是 SSE。跨源请求（webview 的 `http://localhost` → `http://192.168.x.x`）会被浏览器直接拦掉。要支持 (b)，得改 `src/`（不在本任务写范围内），并且要补 CORS + preflight + SSE 的 CORS。
+1. **CORS 只对原生 App 的 origin 放行，且只认 Bearer**。`src/server.mjs` 对 Capacitor 的固定 origin 回 `Access-Control-Allow-Origin` 并处理 `OPTIONS`，但这套规则是为"启动器自己的 fetch"准备的，不是为一份跨源 UI 准备的：UI 的每个请求还得带 `Authorization`，而 `EventSource` 无法加请求头，`/api/stream` 就是 SSE。要在本地 UI 里跑完整界面，得改 `public/` 的传输层（不在本任务写范围内）。
 2. **UI 里的相对路径改不了**。`public/index.html` 里是 `api('/api/health')`、`new EventSource('/api/stream')` 这样的相对地址，改写成绝对地址意味着改 `public/`（也不在写范围内）。
 3. **配对鉴权只认两种凭证**：`Authorization: Bearer <token>` 和 `Cookie desk_session`（见 `src/auth.mjs`）。前者需要能给每个请求加头——在 iframe/本地 UI 里做不到；后者是 `HttpOnly; SameSite=Lax`，**跨站 iframe 根本不会带上**（顶层站点是 `localhost`，iframe 是 `192.168.x.x`，属于 cross-site），也就是说即使把 Hub 塞进 iframe，里面的 UI 会永远停在配对页。
 
@@ -31,7 +31,7 @@ Capacitor 的两种做法只有一种是能用的：
 2. Hub 的 UI 是第一方文档，`?pair=` 被它自己消费掉、落 cookie，之后就是桌面端那份界面。
 3. 想换 Hub：Android 按返回键（外壳打了原生补丁，见下）；iOS 退出 App 再打开——启动页永远是启动器。
 
-<img src="./../mobile/docs/connect-screen.png" width="300" alt="连接你的 Desk" /> <img src="./../mobile/docs/hub-remembered.png" width="300" alt="已记住你的 Desk" />
+<img src="./../mobile/docs/connect-screen.png" width="300" alt="连接你的 Nightshift" /> <img src="./../mobile/docs/hub-remembered.png" width="300" alt="已记住你的 Nightshift" />
 
 > 关于「token 存不存 Preferences」：**不存**。session token 是 `HttpOnly`，页面脚本读不到；Hub 又不发 CORS 头，启动器也无法用自己的 `fetch` 换到它。启动器只存 Hub 地址（`@capacitor/preferences`，key `desk.hubUrl`），凭证由 Hub 自己的配对页在第一方上下文里拿。这是后端鉴权模型决定的，不是省事。
 
@@ -100,7 +100,7 @@ npx cap sync           # 同步到 android/ 和 ios/
 
 ### 2.2 Android
 
-需要：**JDK 17** + **Android SDK**（`ANDROID_HOME`，装 platform 35 / build-tools 35 / platform-tools）+ 一个能联网的 Gradle（首次会下 Gradle 8.11.1 和依赖）。
+需要：**JDK 21** + **Android SDK**（`ANDROID_HOME`，装 platform 35 / build-tools 35 / platform-tools）+ 一个能联网的 Gradle（首次会下 Gradle 8.11.1 和依赖）。Capacitor 7 的库按 Java 21 编译，JDK 17 会在 `compileDebugJavaWithJavac` 报「无效的源发行版：21」。
 
 ```bash
 cd mobile
@@ -121,8 +121,8 @@ Windows 上把 `./gradlew` 换成 `gradlew.bat`。也可以在 Android Studio �
 | `DESK_KEY_ALIAS` | 别名，必填 |
 | `DESK_KEY_PASSWORD` | key 密码，必填 |
 | `DESK_STORE_PASSWORD` | keystore 密码，可选，默认同 `DESK_KEY_PASSWORD` |
-| `DESK_VERSION_CODE` | versionCode 覆盖（CI 用 run_number） |
-| `DESK_VERSION_NAME` | versionName 覆盖 |
+| `DESK_VERSION_CODE` | versionCode 覆盖（默认由仓库 `package.json` 版本推出：`major*10000+minor*1000+patch`） |
+| `DESK_VERSION_NAME` | versionName 覆盖（默认即 `package.json` 的版本） |
 
 三个必填项齐全时 `assembleRelease` 出签名包；缺任意一个就出 **unsigned** 包（`app-release-unsigned.apk`）而不是报错。生成 keystore：
 
@@ -165,7 +165,7 @@ open App.xcworkspace             # 用 workspace，不是 xcodeproj
 
 ### 3.1 `.github/workflows/android.yml`
 
-- `ubuntu-latest`，`actions/setup-node@v4`（Node 20）+ `actions/setup-java@v4`（temurin **17**）+ `android-actions/setup-android@v3`
+- `ubuntu-latest`，`actions/setup-node@v4`（Node 20）+ `actions/setup-java@v4`（temurin **21**）+ `android-actions/setup-android@v3`
 - `npm ci` → `npm run sync:www` → `npx cap sync android`
 - **有签名 secrets** → `./gradlew assembleRelease`（签名 APK）
 - **没有签名 secrets** → `./gradlew assembleDebug`（debug APK，一样能装）
@@ -221,7 +221,7 @@ git add mobile .github/workflows docs/BUILD-MOBILE.md && git commit -m "mobile: 
 adb install -r app-debug.apk
 ```
 
-**本地（有 JDK 17 + Android SDK 时）**
+**本地（有 JDK 21 + Android SDK 时）**
 
 ```bash
 cd mobile && npm ci && npm run sync:www && npx cap sync android \
@@ -245,7 +245,7 @@ ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 npm start
 
 ### 5.1 先说风险：Apple 4.2 "Minimum Functionality"
 
-App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网站包一层"的 App。Desk 的移动端**在审核员眼里就是这种情况**：它是你家电脑上一个服务的客户端，而且审核员**连不上你的 Hub**——打开就是一台空白的连接页。
+App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网站包一层"的 App。Nightshift 的移动端**在审核员眼里就是这种情况**：它是你家电脑上一个服务的客户端，而且审核员**连不上你的 Hub**——打开就是一台空白的连接页。
 
 现实一点的判断：
 
@@ -263,11 +263,11 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 - [ ] 上传 **AAB**（`bundleRelease`），不是 APK；Play 要求 target SDK 跟上当年要求（本项目 `targetSdk 35`）
 - [ ] 签名：**Play App Signing**（上传密钥用本文 §2.2 的 keystore，或让 Google 生成）
 - [ ] 隐私政策 URL（即使"数据不出本机"也要填）
-- [ ] Data safety 表单：Desk 会把对话/记忆存在**用户自己电脑**上；App 本身不收集——如实填写
+- [ ] Data safety 表单：Nightshift 会把对话/记忆存在**用户自己电脑**上；App 本身不收集——如实填写
 - [ ] 内容分级问卷、目标受众、截图（手机 + 平板）、图标 512×512、feature graphic 1024×500
 - [ ] **明文 HTTP**：`usesCleartextTraffic="true"` 本身不违反 Play 政策，但审核会问"为什么需要明文"。理由要写清楚：Hub 是用户局域网内自建服务，不是公网明文。能改成 https（§1.1）就应该改，并把 manifest 里这个属性删掉
 - [ ] 新个人开发者账号有 **12 名测试者 / 14 天** 的封闭测试门槛（2023 起）
-- [ ] `versionCode` 每次上传必须递增 → CI 已用 `github.run_number`
+- [ ] `versionCode` 每次上传必须递增 → 默认由 `package.json` 版本换算（`1.2.60` → `12060`），每次发版递增
 
 ### 5.3 iOS / App Store
 
@@ -299,11 +299,14 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 | `npx cap add android` / `add ios` / `cap sync` | ✅ 本机（Windows）跑过，两个原生工程已生成入库 |
 | 启动器逻辑（填地址 → 探活 → 记住 → 打开 Hub → 配对 → 进 UI） | ✅ 真浏览器 + 真 Hub 端到端跑过（截图见上，用的是局域网 IP，走的是真实配对流程） |
 | workflow YAML 解析 + 结构检查 | ✅ `npm run verify:yaml`（真 YAML 解析器，不是肉眼） |
-| `./gradlew assembleRelease/assembleDebug` | ❌ 本机无 JDK/SDK，**APK 未在本机构建**，必须在 §2/§3 的环境里跑 |
+| `./gradlew assembleDebug`（JDK 21 + Android SDK） | ✅ 本机（Windows）构建过，debug APK 直接装机验收 |
+| 审批通知 → 通知内答复 → Hub 审计 `by: "device"` | ✅ OPPO 真机（1.2.60）：通知带两个动作，真实 Receiver 答复后审计记为设备 |
+| 通知深链定位审批卡 | ✅ OPPO 真机（1.2.60）：`?approval=&bot=` 打开对应机器与卡片并高亮 |
+| `./gradlew assembleRelease` 签名包 | ⚠️ 本机**没有 release keystore**，只能出 unsigned；签名包由 CI 用 secrets 出 |
 | `xcodebuild archive` / IPA | ❌ 本机无 Xcode，**IPA 未构建**，只能在 macOS 或 CI 上跑 |
 | iOS 真机行为（cookie、ATS、局域网权限） | ❌ 未验证；需真机自测 |
 
-本机缺什么（跑一次就知道）：`java -version` → not found；`ANDROID_HOME` → 空；`xcodebuild` → 不存在；`pod` → 不存在。
+本机工具链在 `D:\ai\deepseek\_tools`（`jdk-21.0.13+9`、`android-sdk`），`mobile/android/local.properties` 指向 SDK。缺的是：release keystore（只存在于 CI secrets 与你的备份里）、Xcode / CocoaPods（Windows 上没有）。
 
 ---
 
@@ -312,7 +315,7 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 ```
 mobile/
 ├── package.json              Capacitor 依赖 + 构建脚本
-├── capacitor.config.json     appId com.desk.assistant / appName Desk / webDir www
+├── capacitor.config.json     appId com.desk.assistant / appName Nightshift / webDir www
 ├── scripts/sync-www.mjs      ../public -> www/ui，并写入启动器 + shell-info.json
 ├── scripts/verify-workflows.mjs  YAML 解析与结构校验（npm run verify:yaml）
 ├── shell/                    启动器源码（www 由它生成，不要直接改 www/）
@@ -321,7 +324,7 @@ mobile/
 ├── ios/                      原生工程（已生成、已入库；Pods 需在 macOS 上 pod install）
 └── docs/                     启动器截图（本文档引用）
 .github/workflows/
-├── android.yml               ubuntu + JDK17 + SDK → desk-android
+├── android.yml               ubuntu + JDK21 + SDK → desk-android
 └── ios.yml                   macos-14 + Xcode → desk-ios
 docs/BUILD-MOBILE.md          本文
 ```

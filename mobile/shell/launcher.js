@@ -554,6 +554,7 @@
   }
 
   function setStatus(text, tone) {
+    if (!dom.currentStatus) return;
     dom.currentStatus.textContent = text;
     dom.currentStatus.className = `pill${tone === 'warn' ? ' warn' : ''}`;
   }

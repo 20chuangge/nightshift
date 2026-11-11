@@ -41,7 +41,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 199 assertions, boots the real server on a free port
+npm run smoke                  # 717 assertions, boots the real server on a free port
 
 # 2) 桌面应用（Electron 壳）
 npm run desktop                # 开发模式，等同 npm start 但带窗口/托盘
@@ -125,13 +125,13 @@ text because the server emits deltas for each completed message.
               ┌───────────────▼──┐  ┌─────▼──────┐  ┌─▼───────────────┐
               │ src/agent.mjs    │  │ approvals  │  │ src/routines.mjs│
               │ the turn loop    │  │ .mjs       │  │ cron + interval │
-              │ 12 steps / 5 min │  │ classify   │  │ 20s tick        │
+              │80 steps / 30 min│  │ classify   │  │ 20s tick        │
               │ events + cancel  │  │ queue      │  │ unattended runs │
               └───┬─────────┬────┘  └─────┬──────┘  └─┬───────────────┘
                   │         │             │           │
         ┌─────────▼──┐  ┌───▼────────┐  ┌─▼───────────▼──────────────┐
         │ model.mjs  │  │ tools.mjs  │  │ store.mjs                  │
-        │ mock |     │  │ 19 tools   │  │ atomic JSON, JSONL, audit, │
+        │ mock |     │  │ 52 tools   │  │ atomic JSON, JSONL, audit, │
         │ openai     │  │ risk fn    │  │ event bus, path layout     │
         └────────────┘  └───┬────────┘  └────────────────────────────┘
                             │
@@ -158,7 +158,7 @@ text because the server emits deltas for each completed message.
 3. It calls the model with the granted tool schemas (never the ungranted ones).
 4. For each `tool_call`: **classify → maybe ask a human → run → feed the result
    back**. Results go back into the transcript as `role:"tool"`.
-5. Loop until `task_finish`, a plain answer with no tool calls, 12 steps, 5
+5. Loop until `task_finish`, a plain answer with no tool calls, 80 steps, 30
    minutes, or cancellation.
 6. Every step emits an event on the bus; the server fans it out over SSE and the
    transcript is appended to `data/sessions/<botId>.jsonl`.

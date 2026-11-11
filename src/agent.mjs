@@ -6,8 +6,8 @@
  *   feed results back -> repeat -> finish.
  *
  * Bounds that matter:
- *   - max 12 steps           (config per bot, so a runaway loop costs little)
- *   - 5 minute wall clock    (a stuck tool cannot hold a turn forever)
+ *   - max 80 steps           (bot policy can raise it to 200, so a real task fits)
+ *   - 30 minute wall clock   (a stuck tool cannot hold a turn forever)
  *   - bounded hand-offs      (depth, per-task budget, no hand-back: tools.bot_message)
  *
  * Everything observable is emitted on the event bus, which the server forwards

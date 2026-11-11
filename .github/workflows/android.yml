@@ -40,7 +40,8 @@ jobs:
       DESK_KEY_ALIAS: ${{ secrets.DESK_KEY_ALIAS }}
       DESK_KEY_PASSWORD: ${{ secrets.DESK_KEY_PASSWORD }}
       DESK_STORE_PASSWORD: ${{ secrets.DESK_STORE_PASSWORD }}
-      DESK_VERSION_CODE: ${{ github.run_number }}
+      # No version override: app/build.gradle derives versionName/versionCode from
+      # the repository's package.json, so every APK matches the desktop build.
     steps:
       - uses: actions/checkout@v4
 
@@ -51,11 +52,11 @@ jobs:
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
-      - name: Setup JDK 17
+      - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3

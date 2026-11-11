@@ -25,8 +25,15 @@ def hasDeskSigning = deskKeystoreFile != null &&
         deskKeyPassword
 
 // `toInteger()` (not `as Integer`) so the intent is unambiguous in Groovy.
-def deskVersionCode = (System.getenv('DESK_VERSION_CODE') ?: '1').toInteger()
-def deskVersionName = System.getenv('DESK_VERSION_NAME') ?: '1.0'
+// With no override, the version comes from the repository's package.json, so an
+// APK built here or in CI reports the same version as the desktop installer.
+def deskPackage = new groovy.json.JsonSlurper().parseText(file('../../../package.json').text)
+def deskSemver = ((deskPackage.version ?: '0.0.0') + '.0.0').tokenize('.').take(3).collect {
+    (it.replaceAll(/[^0-9].*$/, '') ?: '0').toInteger()
+}
+def deskVersionCode = (System.getenv('DESK_VERSION_CODE') ?: String.valueOf(
+        deskSemver[0] * 10000 + deskSemver[1] * 1000 + deskSemver[2])).toInteger()
+def deskVersionName = System.getenv('DESK_VERSION_NAME') ?: (deskPackage.version ?: '1.0')
 
 android {
     namespace "com.desk.assistant"

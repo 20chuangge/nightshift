@@ -1,4 +1,4 @@
-# 把 Desk 跑在另一台机器上（Hub 模式）
+# 把 Nightshift 跑在另一台机器上（Hub 模式）
 
 你要的形态：
 
@@ -6,8 +6,8 @@
       你的笔记本 / 手机            ← 只是"遥控器"（客户端）
               │  https / 局域网
               ▼
-   ┌──────────────────────────┐
-   │   Desk Hub（闲置 PC 或云主机）│   ← 真正干活的地方
+   ┌─────────────────────────────────┐
+   │   Nightshift Hub（闲置 PC 或云主机）│   ← 真正干活的地方
    │   · Bot 进程 + 记忆 + 技能    │
    │   · 常驻浏览器（登录态留在那） │
    │   · shell：下载、装软件、跑脚本 │
@@ -15,12 +15,12 @@
    └──────────────────────────┘
 ```
 
-**一句话**：Desk 本来就是"一个 Node 服务 + 一个网页界面"。服务跑在哪台机器，Bot 就在哪台机器干活；界面只是连上去看。
+**一句话**：Nightshift 本来就是"一个 Node 服务 + 一个网页界面"。服务跑在哪台机器，Bot 就在哪台机器干活；界面只是连上去看。
 
 | 角色 | 装什么 | 怎么连 |
 |---|---|---|
-| **Hub**（闲置 PC / 云主机） | 推荐：Desk 客户端「添加机器」自动装；手动：`sudo bash hub/setup-linux.sh`（Linux）、管理员 PowerShell 里 `powershell -ExecutionPolicy Bypass -File hub/setup-windows.ps1`（Windows：计划任务开机自启、防火墙放行、接电源不睡眠）、Docker | 监听 `0.0.0.0:4390`，启动时打印局域网地址 + 8 位配对码 |
-| **你的笔记本** | 安装包（`Desk-Setup-*.exe`） | 左上角机器切换器 → 添加机器（填 IP + SSH 账号），装好自动配对并加进列表 |
+| **Hub**（闲置 PC / 云主机） | 推荐：Nightshift 客户端「添加机器」自动装；手动：`sudo bash hub/setup-linux.sh`（Linux）、管理员 PowerShell 里 `powershell -ExecutionPolicy Bypass -File hub/setup-windows.ps1`（Windows：计划任务开机自启、防火墙放行、接电源不睡眠）、Docker | 监听 `0.0.0.0:4390`，启动时打印局域网地址 + 8 位配对码 |
+| **你的笔记本** | 安装包（`Nightshift-Setup-*.exe`） | 左上角机器切换器 → 添加机器（填 IP + SSH 账号），装好自动配对并加进列表 |
 | **手机** | 浏览器（或后面打的 APK） | 打开 Hub 地址 + 配对码；https 下可"添加到主屏幕" |
 
 ---
@@ -28,7 +28,7 @@
 ## 1. 在闲置 PC 上起 Hub（Windows，最快）
 
 ```bat
-cd D:\ai\deepseek\personal-assistant
+cd <项目目录>
 hub\start-hub.bat
 ```
 
@@ -36,7 +36,7 @@ hub\start-hub.bat
 
 - 首次放行防火墙：Windows 安全中心 → 允许应用通过防火墙 → 勾 **专用网络** 里的 `node.exe`；或管理员执行：
   ```bat
-  netsh advfirewall firewall add rule name="Desk Hub" dir=in action=allow protocol=TCP localport=4390
+  netsh advfirewall firewall add rule name="Nightshift Hub" dir=in action=allow protocol=TCP localport=4390
   ```
 - 窗口里会打印 `LAN URL` 和 `pairing code`。记下来。
 - 那台机器**别睡眠**：电源选项 → 从不。
@@ -67,7 +67,7 @@ docker logs -f desk-hub
 
 ## 3. 让笔记本 / 手机连上来
 
-**同一局域网**：桌面 App 菜单 **Desk → 切换到别的 Hub…** → 填 `http://<hub-ip>:4390` → 连接。手机浏览器打开同一地址，输配对码。
+**同一局域网**：桌面 App 里「添加机器」填 `http://<hub-ip>:4390`，加好后在菜单 **夜班 → 机器** 或左上角机器切换器里选它。手机浏览器打开同一地址，输配对码。
 
 **不在同一网络**（推荐两种，都不要把 4390 裸奔到公网）：
 
@@ -91,7 +91,7 @@ docker logs -f desk-hub
 ## 5. 安全（必须看）
 
 - **不要**把 `4390` 直接映射到公网。用 Tailscale / Cloudflare Tunnel，或前置一层带 TLS 的反向代理。
-- 非回环访问必须过配对码 / Bearer token；token 在 `data/security.json`，删掉它重启即可强制所有设备重新配对。
+- 非回环访问必须过配对码 / Bearer token。主 token 在 `data/security.json`；每台设备的会话在 `data/devices.json`（界面「设置 → 配对 → 已连接的设备」里可单独移除）。两处都清掉才算全部重新配对。
 - Bot 能执行 shell —— 把 Hub 当成"你要托付的机器"：不要用存着网银的机器当 Hub，云主机用独立用户。
 - 审批闸门对**远程客户端同样生效**：高危动作仍然会在你手机上弹卡。
 

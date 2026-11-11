@@ -25,7 +25,7 @@ Set-Service sshd -StartupType Automatic; Start-Service sshd
 | 命令 | 覆盖 |
 | --- | --- |
 | `npm run check` | 语法 |
-| `npm run smoke` | 418 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 |
+| `npm run smoke` | 717 项：机器 / Bot / 群 / 审批策略 / 附件 / 桌面中继 / WebSocket 桥 / 工具 / 手机通知 |
 | `npm run smoke:remote-mock` | 假 SSH 主机上走完"添加机器"：Linux、Windows、不支持的系统、Hub 起不来 |
 | `npm run check:i18n` | 所有界面中文都有英文 |
 
@@ -87,6 +87,10 @@ DESK_TARGET_HOST=<ip> DESK_TARGET_USER=<user> DESK_TARGET_PASS=<pass> npm run ve
 | 4.3 | 对助理说"建一个叫研究员的 Bot，再建个群把我们俩拉进去" | Bot 和群都建好，群里能对话 |
 | 4.4 | 设置 → 模型 → 同步到所有机器 | 每台都显示同步成功；改模型后各机器都用新模型 |
 | 4.5 | 定时任务："每天 9 点汇报磁盘使用" | 到点执行，结果出现在聊天里 |
+| 4.6 | 手机配对一台电脑；让助理做一件要审批的事，锁屏 | 手机通知出现，标题带 Bot 名和「要你确认一下」 |
+| 4.7 | 在通知上点「批准」 | 电脑上的审批卡变为已处理并继续跑；`data/audit.jsonl` 里 `by` 为 `device` |
+| 4.8 | 两台电脑都在线时，从非默认那台发起审批，再点通知 | 打开的是那台电脑的界面，并定位、高亮对应审批卡 |
+| 4.9 | 断网点「拒绝」 | 通知变成「这一步还没答复」，点开进入审批卡；联网后可在卡上拒绝 |
 
 ## 5. 异常与恢复
 

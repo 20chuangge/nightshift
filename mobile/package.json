@@ -1,9 +1,9 @@
 {
   "name": "desk-mobile",
-  "version": "1.0.0",
+  "version": "1.2.60",
   "private": true,
   "type": "module",
-  "description": "Desk mobile shell (Capacitor): connects to a Desk hub on your LAN and shows its web UI.",
+  "description": "Nightshift mobile shell (Capacitor): connects to a Nightshift hub on your LAN and shows its web UI.",
   "engines": {
     "node": ">=20"
   },

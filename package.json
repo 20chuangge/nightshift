@@ -1,9 +1,9 @@
 {
   "name": "personal-assistant",
-  "version": "1.2.59",
+  "version": "1.2.60",
   "private": true,
   "type": "module",
-  "description": "Desk - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
+  "description": "Nightshift - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
   "engines": {
     "node": ">=20"
   },
