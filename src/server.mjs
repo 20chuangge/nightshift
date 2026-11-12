@@ -69,6 +69,7 @@ import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
 import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv } from './desktops.mjs';
+import { loadPlan } from './plans.mjs';
 import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './clipboard.mjs';
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner } from './remote.mjs';
@@ -2404,6 +2405,14 @@ route('GET', /^\/api\/groups\/(?<id>[^/]+)\/messages$/, async (_req, _res, { par
   return messages.map(groups.publicGroupMessage);
 });
 
+//   GET /api/groups/:id/plans/:planId -> {plan}   a task board (the group card shows it)
+route('GET', /^\/api\/groups\/(?<id>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (_req, _res, { params, state }) => {
+  const live = await state.runtime.groupPlan?.(params.id);
+  const plan = live?.id === params.planId ? live : await loadPlan(params.planId);
+  if (!plan || plan.groupId !== params.id) throw httpError(404, 'PLAN_NOT_FOUND', 'no such task board');
+  return { plan };
+});
+
 route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { params, body, state }) => {
   const group = await groups.getGroup(params.id);
   if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
@@ -2426,6 +2435,8 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   // Answer immediately with the turn id; the turn streams over SSE and its
   // transcript lands in data/groups/<id>.jsonl.
   const turnId = uid('turn');
+  // A task on the group's board asked the human something: this is the answer.
+  if (await state.runtime.answerBoard?.({ id: group.id, name: group.name, coordinatorId: group.coordinatorId, members }, text)) return { turnId, board: true };
   // Someone in the group is still working on the last message: they answer
   // now, and the message reaches their running turn (as in a 1:1 chat).
   const busy = state.runtime.busyGroupTurn?.(group.id);

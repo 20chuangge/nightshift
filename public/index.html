@@ -2798,6 +2798,31 @@
   .audit-row.bad .audit-tag { color: #f07060; }
 
   /* bot abilities ------------------------------------------------------- */
+  /* group task board */
+  .plan-card { width: min(560px, 100%); border: 1px solid var(--border-soft); border-radius: 14px; background: var(--panel); padding: 12px 12px 6px; }
+  .plan-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .plan-title { font-weight: 650; font-size: 14px; }
+  .plan-progress { margin-left: auto; font-size: 12px; color: var(--dim); }
+  .plan-progress.live { color: var(--accent-2, var(--accent)); }
+  .plan-fallback { font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
+  .plan-bar { height: 3px; border-radius: 3px; background: var(--panel-3); overflow: hidden; margin-bottom: 6px; }
+  .plan-bar i { display: block; height: 100%; background: var(--accent); transition: width 300ms var(--ease); }
+  .plan-task { border-top: 1px solid var(--border-soft); }
+  .plan-task:first-of-type { border-top: 0; }
+  .plan-task summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 9px 2px; cursor: pointer; }
+  .plan-task summary::-webkit-details-marker { display: none; }
+  .plan-task-text { flex: 1; min-width: 0; }
+  .plan-task-text b { display: block; font-size: 13.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .plan-task-text small { display: block; font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .plan-chip { flex: none; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--panel-3); color: var(--muted); }
+  .plan-task.st-doing .plan-chip { background: rgba(124, 92, 255, .16); color: var(--accent-2, #a996ff); }
+  .plan-task.st-done .plan-chip { background: rgba(46, 204, 113, .14); color: #3ddc84; }
+  .plan-task.st-ask .plan-chip { background: rgba(240, 167, 44, .16); color: #f0a72c; }
+  .plan-task.st-fail .plan-chip { background: rgba(239, 83, 80, .14); color: #ff8a87; }
+  .plan-task-body { padding: 0 2px 10px 32px; font-size: 12.5px; color: var(--muted); display: grid; gap: 6px; white-space: pre-wrap; line-height: 1.5; }
+  .plan-result { color: var(--text); }
+  .plan-q { color: #f0a72c; }
+
   /* phone home page (Grok-style): the bot list is a page of its own */
   .bot-time, .home-search, .nav-back-ico { display: none; }
   @media (max-width: 860px) {
@@ -5212,12 +5237,90 @@ function renderGroupMessages() {
   scrollToBottom(true);
 }
 
+/* ---------------------------------------------------------------------
+   group task board: who does what, live
+   --------------------------------------------------------------------- */
+const PLAN_STATUS = {
+  todo: ['待开始', 'todo'], doing: ['进行中', 'doing'], waiting_human: ['等你回复', 'ask'], done: ['完成', 'done'],
+  failed: ['没做成', 'fail'], skipped: ['跳过', 'skip'], stopped: ['已停止', 'skip'],
+};
+state.plans = state.plans || new Map();
+
+/** The card for a task board; filled from the hub, then kept current by group.plan events. */
+function planCard(planId, fallbackText = '') {
+  const card = el('div', 'plan-card');
+  card.dataset.plan = planId;
+  card.appendChild(el('div', 'plan-head', '任务板'));
+  if (fallbackText) card.appendChild(el('div', 'plan-fallback', fallbackText));
+  const known = state.plans.get(planId);
+  if (known) fillPlanCard(card, known);
+  else if (state.groupId) {
+    api(`/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`)
+      .then((r) => { if (r?.plan) { state.plans.set(planId, r.plan); fillPlanCard(card, r.plan); } })
+      .catch(() => {});
+  }
+  return card;
+}
+
+function fillPlanCard(card, plan) {
+  card.innerHTML = '';
+  const done = plan.tasks.filter((t) => t.status === 'done').length;
+  const head = el('div', 'plan-head');
+  head.appendChild(el('span', 'plan-title', '任务板'));
+  const overall = plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止' : '进行中';
+  head.appendChild(el('span', `plan-progress${plan.status === 'running' ? ' live' : ''}`, `${done}/${plan.tasks.length} · ${overall}`));
+  card.appendChild(head);
+  const bar = el('div', 'plan-bar');
+  const fill = el('i');
+  fill.style.width = `${plan.tasks.length ? Math.round((done / plan.tasks.length) * 100) : 0}%`;
+  bar.appendChild(fill);
+  card.appendChild(bar);
+  const members = groupMembersForCard();
+  plan.tasks.forEach((t, i) => {
+    const row = el('details', `plan-task st-${(PLAN_STATUS[t.status] || PLAN_STATUS.todo)[1]}`);
+    const sum = el('summary');
+    const who = members.get(t.owner);
+    const av = who ? avatarNode(who, 22) : el('span', 'av g-empty');
+    sum.appendChild(av);
+    const text = el('span', 'plan-task-text');
+    text.appendChild(el('b', '', `${i + 1}. ${t.title}`));
+    text.appendChild(el('small', '', `${who?.name || t.owner}${t.needs?.length ? ` · 等第 ${t.needs.map((n) => n.slice(1)).join('、')} 项` : ''}`));
+    sum.appendChild(text);
+    sum.appendChild(el('span', 'plan-chip', (PLAN_STATUS[t.status] || PLAN_STATUS.todo)[0]));
+    row.appendChild(sum);
+    const body = el('div', 'plan-task-body');
+    if (t.brief) body.appendChild(el('div', '', t.brief));
+    if (t.question) body.appendChild(el('div', 'plan-q', `问你：${t.question}${t.answer ? `\n你答：${t.answer}` : ''}`));
+    if (t.result) body.appendChild(el('div', 'plan-result', t.result));
+    if (body.childNodes.length) row.appendChild(body);
+    card.appendChild(row);
+  });
+}
+
+/** Group members by id (local bots and the far ones), for avatars and names on the card. */
+function groupMembersForCard() {
+  const map = new Map();
+  for (const b of state.bots || []) map.set(b.id, b);
+  const g = (state.groups || []).find((x) => x.id === state.groupId);
+  for (const m of g?.members || []) if (!map.has(m.id)) map.set(m.id, m);
+  return map;
+}
+
+function onPlanEvent(plan) {
+  if (!plan?.id) return;
+  state.plans.set(plan.id, plan);
+  for (const card of document.querySelectorAll(`.plan-card[data-plan="${cssEscape(plan.id)}"]`)) fillPlanCard(card, plan);
+}
+
 function renderGroupItem(item) {
   const kind = item.kind || (item.from === 'user' ? 'user' : 'message');
   if (kind === 'user' || item.from === 'user') {
     return userRow({ text: item.text || '', ts: item.ts });
   }
   const sender = senderOf(item);
+  if (kind === 'plan' && item.planId) {
+    return groupSenderRow(sender, planCard(item.planId, item.text));
+  }
   if (kind === 'tool') {
     return groupSenderRow(sender, toolChip({
       name: item.name || item.tool || 'tool',
@@ -8255,6 +8358,10 @@ function handleEvent(ev) {
   }
   if (ev.type === 'attention.changed') {
     loadAttention();
+    return;
+  }
+  if (ev.type === 'group.plan') {
+    onPlanEvent(ev.plan);
     return;
   }
   if (ev.type === 'tool.progress') {

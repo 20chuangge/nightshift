@@ -37,7 +37,7 @@ export const GROUP_MIN_MEMBERS = 2;
 export const GROUP_MAX_MEMBERS = 6;
 
 /** Message kinds the transcript (and the UI) understands. */
-export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'status'];
+export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'status', 'plan'];
 
 const PREVIEW_MAX_CHARS = 120;
 // Same widening strategy as the sidebar preview for bots: only a small tail is
@@ -328,6 +328,7 @@ export async function appendGroupMessage(groupId, record = {}) {
     ...(record.name ? { name: String(record.name) } : {}),
     ...(record.status ? { status: String(record.status) } : {}),
     ...(record.turnId ? { turnId: String(record.turnId) } : {}),
+    ...(record.planId ? { planId: String(record.planId) } : {}),
   };
   await appendJsonl(groupMessagesFile(groupId), message);
   return message;
@@ -343,6 +344,7 @@ export function publicGroupMessage(message) {
     ...(message.text !== undefined ? { text: message.text } : {}),
     ...(message.name !== undefined ? { name: message.name } : {}),
     ...(message.status !== undefined ? { status: message.status } : {}),
+    ...(message.planId ? { planId: message.planId } : {}),
   };
 }
 

@@ -3779,6 +3779,51 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         && groupLog.some((x) => x.gid === 'g1' && x.kind === 'user' && x.text === '进度怎么样？') && groupLog.some((x) => x.gid === 'g1' && x.kind === 'assistant' && x.from === 'm12bot' && x.text === g.text)
         && events.some((e) => e.type === 'message' && e.aside && e.groupId === 'g1') && /周报群/.test(seenPrompt?.msgs?.[0]?.content || '') && /fs_read/.test(seenPrompt?.msgs?.[0]?.content || '')
         && srvSrc.includes('const busy = state.runtime.busyGroupTurn?.(group.id);'));
+      // Task board: the coordinator splits, the runtime runs each member's task (in order, in parallel where it can), then the coordinator sums up.
+      {
+        const PL = await import('../src/plans.mjs');
+        const members = [{ id: 'c1', name: '协调' }, { id: 'w1', name: '编剧' }, { id: 'a1', name: '美术' }, { id: 'r1', name: '动画', remote: { machine: 'Rocky', botId: 'chief' } }];
+        const grp = { id: 'gp', name: '片子群', coordinatorId: 'c1', members };
+        const bad = PL.makePlan({ group: grp, request: 'x', coordinatorId: 'c1', tasks: [{ title: 'a', owner: '不存在' }] });
+        const made = PL.makePlan({ group: grp, request: '做一条片子', coordinatorId: 'c1', tasks: [
+          { title: '写分镜', owner: '编剧', brief: 'b' }, { title: '画首帧', owner: '美术', brief: 'b', needs: [1] }, { title: '配乐清单', owner: '编剧', brief: 'b' }, { title: '出片', owner: '动画', brief: 'b', needs: [2, 9] },
+        ] });
+        check('M15 task board: a plan names members as owners; needs point to earlier tasks only; a stranger as owner is refused',
+          /不是这个群的成员/.test(bad.error || '') && made.plan.tasks.length === 4 && made.plan.tasks[1].needs.join() === 't1' && made.plan.tasks[3].needs.join() === 't2' && made.plan.tasks[3].owner === 'r1');
+        const calls = [];
+        const brt = new AgentRuntime({ config: { workspaceDir: path.join(home, 'workspace') }, registry: { schemasFor: () => [] }, model, bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) } });
+        brt.groups = { appendGroupMessage: async (gid, rec) => rec, publicGroupMessage: (m) => m };
+        let handedOnce = false;
+        let askedOnce = false;
+        brt.runTurn = async (o) => {
+          calls.push({ who: o.botId, role: o.groupRole, noPlan: o.noPlan, text: o.text, at: Date.now() });
+          await new Promise((r) => setTimeout(r, 30));
+          if (o.groupRole === 'task' && /配乐清单/.test(o.text) && !handedOnce) { handedOnce = true; return { status: 'success', summary: 'x', board: { handoff: { to: 'a1', note: '美术更懂' } } }; }
+          if (o.groupRole === 'task' && /画首帧/.test(o.text) && !askedOnce) { askedOnce = true; return { status: 'success', summary: 'x', board: { askHuman: '要写实还是卡通？' } }; }
+          return { status: 'success', summary: o.groupRole === 'task' ? `做好了：${(o.text.match(/你负责的任务：(.+)/) || [])[1]}，文件 out/${calls.length}.png` : '汇总好了' };
+        };
+        brt.runRemoteGroupTurn = async (o) => { calls.push({ who: o.member.id, role: o.role, remote: true, text: o.text, at: Date.now() }); return { status: 'success', summary: '片子在 Rocky 上做好了' }; };
+        const plan = made.plan;
+        await brt.runPlan(grp, plan);
+        const waitingAfterFirst = plan.status === 'waiting' && plan.tasks[1].status === 'waiting_human' && plan.tasks[3].status === 'todo';
+        const handed = plan.tasks[2].owner === 'a1' && plan.tasks[2].handoffFrom === 'w1' && plan.tasks[2].status === 'done';
+        const started = (name) => calls.filter((c) => c.text?.includes(`你负责的任务：${name}`)).map((c) => c.at);
+        const parallel = Math.abs(started('写分镜')[0] - started('配乐清单')[0]) < 25;
+        const took = await brt.answerBoard(grp, '卡通');
+        for (let i = 0; i < 50 && plan.status !== 'done'; i++) await new Promise((r) => setTimeout(r, 20));
+        const second = calls.filter((c) => c.text?.includes('你负责的任务：画首帧'));
+        const remote = calls.find((c) => c.remote);
+        const summary = calls.find((c) => c.role === 'coordinator');
+        check('M15 task board: independent tasks run at once; a task waits for what it needs; a hand-off changes the owner; a question parks the board until the human answers',
+          waitingAfterFirst && handed && parallel && took === true && second.length === 2 && /用户的回答：卡通/.test(second[1].text) && /前面几项的结果/.test(second[1].text) && /写分镜/.test(second[1].text), JSON.stringify(calls.map((c) => [c.who, c.role, (c.text || '').slice(0, 30)])));
+        check('M15 task board: a member on another machine does its task there; at the end the coordinator sums up once and cannot plan again; the board is done and the group is told',
+          remote?.who === 'r1' && /画首帧/.test(remote.text) && summary?.noPlan === true && /任务板做完了/.test(summary.text) && plan.status === 'done' && plan.tasks.every((t) => t.status === 'done')
+          && events.some((e) => e.type === 'group.plan' && e.plan?.status === 'done') && !!(await PL.loadPlan(plan.id)));
+        const pg = await readText('../public/index.html');
+        check('M15 task board: the group shows a live card (owner, status, result) and can fetch a board by id',
+          pg.includes('function planCard(planId') && pg.includes("if (ev.type === 'group.plan') {") && pg.includes("if (kind === 'plan' && item.planId)") && srvSrc.includes('/plans\\/(?<planId>') && srvSrc.includes('state.runtime.answerBoard?.(')
+          && (await readText('../src/groups.mjs')).includes("'status', 'plan']") && (await readText('../src/groups.mjs')).includes('planId: String(record.planId)'));
+      }
       const agentSrc2 = await readText('../src/agent.mjs');
       check('M12 roster: a change that arrives while the bot list is loading is loaded right after (a quickly deleted bot no longer stays on screen); remote group members count as busy too', pageSrc.includes('if (state.rosterBusy) { state.rosterAgain = true; return; }') && pageSrc.includes('if (state.rosterAgain) refreshRoster();') && agentSrc2.includes('remoteKey = `remote_') && agentSrc2.includes('for (const said of waiting) {') && agentSrc2.includes('!info.kickoff'));
       check('M12 group talk stays in the group: a turn speaking in a group writes nothing to the bot\'s own chat', agentSrc2.includes('if (record?.turnId && this.groupTurns.has(record.turnId)) return;') && agentSrc2.includes('if (coordinatorTurn) this.groupTurns.add(turnId);') && agentSrc2.includes('this.groupTurns.delete(turnId);'));

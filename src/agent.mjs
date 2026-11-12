@@ -69,7 +69,13 @@ function renderGroupSection(bot, group, groupRole) {
   }
   if (coordinator) {
     lines.push(
-      `You speak first when nobody was @mentioned. If the request (or part of it) belongs to other members - including "how is everyone doing" / progress questions - answer only your own part in a line or two, then @mention each member who should answer, using the exact name (${others}). Every member you @mention answers right after you, in the group. Do not answer for them.`,
+      `You speak first when nobody was @mentioned. Questions and progress checks ("how is everyone doing"): answer only your own part in a line or two, then @mention each member who should answer, using the exact name (${others}). Every member you @mention answers right after you, in the group. Do not answer for them.`,
+      'Real work (something to make, research, fix or produce) whose parts match the members\' roles: do NOT do their parts yourself. Call group_plan first: split it into tasks with an owner each (by role), a self-contained brief, the deliverable, and the order (needs). The runtime then starts every member on its task - in parallel where possible - and asks you to put the results together. Only when the whole job is one small step that splitting would slow down, do it yourself and say in one line why you did not split it.',
+    );
+  } else if (groupRole === 'task') {
+    lines.push(
+      'You own one task on this group\'s task board (below). Do it completely with your tools - that is your job here, not advice. Your final answer is posted to the group as your task report: the result itself, and the paths of the files you made (they are passed on to whoever needs them).',
+      'If another member is clearly better placed for it, call task_handoff. If you cannot go on without the human (a decision, a preference, missing information), call task_ask_human. Do not do other members\' tasks.',
     );
   } else if (speaker) {
     lines.push('You were @mentioned, so answer your own part only: what you own, where it stands, what you need. Other members answer for themselves.');
@@ -149,6 +155,46 @@ function peersLine(peers, canHandOff) {
 }
 
 import { askPeerBot, fetchedNote } from './crossmachine.mjs';
+import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember } from './plans.mjs';
+
+/** Tools that act on the group's task board: handled by the runtime, not the registry. */
+const GROUP_TOOLS = {
+  group_plan: {
+    name: 'group_plan',
+    description: 'Split the human\'s request into tasks for the group members, so each member does its own part (they run in parallel when independent). Each task: a title, the owner (a member\'s name), a self-contained brief (what to do, the inputs and file paths, constraints), the deliverable, and which earlier tasks it needs (by number). Do not add a task for summarizing or assembling the results yourself: when every task is done you are asked to put the results together automatically. After this call, stop: the members are started for you.',
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Short task name.' },
+              owner: { type: 'string', description: 'The member who does it (exact name).' },
+              brief: { type: 'string', description: 'Everything the owner needs to do it without asking: goal, inputs, file paths, constraints.' },
+              deliverable: { type: 'string', description: 'What to hand back (e.g. a file path and format).' },
+              needs: { type: 'array', items: { type: 'integer' }, description: 'Numbers (1-based) of earlier tasks that must be done first.' },
+            },
+            required: ['title', 'owner', 'brief'],
+          },
+        },
+      },
+      required: ['tasks'],
+    },
+  },
+  task_handoff: {
+    name: 'task_handoff',
+    description: 'Hand your task on the group\'s task board to another member who is better placed to do it. Say why and what you already found. Your turn ends.',
+    parameters: { type: 'object', properties: { to: { type: 'string', description: 'The member\'s name.' }, note: { type: 'string', description: 'Why, and what you already did or found.' } }, required: ['to', 'note'] },
+  },
+  task_ask_human: {
+    name: 'task_ask_human',
+    description: 'Ask the human a question your task cannot go on without (a decision, a preference, missing information). It is posted in the group; your task waits and continues with the answer. Your turn ends.',
+    parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+  },
+};
+const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
@@ -431,6 +477,8 @@ export class AgentRuntime {
     hiddenNote = '',
     // A new group's round of introductions (not a request from the human).
     kickoff = false,
+    // Group coordinator turns that must not plan again (introductions, the final summary).
+    noPlan = false,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -439,7 +487,10 @@ export class AgentRuntime {
     const groupContext = group?.id && this.groups ? group : null;
     // The coordinator and any member the human (or the coordinator) @mentioned
     // speak in the group directly; a member reached by bot_message does not.
-    const coordinatorTurn = Boolean(groupContext && (groupRole === 'coordinator' || groupRole === 'speaker'));
+    const coordinatorTurn = Boolean(groupContext && (groupRole === 'coordinator' || groupRole === 'speaker' || groupRole === 'task'));
+    // Task-board tools this turn may use.
+    const boardTools = !groupContext ? [] : groupRole === 'coordinator' && !noPlan && !kickoff ? ['group_plan'] : groupRole === 'task' ? ['task_handoff', 'task_ask_human'] : [];
+    let boardOutcome = null;
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
     const turnId = providedTurnId || uid('turn');
@@ -585,7 +636,7 @@ export class AgentRuntime {
         let response;
         try {
           response = await turnModel.complete(messages, {
-            tools: this.registry.schemasFor(bot),
+            tools: [...this.registry.schemasFor(bot), ...groupToolSchemas(boardTools)],
             signal: controller.signal,
             onDelta,
           });
@@ -684,7 +735,9 @@ export class AgentRuntime {
 
         for (const call of response.toolCalls) {
           live.step = { name: call.name, args: call.arguments || call.args || {}, startedAt: Date.now() };
-          const outcome = await this.executeToolCall({ call, ctx, bot, turnId, baseEvent, messages });
+          const outcome = boardTools.includes(call.name)
+            ? await this.boardToolCall({ call, ctx, bot, group: groupContext, messages, baseEvent, turnId, request: String(text) })
+            : await this.executeToolCall({ call, ctx, bot, turnId, baseEvent, messages });
           live.step = null;
           { const m = messages[messages.length - 1]; live.last = m?.role === 'tool' ? String(m.content || '').slice(-400) : ''; }
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
@@ -725,6 +778,12 @@ export class AgentRuntime {
           if (outcome.termination) {
             status = outcome.termination;
             summary = outcome.summary || summary;
+            finished = true;
+            break;
+          }
+          if (outcome.board) {
+            boardOutcome = outcome.board;
+            summary = outcome.board.say || summary;
             finished = true;
             break;
           }
@@ -773,7 +832,7 @@ export class AgentRuntime {
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
 
-      return { turnId, status, summary: summary || statusText(status), steps };
+      return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}) };
     } catch (err) {
       status = 'failed';
       summary = `Turn failed: ${err.message}`;
@@ -862,6 +921,13 @@ export class AgentRuntime {
       });
       record = false;
       id = null;
+      // The coordinator split the work: the task board runs it (and it sums up at the end).
+      if (role === 'coordinator' && result?.board?.plan) {
+        const plan = result.board.plan;
+        await this.recordGroupMessage(group.id, { kind: 'plan', from: member.id, planId: plan.id, text: planText(plan, new Map(members.map((m) => [m.id, m.name]))) });
+        await this.runPlan(group, plan);
+        break;
+      }
       // The coordinator handed parts of the request to teammates by @name.
       if (!kickoff && role === 'coordinator' && result?.turnId) {
         const said = (await this.groups.readGroupMessages(group.id, { limit: 40 }).catch(() => []))
@@ -877,6 +943,160 @@ export class AgentRuntime {
         }
       }
     }
+  }
+
+  /**
+   * group_plan / task_handoff / task_ask_human: checked and answered here;
+   * the outcome ends the turn and tells the caller what to do next.
+   */
+  async boardToolCall({ call, bot, group, messages, baseEvent, turnId, request }) {
+    const args = call.arguments || {};
+    const members = group.members || [];
+    let result;
+    let board = null;
+    if (call.name === 'group_plan') {
+      const made = makePlan({ group, request, coordinatorId: bot.id, tasks: args.tasks });
+      if (made.error) result = { error: { code: 'BAD_PLAN', message: made.error } };
+      else {
+        const names = new Map(members.map((m) => [m.id, m.name]));
+        const owners = [...new Set(made.plan.tasks.map((t) => names.get(t.owner) || t.owner))];
+        result = { ok: true, planId: made.plan.id, tasks: made.plan.tasks.length };
+        board = { plan: made.plan, say: `分成 ${made.plan.tasks.length} 项，由${owners.join('、')}分别负责，做完我来汇总。` };
+      }
+    } else if (call.name === 'task_handoff') {
+      const to = resolveMember(members, args.to);
+      if (!to || to.id === bot.id) result = { error: { code: 'BAD_MEMBER', message: `「${args.to || ''}」不是群里的其他成员（成员：${members.map((m) => m.name).join('、')}）` } };
+      else { result = { ok: true }; board = { handoff: { to: to.id, note: String(args.note || '').slice(0, 800) }, say: `这项交给「${to.name}」：${String(args.note || '').slice(0, 300)}` }; }
+    } else {
+      const question = String(args.question || '').trim();
+      if (!question) result = { error: { code: 'NO_QUESTION', message: 'question 不能为空' } };
+      else { result = { ok: true }; board = { askHuman: question.slice(0, 1000), say: `需要你回复一下：${question.slice(0, 1000)}` }; }
+    }
+    this.pushToolResult(messages, call, result);
+    this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name: call.name, args: truncateJson(args, 2000), ok: !result.error, risk: 'LOW', result });
+    return board ? { board } : {};
+  }
+
+  /** The task board a group is working through (or waiting on), from memory or disk. */
+  async groupPlan(groupId) {
+    this.plans = this.plans || new Map();
+    return this.plans.get(groupId) || null;
+  }
+
+  /** A plan changed: save it and tell the group's windows. */
+  async boardChanged(plan) {
+    this.plans = this.plans || new Map();
+    this.plans.set(plan.groupId, plan);
+    await savePlan(plan).catch(() => {});
+    this.bus.emit({ type: 'group.plan', groupId: plan.groupId, plan });
+  }
+
+  /**
+   * Work through a group's task board: start every task whose inputs are done
+   * (at most three at once), each by its owner - here, or on its own machine -
+   * then ask the coordinator to put the results together. A task waiting for
+   * the human parks the board until they answer (answerBoard).
+   */
+  async runPlan(group, plan) {
+    const members = group.members || [];
+    const byId = new Map(members.map((m) => [m.id, m]));
+    const names = new Map(members.map((m) => [m.id, m.name]));
+    plan.status = 'running';
+    await this.boardChanged(plan);
+    const running = new Map();
+    for (;;) {
+      skipBlocked(plan);
+      if (plan.status === 'stopped') break;
+      for (const t of readyTasks(plan)) {
+        if (running.size >= 3) break;
+        if (running.has(t.id)) continue;
+        running.set(t.id, this.runPlanTask(group, plan, t, byId, names).finally(() => running.delete(t.id)));
+      }
+      if (!running.size) break;
+      await Promise.race(running.values());
+    }
+    if (plan.status === 'stopped') { await this.boardChanged(plan); return; }
+    if (plan.tasks.some((t) => t.status === 'waiting_human')) {
+      plan.status = 'waiting';
+      await this.boardChanged(plan);
+      return;
+    }
+    // Everyone is done: the coordinator puts it together for the human.
+    const report = plan.tasks.map((t, i) => `${i + 1}. ${t.title}（${names.get(t.owner) || t.owner}，${t.status === 'done' ? '完成' : t.status === 'skipped' ? '跳过' : '没做成'}）：${String(t.result || '').slice(0, 1500)}`).join('\n\n');
+    await this.runTurn({
+      botId: plan.coordinatorId,
+      text: `（任务板做完了）用户的原始请求：${plan.request}\n\n各项结果：\n${report}\n\n把这些结果整合成交给用户的最终答复：结果本身、文件路径；没做成的说明原因和下一步。不要再分工。`,
+      source: 'group',
+      group,
+      groupRole: 'coordinator',
+      recordUser: false,
+      noPlan: true,
+    }).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    plan.status = 'done';
+    await this.boardChanged(plan);
+  }
+
+  /** One task, by its owner. A hand-off or a question for the human comes back as the task's new state. */
+  async runPlanTask(group, plan, task, byId, names) {
+    const owner = byId.get(task.owner);
+    task.status = 'doing';
+    task.startedAt = nowIso();
+    await this.boardChanged(plan);
+    const inputs = task.needs.map((id) => plan.tasks.find((t) => t.id === id)).filter(Boolean)
+      .map((t) => `- ${t.title}（${names.get(t.owner) || t.owner}）的结果：${String(t.result || '').slice(0, 1500)}`).join('\n');
+    const prompt = [
+      `（群「${group.name}」的任务板）用户的原始请求：${plan.request}`,
+      `你负责的任务：${task.title}`,
+      task.brief ? `要求：${task.brief}` : '',
+      task.deliverable ? `交付：${task.deliverable}` : '',
+      inputs ? `前面几项的结果（可以直接用）：\n${inputs}` : '',
+      task.handoffFrom ? `这项是「${names.get(task.handoffFrom) || task.handoffFrom}」交给你的：${task.handoffNote || ''}` : '',
+      task.question ? `你之前问过用户：${task.question}\n用户的回答：${task.answer || '（没有回答）'}` : '',
+      '把这项做完，然后用一段话汇报结果和文件路径。',
+    ].filter(Boolean).join('\n\n');
+    let res;
+    if (!owner) res = { status: 'failed', summary: '负责人已经不在群里' };
+    else if (owner.remote) res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task' });
+    else {
+      res = await this.runTurn({ botId: owner.id, text: prompt, source: 'group', group, groupRole: 'task', recordUser: false })
+        .catch((err) => ({ status: 'failed', summary: err.message }));
+    }
+    task.endedAt = nowIso();
+    if (res?.board?.handoff && (task.handoffs || 0) >= 3) {
+      task.status = 'failed';
+      task.result = '这项已经被移交了 3 次，停下来等协调者处理。';
+    } else if (res?.board?.handoff) {
+      task.handoffs = (task.handoffs || 0) + 1;
+      task.handoffFrom = task.owner;
+      task.handoffNote = res.board.handoff.note;
+      task.owner = res.board.handoff.to;
+      task.status = 'todo';
+      task.question = '';
+    } else if (res?.board?.askHuman) {
+      task.status = 'waiting_human';
+      task.question = res.board.askHuman;
+      task.answer = '';
+    } else if (res?.status === 'cancelled') {
+      task.status = 'stopped';
+      plan.status = 'stopped';
+      for (const t of plan.tasks) if (t.status === 'todo') t.status = 'stopped';
+    } else {
+      task.status = res?.status === 'success' ? 'done' : 'failed';
+      task.result = String(res?.summary || '').slice(0, 4000);
+    }
+    await this.boardChanged(plan);
+  }
+
+  /** The human answered a task's question: it goes back to work, the board goes on. -> true when it took the message */
+  async answerBoard(group, text) {
+    const plan = await this.groupPlan(group.id);
+    const waiting = plan?.status === 'waiting' && plan.tasks.find((t) => t.status === 'waiting_human');
+    if (!waiting) return false;
+    await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
+    waiting.answer = String(text).slice(0, 2000);
+    waiting.status = 'todo';
+    this.runPlan(group, plan).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    return true;
   }
 
   /**
