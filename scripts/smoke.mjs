@@ -3356,6 +3356,36 @@ async function scenarioClipboard({ home }) {
       && clipSrc.includes('https://mirrors.aliyun.com/ubuntu') && clipSrc.includes('Dir::Etc::SourceParts=/nonexistent') && !/>\s*\/etc\/apt/.test(clipSrc));
   }
   {
+    const launcherM = await readText('../mobile/shell/launcher.js');
+    const foldRows = new Function(`${launcherM.match(/  function foldRows\(rows, hasToken\) \{[\s\S]*?\n  \}\n/)[0]}; return foldRows;`)();
+    // The shape seen on the phone (addresses made up): a pairing-code row keyed
+    // by the public address, rows another computer taught us, and that
+    // computer twice after its LAN address changed.
+    const rows = [
+      { url: 'http://100.64.0.1:14390', alt: ['http://10.0.0.5:14390'], name: 'PC', via: 'https://w.example.ts.net', lastUsedAt: '2026-11-12T01:00:00Z' },
+      { url: 'https://r.example.ts.net', alt: ['http://10.1.0.30:4390', 'http://100.64.0.3:4390'], name: 'Rocky' },
+      { url: 'http://10.0.0.4:14390', alt: ['http://100.64.0.1:14390'], name: 'PC', via: 'http://100.64.0.3:4390' },
+      { url: 'https://w.example.ts.net', alt: ['http://10.1.0.37:4390', 'http://100.64.0.4:4390'], name: 'win11' },
+      { url: 'https://u.example.ts.net', alt: ['http://10.1.0.36:4390', 'http://100.64.0.5:4390'], name: 'Ubuntu' },
+      { url: 'http://10.1.0.36:4390', alt: ['http://100.64.0.5:4390'], name: 'Ubuntu', via: 'http://10.0.0.4:14390' },
+      { url: 'http://100.64.0.4:4390', alt: ['http://10.1.0.37:4390'], name: 'win11', via: 'http://10.0.0.4:14390' },
+      { url: 'http://100.64.0.3:4390', alt: ['http://10.1.0.30:4390'], name: 'Rocky', via: 'http://10.0.0.4:14390' },
+    ];
+    const tokens = [true, true, false, true, true, false, true, true];
+    const folded = foldRows(rows, tokens);
+    const names = folded.list.map((r) => r.name);
+    const pc = folded.list.find((r) => r.name === 'PC');
+    const ubuntu = folded.list.find((r) => r.name === 'Ubuntu');
+    check('M2 phone list: rows sharing any address become one row per machine, in the old order', names.join(',') === 'PC,Rocky,win11,Ubuntu', names.join(','));
+    check('M2 phone list: the row with a login stays and takes every address (public one included)', pc.url === 'http://100.64.0.1:14390' && pc.alt.includes('http://10.0.0.4:14390') && pc.alt.includes('http://10.0.0.5:14390')
+      && ubuntu.url === 'https://u.example.ts.net' && ubuntu.alt.length === 2, JSON.stringify(folded.list));
+    check('M2 phone list: via follows a folded address to the row that holds it; no row points at itself', folded.list.every((r) => !r.via || (folded.list.some((o) => o.url === r.via) && r.via !== r.url)));
+    const moved = foldRows([{ url: 'http://a:1', alt: ['http://b:1'] }, { url: 'http://b:1', alt: [] }], [false, true]);
+    check('M2 phone list: two rows, login on the second: the login row stays', moved.list.length === 1 && moved.list[0].url === 'http://b:1' && moved.moves.length === 0);
+    const again = foldRows(folded.list, folded.list.map(() => true));
+    check('M2 phone list: folding is stable (a second pass changes nothing)', JSON.stringify(again.list) === JSON.stringify(folded.list));
+    check('M2 phone list: folded on every render; a hub refreshes its own addresses and keeps the public one',
+      /await foldDuplicateRows\(\);\s+const hubs = await readHubs\(\);/.test(launcherM) && launcherM.includes('if (urls.length) h.alt = withPublic(urls, h.alt, h.url);') && launcherM.includes("const pub = (old || []).filter((u) => /^https:/i.test(u));"));
     const page = await readText('../public/index.html');
     const fits = new Function(`${page.match(/function clipFitsVnc\(text\) \{[\s\S]*?\n\}/)[0]}; return clipFitsVnc;`)();
     check('M clip page: Latin-1 text still goes through the viewer, Chinese goes to the hub',
@@ -4469,7 +4499,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N1: a visible bot browser has no "unsupported command-line flag" bar; Wayland still gets its flags', brN.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--test-type') && !brN.buildLaunchArgs({ port: 9, profileDir: 'x', headless: true }).includes('--test-type') && brN.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true }).includes('--ozone-platform=wayland'));
         check('N1: a phone settings page does not repeat its title under the top bar', pageN.includes('.settings-modal:not(.set-home) #settings-scroll > .dsec > .dsec-head:first-child { display: none; }'));
         check('N1: each machine learns the name it was given and uses it everywhere; the computer joins every list with a login of its own', srvN.includes("if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);") && srvN.includes('name: selfMachineName(),') && mainN.includes('const body = t.local ? { peers: others } : { peers: others, self: { name: t.name } };') && mainN.includes("deviceName: '其他机器（同步用）'") && mainN.includes('if (!t.local && self) others.unshift(self);'));
-        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('bestAddress([entry.url, ...(entry.alt || [])])') && launcherN.includes('await rememberHub(entry.url);'));
+        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('bestAddress([entry.url, ...(entry.alt || [])])') && launcherN.includes('await rememberHub(entry.url);'));
       }
       {
         // The phone's real merge, run on a list like the one a phone had: one
@@ -4500,7 +4530,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
           { name: 'Rocky', url: 'http://rocky-lan.test:4390', tailnetUrl: 'http://rocky-ts.test:4390' },
           { name: 'win11', url: 'http://win11-lan.test:4390', tailnetUrl: 'http://win11-ts.test:4390' },
         ] }) });
-        const merge = new Function('store', 'KEYS', 'fetch', 'renderMachines', [grab('hostLabel'), grab('readHubs'), grab('mergePeerMachines')].join('\n') + '\nreturn mergePeerMachines();');
+        const merge = new Function('store', 'KEYS', 'fetch', 'renderMachines', [grab('hostLabel'), grab('readHubs'), grab('withPublic'), grab('mergePeerMachines')].join('\n') + '\nreturn mergePeerMachines();');
         await merge(store, KEYS, fakeFetch, async () => {});
         const rows = JSON.parse(mem.get('desk.hubs'));
         check('phone list: one row per machine with its other address kept, the hub names win, stale addresses go', rows.length === 3 && rows.map((r) => r.name).join(',') === 'LAPTOP,Rocky,win11' && rows.find((r) => r.name === 'Rocky').alt?.length === 1 && !rows.some((r) => r.name === 'localhost.localdomain'));

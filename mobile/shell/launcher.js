@@ -218,6 +218,70 @@
   }
 
   /**
+   * One row per machine, from the rows alone: rows that share any address are
+   * the same machine. Seen: a row saved from a pairing code (its main address
+   * the public https one, the others in alt) next to a row another hub taught
+   * us; and a row left behind when a computer's LAN address changed. The row
+   * with a login (the most recently used one) stays and takes every address;
+   * `via` follows a folded address to the row that now holds it.
+   * -> {list, moves: [[fromUrl, toUrl]]}: logins to carry over to the kept row.
+   */
+  function foldRows(rows, hasToken) {
+    const addrs = (h) => [h.url, ...(h.alt || [])];
+    const groups = [];
+    rows.forEach((row, i) => {
+      const mine = new Set(addrs(row));
+      const hit = groups.filter((g) => g.some((j) => addrs(rows[j]).some((u) => mine.has(u))));
+      if (!hit.length) { groups.push([i]); return; }
+      hit[0].push(i);
+      for (const g of hit.slice(1)) { hit[0].push(...g); g.length = 0; }
+    });
+    const keptFor = new Map();
+    const out = [];
+    const moves = [];
+    for (const g of groups.filter((x) => x.length).sort((a, b) => Math.min(...a) - Math.min(...b))) {
+      const members = g.slice().sort((a, b) => a - b).map((i) => ({ row: rows[i], token: Boolean(hasToken[i]) }));
+      const rank = (m) => (m.token ? 2 : 0) + (m.row.lastUsedAt ? 1 : 0);
+      let keep = members[0];
+      for (const m of members) {
+        if (rank(m) > rank(keep) || (rank(m) === rank(keep) && String(m.row.lastUsedAt || '') > String(keep.row.lastUsedAt || ''))) keep = m;
+      }
+      const all = [...new Set(members.flatMap((m) => addrs(m.row)))];
+      const row = { ...keep.row, alt: all.filter((u) => u !== keep.row.url) };
+      if (!row.name) row.name = members.map((m) => m.row.name).find(Boolean) || row.name;
+      if (!keep.token) {
+        const donor = members.find((m) => m.token);
+        if (donor) moves.push([donor.row.url, row.url]);
+      }
+      all.forEach((u) => keptFor.set(u, row.url));
+      out.push(row);
+    }
+    for (const row of out) {
+      if (!row.via) continue;
+      const to = keptFor.get(row.via);
+      if (to === row.url) { delete row.via; delete row.viaName; } else if (to) row.via = to;
+    }
+    return { list: out, moves };
+  }
+
+  async function foldDuplicateRows() {
+    const rows = await readHubs();
+    const hasToken = await Promise.all(rows.map((h) => store.get(KEYS.tokenFor(h.url)).then(Boolean).catch(() => false)));
+    const { list, moves } = foldRows(rows, hasToken);
+    for (const [from, to] of moves) {
+      const token = await store.get(KEYS.tokenFor(from)).catch(() => null);
+      if (token) await store.set(KEYS.tokenFor(to), token);
+    }
+    if (JSON.stringify(list) !== JSON.stringify(rows)) await store.set(KEYS.hubs, JSON.stringify(list.slice(0, 12)));
+  }
+
+  /** A machine's public https address (Funnel) is not in the hub's list: keep it. */
+  function withPublic(urls, old, self) {
+    const pub = (old || []).filter((u) => /^https:/i.test(u));
+    return [...new Set([...urls, ...pub])].filter((u) => u !== self);
+  }
+
+  /**
    * Fold in the machines the hub knows about (its peers). The phone has only
    * paired with some of them; the rest still belong in this list, with the hub
    * that can hand out an entry ("via").
@@ -248,12 +312,16 @@
         const urls = [machine.tailnetUrl, machine.url].map(strip).filter(Boolean);
         if (machine.self) {
           // The hub itself: its own name for the row we opened it by.
-          for (const h of list) if (urls.includes(h.url) || h.url === entry.url) { if (machine.name) h.name = machine.name; }
+          for (const h of list) {
+            if (!(urls.includes(h.url) || h.url === entry.url)) continue;
+            if (machine.name) h.name = machine.name;
+            if (urls.length) h.alt = withPublic(urls, h.alt, h.url);
+          }
           continue;
         }
         if (!urls.length) continue;
         urls.forEach((u) => listed.add(u));
-        const matches = list.filter((h) => urls.includes(h.url));
+        const matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));
         if (!matches.length) {
           // A tailnet address works from anywhere; the LAN one may not be routable.
           list.push({ url: urls[0], alt: urls.slice(1), name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) });
@@ -265,7 +333,7 @@
           if (await store.get(KEYS.tokenFor(m.url)).catch(() => null)) { keep = m; break; }
         }
         if (machine.name) keep.name = machine.name;
-        keep.alt = urls.filter((u) => u !== keep.url);
+        keep.alt = withPublic(urls, matches.flatMap((m) => [m.url, ...(m.alt || [])]), keep.url);
         if (!keep.via && keep.url !== entry.url) { keep.via = entry.url; keep.viaName = entry.name || hostLabel(entry.url); }
         list = list.filter((h) => h === keep || !matches.includes(h));
       }
@@ -317,6 +385,7 @@
   /** Tap a machine to go in; long press offers to forget. */
   async function renderMachines() {
     if (!dom.machines || !dom.machineList) return;
+    await foldDuplicateRows();
     const hubs = await readHubs();
     dom.machines.hidden = hubs.length === 0;
     dom.machineList.textContent = '';
