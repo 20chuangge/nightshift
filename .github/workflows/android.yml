@@ -45,10 +45,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node 20
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
@@ -60,6 +60,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The default list still names the old 'tools' package, which the SDK
+          # no longer has (sdkmanager exits 1). Gradle fetches the platform it needs.
+          packages: 'platform-tools'
 
       - name: Install dependencies
         working-directory: mobile
