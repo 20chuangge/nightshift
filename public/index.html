@@ -42,6 +42,10 @@
       const isChromeIos = /CriOS/.test(ua);
       const standalone = window.navigator.standalone === true
         || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      if (isIphone) document.documentElement.classList.add('ios');
+      if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');
+      // The page ends above the bottom of the screen (iOS 26+): the home bar is outside it.
+      if (isIphone && standalone && (window.screen?.height || 0) - window.innerHeight >= 40) document.documentElement.classList.add('ios-short-vp');
       const probe = document.createElement('div');
       probe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none';
       document.documentElement.appendChild(probe);
@@ -50,8 +54,9 @@
       document.documentElement.dataset.safeTop = String(Math.round(reported));
       if (!isIphone) return;
       if (!standalone && !isChromeIos) return;
+      // The status bar's height on each iPhone screen size (points), when iOS reports less.
       const h = window.screen?.height || 0;
-      const estimate = h >= 900 ? 59 : h >= 800 ? 47 : 20;
+      const estimate = ({ 956: 62, 932: 59, 926: 47, 896: 48, 874: 62, 852: 59, 844: 47, 812: 50 })[h] || (h >= 800 ? 59 : 20);
       if (reported >= estimate) return;
       document.documentElement.style.setProperty('--safe-t', `${estimate}px`);
       document.documentElement.dataset.safeFallback = String(estimate);
@@ -267,6 +272,23 @@
     height: var(--app-height, 100dvh);
     min-height: 0;
     overflow: hidden;
+  }
+  /* iPhone home-screen app (iOS 26+): the page starts at the top edge of the
+     screen, under the clock, and ends one status bar short of the bottom; iOS
+     paints that bottom strip itself (it holds the home bar), so nothing of the
+     page can show there. Keep the page where it is, never let it scroll, and
+     do not reserve room for the home bar a second time. */
+  html.ios-standalone .app {
+    position: fixed; top: 0; left: 0; right: 0;
+    height: var(--app-height, 100dvh);
+  }
+  html.ios-standalone, html.ios-standalone body { overflow: hidden; }
+  html.ios-short-vp { --safe-b: 0px; }
+  /* iPhone zooms the page in when a text box under 16px gets focus, pushing
+     the right edge off the screen: text boxes are 16px there. */
+  html.ios input:not([type=checkbox]):not([type=radio]):not([type=range]),
+  html.ios textarea, html.ios select {
+    font-size: 16px !important;
   }
   .app.is-hidden { display: none; }
 
@@ -1641,7 +1663,12 @@
     .panel-close { display: grid; margin-left: var(--s1); }
     .panel-body { padding: var(--s2) var(--s4) calc(var(--s5) + var(--safe-b)); }
 
-    .chat-head { padding: var(--s2) var(--s4); min-height: 56px; }
+    /* The top of a phone screen is the clock / Dynamic Island when the page
+       runs edge to edge (home-screen app, app shell): start below it, or taps
+       there land on the status bar. Zero in a normal browser tab. */
+    .chat-head { padding: calc(var(--s2) + var(--safe-t)) var(--s4) var(--s2); min-height: calc(56px + var(--safe-t)); background: var(--bg); }
+    /* home-screen app: iOS frosts a band under the clock; keep a little air below it */
+    html.ios-standalone .chat-head { padding-top: calc(var(--s2) + var(--safe-t) + 14px); min-height: calc(70px + var(--safe-t)); }
     .chat-head .sub { max-width: 52vw; }
     .messages { padding: var(--s4) var(--s4) var(--s2); gap: var(--s3); }
     .composer { padding: var(--s2) var(--s4) calc(var(--s3) + var(--safe-b)); }
@@ -2504,7 +2531,10 @@
     .settings-modal {
       width: 100%; height: 100%; max-height: none;
       border: 0; border-radius: 0;
+      /* full screen: its back arrow goes below the clock, like the chat header */
+      padding-top: var(--safe-t);
     }
+    .page-viewer { padding-top: var(--safe-t); }
     .settings-body { flex-direction: column; }
     .settings-nav {
       width: auto; flex-direction: row; overflow-x: auto; flex: none;
