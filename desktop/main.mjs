@@ -847,6 +847,9 @@ ipcMain.on('shell:close', (event) => {
 ipcMain.handle('desk:list-machines', () => ({
   current: remoteHub || '',
   local: !remoteHub,
+  // This computer's own hub: an app's sign-in comes back to it (loopback is the
+  // only plain-http address apps accept) and it passes the answer on.
+  localUrl: serverPort ? localUrl().replace(/\/+$/, '') : '',
   // each row may carry tailnetUrl: the same machine reached over Tailscale
   machines: readMachines(),
 }));

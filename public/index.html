@@ -10420,10 +10420,18 @@ function mcpServerPanel(s) {
   test.type = 'button';
   const del = el('button', 'btn tiny danger', '断开并删除');
   del.type = 'button';
-  row.append(test, del);
+  row.append(test);
+  if (s.catalogId && s.state === 'ready') {
+    const sync = el('button', 'btn tiny', '同步到其他机器');
+    sync.type = 'button';
+    sync.title = '在其他机器上也连上它（Notion 这类要登录的，每台机器登录一次）';
+    sync.addEventListener('click', () => syncMcpApp({ id: s.catalogId, name: s.name }, sync));
+    row.append(sync);
+  }
+  row.append(del);
   box.appendChild(row);
   test.addEventListener('click', async () => {
-    if (s.oauth && s.state === 'needs_auth' && s.catalogId) { connectMcpApp({ id: s.catalogId, name: s.name, auth: 'oauth' }); return; }
+    if (s.oauth && s.state === 'needs_auth' && s.catalogId) { connectMcpApp({ id: s.catalogId, name: s.name, auth: 'oauth' }, {}, null, { here: true }); return; }
     test.disabled = true;
     test.textContent = '连接中…';
     try {
@@ -10449,11 +10457,45 @@ async function openSignInPage(url) {
   return true;
 }
 
-/** 「连接」 on a catalog app. Token / Feishu details come from the row's own inputs. */
-async function connectMcpApp(app, extra = {}, btn = null) {
+/** This computer's own hub (desktop app on another machine): apps send a sign-in back only to https or loopback. */
+function mcpRelay() {
+  const u = String(machineBridge?.localUrl || '');
+  return !onLocalMachine() && /^http:\/\/127\.0\.0\.1:\d+$/.test(u) ? u : '';
+}
+
+/** After connecting on the other machines: open their sign-in pages, say what happened. */
+async function reportMcpPeers(app, peers) {
+  if (!Array.isArray(peers) || !peers.length) return;
+  const signIns = peers.filter((p) => p.ok && p.authorizeUrl);
+  for (const p of signIns) await openSignInPage(p.authorizeUrl);
+  if (signIns.length) mcpUi.peerSignIns = signIns.map((p) => ({ app: app.id, machine: p.machine, url: p.authorizeUrl }));
+  const done = peers.filter((p) => p.ok && !p.authorizeUrl).map((p) => p.machine);
+  const failed = peers.filter((p) => !p.ok);
+  const parts = [];
+  if (done.length) parts.push(`已同步到 ${done.join('、')}`);
+  if (signIns.length) parts.push(`${signIns.map((p) => p.machine).join('、')} 要各登录一次（已在浏览器打开）`);
+  if (failed.length) parts.push(`${failed.map((p) => `${p.machine}：${p.message}`).join('；')}`);
+  toast(`「${app.name}」${parts.join('；')}`, Boolean(failed.length));
+}
+
+/** 「同步到其他机器」 for an app connected here. */
+async function syncMcpApp(app, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  try {
+    const out = await api(`/api/mcp/catalog/${encodeURIComponent(app.id)}/sync`, { method: 'POST', body: { relay: mcpRelay() || (onLocalMachine() ? location.origin : '') } });
+    if (!out.peers?.length) toast('没有其他机器（在「设置 → 机器」里添加）');
+    else await reportMcpPeers(app, out.peers);
+  } catch (err) { toast(`同步失败：${err.message}`, true); }
+  if (btn) { btn.disabled = false; btn.textContent = '同步到其他机器'; }
+  await loadMcp();
+}
+
+/** 「连接」 on a catalog app. Token / Feishu details come from the row's own inputs.
+ *  It connects on every machine (the others too), unless `here` is set. */
+async function connectMcpApp(app, extra = {}, btn = null, { here = false } = {}) {
   if (btn) { btn.disabled = true; btn.textContent = '连接中…'; }
   try {
-    const out = await api(`/api/mcp/catalog/${encodeURIComponent(app.id)}/connect`, { method: 'POST', body: { origin: location.origin, ...extra } });
+    const out = await api(`/api/mcp/catalog/${encodeURIComponent(app.id)}/connect`, { method: 'POST', body: { origin: location.origin, relay: mcpRelay(), everywhere: !here, ...extra } });
     if (out.authorizeUrl) {
       // The app's own sign-in page, in this device's browser (the computer's
       // or the phone's); it comes back to this machine when done. This window
@@ -10465,6 +10507,8 @@ async function connectMcpApp(app, extra = {}, btn = null) {
       toast(`正在连接「${app.name}」${app.auth === 'none' || app.auth === 'feishu' ? '（第一次会下载它，稍等）' : ''}`);
     }
     mcpUi.open = app.id;
+    // The other machines: after this one's own note, so it is the one you see.
+    if (out.peers?.length) setTimeout(() => reportMcpPeers(app, out.peers), out.authorizeUrl ? 2500 : 0);
   } catch (err) {
     toast(`连接失败：${err.message}`, true);
   }

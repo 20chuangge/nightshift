@@ -443,7 +443,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   state.videoJobs = refs.videoJobs;
 
   // Connected apps (MCP): their tools join the registry while connected.
-  state.mcp = createMcpManager({ registry, workspaceDir, version: VERSION, readFeishu: () => loadFeishu(path.join(P.dataDir, 'feishu.json')), emit: () => bus.emit({ type: 'settings.changed', section: 'mcp' }) });
+  state.mcp = createMcpManager({ registry, workspaceDir, version: VERSION, readFeishu: () => loadFeishu(path.join(P.dataDir, 'feishu.json')), publicUrl: () => funnelPublicUrl(), emit: () => bus.emit({ type: 'settings.changed', section: 'mcp' }) });
   registry.mcpGate = (bot, name) => state.mcp.allowed(bot, name);
   registry.mcpTrust = (name) => state.mcp.trustFor(name);
   await state.mcp.load().catch((err) => console.error('[assistant] mcp.json:', err.message));
@@ -1411,19 +1411,76 @@ route('POST', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)\/test$/, async (_req, _res, { 
 
 // The app catalog: 「连接」 per app.
 //   GET  /api/mcp/catalog               -> {apps:[{id, name, category, auth, help, server}]}
-//   POST /api/mcp/catalog/:id/connect   {origin?, token?, appId?, appSecret?} -> {server} | {authorizeUrl, server}
+//   POST /api/mcp/catalog/:id/connect   {origin?, relay?, token?, appId?, appSecret?, everywhere?}
+//                                       -> {server, authorizeUrl?, peers?:[{machine, ok, authorizeUrl?, already?, message?}]}
+//   POST /api/mcp/catalog/:id/sync      {relay?} -> {peers:[...]}   connect it on the other machines too
 //   GET  /api/mcp/oauth/callback        the app's sign-in page comes back here (no session needed)
+//   POST /api/mcp/oauth/finish          {state, code, error?} a callback another machine received for this one
+// `relay` is the loopback hub of the computer whose browser signs in: apps only
+// send the browser back to https or loopback, so a machine on a LAN address
+// gets its answer through that hub.
+const mcpRelay = (body) => {
+  for (const u of [body?.relay, body?.origin]) if (/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/i.test(String(u || ''))) return String(u);
+  return '';
+};
+
+/** Connect a catalog app that is connected here on every other machine too. */
+async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
+  const payload = await state.mcp.syncPayload(catalogId);
+  if (!payload) return [];
+  return Promise.all(state.peers.list().map(async (p) => {
+    const peer = state.peers.find(p.name);
+    try {
+      const cat = await state.peers.json(peer, 'GET', '/api/mcp/catalog', { timeoutMs: 8000 });
+      const there = (cat.apps || []).find((a) => a.id === catalogId);
+      if (!there) return { machine: p.name, ok: false, message: '那台机器的夜班版本较旧，更新后再同步' };
+      if (there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
+      const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret };
+      const out = await state.peers.json(peer, 'POST', `/api/mcp/catalog/${encodeURIComponent(catalogId)}/connect`, { body, timeoutMs: 60000 });
+      return { machine: p.name, ok: true, authorizeUrl: out.authorizeUrl || '' };
+    } catch (err) {
+      return { machine: p.name, ok: false, message: err.message };
+    }
+  }));
+}
+
 route('GET', /^\/api\/mcp\/catalog$/, async (_req, _res, { state }) => ({ apps: state.mcp.catalog() }));
 route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/connect$/, async (_req, _res, { state, body, params }) => {
-  const out = await state.mcp.connectCatalog(params.id, body || {});
+  const out = await state.mcp.connectCatalog(params.id, { ...(body || {}), relay: mcpRelay(body) });
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  if (body?.everywhere) out.peers = await syncMcpToPeers(state, params.id, { relay: mcpRelay(body) });
   return out;
 });
-route('GET', /^\/api\/mcp\/oauth\/callback$/, async (_req, res, { state, query }) => {
-  const out = await state.mcp.oauthCallback(Object.fromEntries(query.entries()));
+route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/sync$/, async (_req, _res, { state, body, params }) => {
+  if (!(await state.mcp.syncPayload(params.id))) throw httpError(400, 'MCP_NOT_CONNECTED', '这台机器上还没有连这个应用');
+  return { peers: await syncMcpToPeers(state, params.id, { relay: mcpRelay(body) }) };
+});
+route('POST', /^\/api\/mcp\/oauth\/finish$/, async (_req, _res, { state, body }) => {
+  const q = { state: String(body?.state || ''), code: String(body?.code || ''), error: String(body?.error || ''), error_description: String(body?.error_description || '') };
+  if (!state.mcp.hasPending(q.state)) return { known: false };
+  const out = await state.mcp.oauthCallback(q);
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  return { known: true, ...out };
+});
+route('GET', /^\/api\/mcp\/oauth\/callback$/, async (req, res, { state, query }) => {
+  const q = Object.fromEntries(query.entries());
+  let out = null;
+  // A sign-in another machine started (through this computer's browser): pass it on.
+  // Only a browser on this computer can hand one over (the relay address is loopback).
+  const fromHere = /^(127\.|::1$|::ffff:127\.)/.test(String(req.socket?.remoteAddress || ''));
+  if (fromHere && !state.mcp.hasPending(q.state) && q.state) {
+    const answers = await Promise.all(state.peers.list().map(async (p) => {
+      try {
+        const a = await state.peers.json(state.peers.find(p.name), 'POST', '/api/mcp/oauth/finish', { body: q, timeoutMs: 60000 });
+        return a.known ? { ...a, machine: p.name } : null;
+      } catch { return null; }
+    }));
+    out = answers.find(Boolean) || null;
+  }
+  if (!out) out = await state.mcp.oauthCallback(q);
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
   const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const title = out.ok ? `已连接「${esc(out.name)}」` : '没有连上';
+  const title = out.ok ? `已连接「${esc(out.name)}」${out.machine ? `（${esc(out.machine)}）` : ''}` : '没有连上';
   const text = out.ok ? '可以关掉这个页面，回到夜班。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
   res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);

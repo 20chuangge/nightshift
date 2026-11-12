@@ -3653,6 +3653,29 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const fsPub = m.list().find((x) => x.id === fs1.server.id);
     check('M5 feishu app: one click uses the App ID / Secret from Settings → 飞书, read when it starts; nothing copied',
       fsReady && /args -a cli_test -s sec_test/.test(envOut.text) && fsPub.secrets.length === 0 && !JSON.stringify(m.list()).includes('sec_test') && !(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8')).includes('sec_test'), envOut.text);
+    // Sync to the other machines: what they get to connect the same app.
+    const syncTok = await m.syncPayload('fake-token');
+    const syncFs = await m.syncPayload('fake-feishu');
+    const syncOauth = await m.syncPayload('fake-oauth');
+    check('M7 sync: a token app sends its token, Feishu its App ID / Secret, an OAuth app nothing (each machine signs in itself)',
+      syncTok?.token === 'TOK' && syncFs?.appId === 'cli_test' && syncFs?.appSecret === 'sec_test' && syncOauth?.auth === 'oauth' && !('token' in syncOauth) && (await m.syncPayload('nope')) === null);
+    // A machine reached on a LAN address: Notion & co. accept only https or loopback.
+    let lan = null;
+    try { await m.connectCatalog('fake-oauth', { origin: 'http://10.0.0.9:14390' }); } catch (e) { lan = e; }
+    const relayed = await m.connectCatalog('fake-oauth', { origin: 'http://10.0.0.9:14390', relay: 'http://127.0.0.1:14390' });
+    const ru = new URL(relayed.authorizeUrl);
+    check('M7 sign-in on another machine: a LAN address is refused with a way out; through the computer\'s own hub it comes back on loopback',
+      lan?.code === 'MCP_NEEDS_HTTPS' && /在电脑上的夜班里连接/.test(lan.message) && ru.searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/mcp/oauth/callback'
+      && m.hasPending(ru.searchParams.get('state')) && !m.hasPending('nope'), lan?.message);
+    check('M7 callback address: https or loopback page as is; else the relay; else the Funnel address; else none',
+      mcp.callbackBase('https://a.ts.net', '', '') === 'https://a.ts.net' && mcp.callbackBase('http://127.0.0.1:5', '', '') === 'http://127.0.0.1:5'
+      && mcp.callbackBase('http://10.0.0.2:5', 'http://127.0.0.1:7', '') === 'http://127.0.0.1:7' && mcp.callbackBase('http://10.0.0.2:5', 'http://10.0.0.3:7', 'https://b.ts.net/') === 'https://b.ts.net'
+      && mcp.callbackBase('http://10.0.0.2:5', '', '') === null);
+    // Changing only 「要不要先问你」 on a web app (Notion, GitHub) keeps it a web app.
+    const trusted = await m.update(tok.server.id, { trust: 'always' });
+    check('M7 settings: changing only the trust of a web app keeps its address and token', trusted.trust === 'always' && trusted.transport === 'http' && m.list().find((x) => x.id === tok.server.id)?.url === appBase + '/mcp');
+    const mcpSrc = await readText('../src/mcp.mjs');
+    check('M7 npx: apps started with npx find the hub\'s own Node (Linux machines keep it off PATH)', mcpSrc.includes('const nodeDir = path.dirname(process.execPath);') && mcpSrc.includes('env[pathKey] = [nodeDir, env[pathKey]]'));
     await m.remove(fs1.server.id);
     feishu = null;
     let noFs = null;
@@ -3661,6 +3684,18 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
   } finally {
     m.stopAll();
     srv.close();
+  }
+  {
+    const srvSrc = await readText('../src/server.mjs');
+    const pageSrc = await readText('../public/index.html');
+    const mainSrc = await readText('../desktop/main.mjs');
+    check('M7 relay: only a browser on this computer can hand a sign-in to the other machines; they finish it over the peer link',
+      srvSrc.includes("String(req.socket?.remoteAddress || '')") &&srvSrc.includes("if (fromHere && !state.mcp.hasPending(q.state) && q.state)")
+      && srvSrc.includes("'POST', '/api/mcp/oauth/finish'") && srvSrc.includes("if (!state.mcp.hasPending(q.state)) return { known: false };"));
+    check('M7 sync: 「连接」 connects on every machine; already connected ones are left alone; a button syncs an app connected earlier',
+      srvSrc.includes('if (body?.everywhere) out.peers = await syncMcpToPeers(') && srvSrc.includes("['ready', 'connecting'].includes(there.server.state)")
+      && pageSrc.includes('everywhere: !here') && pageSrc.includes("'同步到其他机器'") && pageSrc.includes('function mcpRelay()')
+      && /localUrl: serverPort \? localUrl\(\)/.test(mainSrc));
   }
   // An app with very many tools (Notion has 77): requests stay under the APIs' 128-tool limit.
   {

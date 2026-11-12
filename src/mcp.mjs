@@ -166,6 +166,11 @@ export class McpClient {
     const env = { ...process.env };
     delete env.ASSIST_API_KEY; // our model key is not theirs
     for (const [k, v] of Object.entries(this.cfg.env || {})) env[k] = fill(v);
+    // The hub's own Node (Linux machines get one in their runtime folder, not on
+    // PATH): npx / npm / node come from next to it, so 「npx …」 apps start there too.
+    const nodeDir = path.dirname(process.execPath);
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+    if (!String(env[pathKey] || '').split(path.delimiter).includes(nodeDir)) env[pathKey] = [nodeDir, env[pathKey]].filter(Boolean).join(path.delimiter);
     let command = String(this.cfg.command || '').trim();
     if (!command) throw Object.assign(new Error('没有填命令'), { code: 'MCP_NO_COMMAND' });
     const opts = { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, cwd: this.workspaceDir || undefined };
@@ -355,12 +360,34 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
 // --------------------------------------------------------------------------
 // the manager: config, connections, tools
 
+const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/i;
+
+/**
+ * Where an app's sign-in page sends the browser back. Apps (Notion…) accept
+ * only https or this computer's own loopback address, so:
+ *   the page's own address when it is https or loopback;
+ *   else `relay`, the loopback hub on the computer whose browser signs in
+ *     (the desktop app working on another machine) - it passes the answer on;
+ *   else this hub's https address on the internet (Funnel), when on;
+ *   else null: there is no address the app would take.
+ */
+export function callbackBase(origin, relay, publicUrl) {
+  const o = String(origin || '').replace(/\/+$/, '');
+  if (/^https:\/\/[^/]+$/i.test(o) || LOOPBACK.test(o)) return o;
+  const r = String(relay || '').replace(/\/+$/, '');
+  if (LOOPBACK.test(r)) return r;
+  const pub = String(publicUrl || '').replace(/\/+$/, '');
+  if (/^https:\/\/[^/]+$/i.test(pub)) return pub;
+  return null;
+}
+
 export function createMcpManager({
   registry, workspaceDir, version = '0', emit = () => {},
   makeClient = (cfg, opts) => new McpClient(cfg, opts),
   readFeishu = async () => null,
   catalog = MCP_CATALOG, // tests pass their own
   fetchImpl = fetch,
+  publicUrl = () => null, // this hub's https address on the internet (Funnel), if on
 } = {}) {
   /** OAuth sign-ins waiting for their callback: state -> {...}. Ten minutes, used once. */
   const pendingAuth = new Map();
@@ -553,7 +580,7 @@ export function createMcpManager({
   }
 
   function clean(input, old = {}) {
-    const transport = input.transport === 'http' ? 'http' : 'stdio';
+    const transport = (input.transport ?? old.transport) === 'http' ? 'http' : 'stdio';
     const strMap = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).map(([k, v]) => [String(k).trim(), String(v ?? '')]).filter(([k]) => k).slice(0, 30));
     const cfg = {
       ...old,
@@ -677,7 +704,7 @@ export function createMcpManager({
      * {authorizeUrl, server} for an OAuth app: the page opens that URL.
      * `origin` is where this hub's page was opened (the callback comes back there).
      */
-    async connectCatalog(catalogId, { origin = '', token = '', appId = '', appSecret = '' } = {}) {
+    async connectCatalog(catalogId, { origin = '', relay = '', token = '', appId = '', appSecret = '' } = {}) {
       const e = catalog.find((x) => x.id === catalogId);
       if (!e) throw Object.assign(new Error('目录里没有这个应用'), { status: 404, code: 'MCP_NOT_IN_CATALOG' });
       let cfg = configs.find((c) => c.catalogId === e.id);
@@ -703,8 +730,12 @@ export function createMcpManager({
         return { server };
       }
       // OAuth: register this hub with the app and hand back its sign-in page.
-      if (!/^https?:\/\/[^/]+$/i.test(String(origin))) throw Object.assign(new Error('缺少页面地址（origin）'), { status: 400, code: 'MCP_ORIGIN_NEEDED' });
-      const redirectUri = `${origin}/api/mcp/oauth/callback`;
+      if (!/^https?:\/\/[^/]+$/i.test(String(origin)) && !LOOPBACK.test(String(relay))) throw Object.assign(new Error('缺少页面地址（origin）'), { status: 400, code: 'MCP_ORIGIN_NEEDED' });
+      const back = callbackBase(origin, relay, publicUrl());
+      if (!back) {
+        throw Object.assign(new Error(`「${e.name}」只接受 https 或本机地址的登录回跳，这台机器现在是 ${origin}。在电脑上的夜班里连接（会同步到这台机器），或者在「手机和外网」里打开这台机器的外网访问再试。`), { status: 400, code: 'MCP_NEEDS_HTTPS' });
+      }
+      const redirectUri = `${back}/api/mcp/oauth/callback`;
       const found = await discoverOAuth(e.url, { fetchImpl, clientVersion: version });
       const client = await registerClient(found.meta, redirectUri, { fetchImpl });
       if (!cfg) {
@@ -725,6 +756,33 @@ export function createMcpManager({
         authorizeUrl: authorizeUrl({ meta: found.meta, clientId: client.client_id, redirectUri, challenge, state, resource: found.resource, scopes: found.scopes }),
         server: publicCfg(cfg),
       };
+    },
+
+    /** Is this sign-in one this hub started? (Otherwise the callback is passed on to the other machines.) */
+    hasPending(state) {
+      const p = pendingAuth.get(String(state || ''));
+      return Boolean(p && p.at >= Date.now() - 600000);
+    },
+
+    /**
+     * What another machine needs to connect the same catalog app:
+     * {catalogId, auth, token?|appId?,appSecret?} or null when it is not connected here.
+     * OAuth apps carry nothing: each machine signs in for itself (refresh tokens
+     * are used once, so two machines cannot share one).
+     */
+    async syncPayload(catalogId) {
+      const e = catalog.find((x) => x.id === catalogId);
+      const cfg = e && configs.find((c) => c.catalogId === e.id);
+      if (!cfg) return null;
+      if (e.auth === 'token') {
+        const token = await vaultValue(cfg, e.secret);
+        return token ? { catalogId: e.id, auth: e.auth, token } : null;
+      }
+      if (e.auth === 'feishu') {
+        const s = await secretsFor(cfg);
+        return s.APP_ID && s.APP_SECRET ? { catalogId: e.id, auth: e.auth, appId: s.APP_ID, appSecret: s.APP_SECRET } : null;
+      }
+      return { catalogId: e.id, auth: e.auth };
     },
 
     /** The app sent the browser back. -> {ok, name} or {ok:false, message} */
