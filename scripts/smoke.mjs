@@ -3819,6 +3819,55 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         check('M15 task board: a member on another machine does its task there; at the end the coordinator sums up once and cannot plan again; the board is done and the group is told',
           remote?.who === 'r1' && /画首帧/.test(remote.text) && summary?.noPlan === true && /任务板做完了/.test(summary.text) && plan.status === 'done' && plan.tasks.every((t) => t.status === 'done')
           && events.some((e) => e.type === 'group.plan' && e.plan?.status === 'done') && !!(await PL.loadPlan(plan.id)));
+        // The human answers a waiting task while another task is still running: it goes back to work at once.
+        {
+          const made2 = PL.makePlan({ group: grp, request: '两件事', coordinatorId: 'c1', tasks: [{ title: '慢活', owner: '编剧', brief: 'b' }, { title: '要问', owner: '美术', brief: 'b' }] });
+          const plan2 = made2.plan;
+          const brt2 = new AgentRuntime({ config: { workspaceDir: path.join(home, 'workspace') }, registry: { schemasFor: () => [] }, model, bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: () => {} } });
+          brt2.groups = { appendGroupMessage: async (gid, rec) => rec, publicGroupMessage: (m) => m };
+          const order = [];
+          let asked2 = false;
+          brt2.runTurn = async (o) => {
+            if (/你负责的任务：慢活/.test(o.text)) { await new Promise((r) => setTimeout(r, 400)); order.push('slow-done'); return { status: 'success', summary: '慢活好了' }; }
+            if (/你负责的任务：要问/.test(o.text) && !asked2) { asked2 = true; order.push('asked'); return { status: 'success', summary: 'x', board: { askHuman: '用哪个颜色？' } }; }
+            if (/你负责的任务：要问/.test(o.text)) { order.push(/用户的回答：蓝色/.test(o.text) ? 'answered-blue' : 'answered-?'); return { status: 'success', summary: '用蓝色画好了' }; }
+            order.push('summary');
+            return { status: 'success', summary: '汇总' };
+          };
+          const run2 = brt2.runPlan(grp, plan2);
+          for (let i = 0; i < 50 && !asked2; i++) await new Promise((r) => setTimeout(r, 10));
+          await new Promise((r) => setTimeout(r, 30));
+          const took2 = await brt2.answerBoard(grp, '蓝色');
+          await run2;
+          check('M15 task board: an answer to a waiting task is taken at once, even while another task still runs; the board then finishes',
+            took2 === true && order.indexOf('answered-blue') > -1 && order.indexOf('answered-blue') < order.indexOf('slow-done') && order[order.length - 1] === 'summary' && plan2.status === 'done', JSON.stringify(order));
+        }
+        // Asking a teammate for one piece (by the tool, or by an @mention in the report): a helper task, then the asker goes on.
+        {
+          const made3 = PL.makePlan({ group: grp, request: '写一句话', coordinatorId: 'c1', tasks: [{ title: '写结论', owner: '编剧', brief: 'b' }, { title: '配图', owner: '美术', brief: 'b' }] });
+          const plan3 = made3.plan;
+          const brt3 = new AgentRuntime({ config: { workspaceDir: path.join(home, 'workspace') }, registry: { schemasFor: () => [] }, model, bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: () => {} } });
+          brt3.groups = { appendGroupMessage: async (gid, rec) => rec, publicGroupMessage: (m) => m };
+          const seen3 = [];
+          let first = true;
+          let firstArt = true;
+          brt3.runTurn = async (o) => {
+            seen3.push(o.text || '');
+            if (/你负责的任务：写结论/.test(o.text) && first) { first = false; return { status: 'success', summary: '@美术 帮我算一下数字，回我就行' }; }
+            if (/你负责的任务：配图/.test(o.text) && firstArt) { firstArt = false; return { status: 'success', summary: 'x', board: { askMember: { to: 'w1', request: '给我一句配图文字' } } }; }
+            if (/你负责的任务：协助/.test(o.text)) return { status: 'success', summary: /写结论/.test(o.text) ? '数字是 168' : '配图文字：秋天' };
+            if (/你负责的任务：写结论/.test(o.text)) return { status: 'success', summary: /数字是 168/.test(o.text) ? '结论：一共 168 个' : '没拿到数字' };
+            if (/你负责的任务：配图/.test(o.text)) return { status: 'success', summary: /配图文字：秋天/.test(o.text) ? '图配好了（秋天）' : '没拿到文字' };
+            return { status: 'success', summary: '汇总' };
+          };
+          await brt3.runPlan(grp, plan3);
+          const t1 = plan3.tasks.find((t) => t.title === '写结论');
+          const t2 = plan3.tasks.find((t) => t.title === '配图');
+          const helpers = plan3.tasks.filter((t) => t.helperFor);
+          check('M15 task board: an owner can ask a teammate for one piece (tool, or an @mention asking for help): a helper task runs, then the owner finishes with the result',
+            helpers.length === 2 && helpers.some((h) => h.owner === 'a1' && h.helperFor === t1.id) && helpers.some((h) => h.owner === 'w1' && h.helperFor === t2.id)
+            && t1.status === 'done' && /168/.test(t1.result) && t2.status === 'done' && /秋天/.test(t2.result) && plan3.status === 'done', JSON.stringify(plan3.tasks.map((t) => [t.id, t.title, t.owner, t.status, t.result])));
+        }
         const pg = await readText('../public/index.html');
         check('M15 task board: the group shows a live card (owner, status, result) and can fetch a board by id',
           pg.includes('function planCard(planId') && pg.includes("if (ev.type === 'group.plan') {") && pg.includes("if (kind === 'plan' && item.planId)") && srvSrc.includes('/plans\\/(?<planId>') && srvSrc.includes('state.runtime.answerBoard?.(')

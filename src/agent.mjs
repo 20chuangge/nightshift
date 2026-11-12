@@ -75,7 +75,7 @@ function renderGroupSection(bot, group, groupRole) {
   } else if (groupRole === 'task') {
     lines.push(
       'You own one task on this group\'s task board (below). Do it completely with your tools - that is your job here, not advice. Your final answer is posted to the group as your task report: the result itself, and the paths of the files you made (they are passed on to whoever needs them).',
-      'If another member is clearly better placed for it, call task_handoff. If you cannot go on without the human (a decision, a preference, missing information), call task_ask_human. Do not do other members\' tasks.',
+      'If you need one piece from a teammate (a number, a check, a file) and keep the rest, call task_ask_member - your task resumes with their result; never just @mention them in your report. If the task does not fit your role and another member\'s role fits it better, call task_handoff to that member right away - do not ask the human whether to hand it on, and do not attempt it badly. Call task_ask_human only for what only the human can decide or supply (a preference, a choice between options, missing facts). Do not do other members\' tasks.',
     );
   } else if (speaker) {
     lines.push('You were @mentioned, so answer your own part only: what you own, where it stands, what you need. Other members answer for themselves.');
@@ -157,6 +157,22 @@ function peersLine(peers, canHandOff) {
 import { askPeerBot, fetchedNote } from './crossmachine.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember } from './plans.mjs';
 
+/**
+ * A task report that hands a request to a teammate by @mention instead of
+ * finishing ("@数据 帮算个数，回我就行"): the board treats it as task_ask_member.
+ * -> {to, request} or null
+ */
+function askedByMention(res, task, owner, group) {
+  if (!res || res.board || res.status !== 'success' || !owner || owner.remote) return null;
+  const text = String(res.summary || '');
+  const others = (group.members || []).filter((m) => m.id !== owner.id && m.id !== group.coordinatorId);
+  const hit = mentionedMembers(text, others)[0];
+  if (!hit) return null;
+  // Asking, not just naming: a request word near the mention.
+  if (!/帮|请|麻烦|回我|算一下|核对|给我|需要你|can you|please/i.test(text)) return null;
+  return { to: hit.id, request: text.slice(0, 1500) };
+}
+
 /** Tools that act on the group's task board: handled by the runtime, not the registry. */
 const GROUP_TOOLS = {
   group_plan: {
@@ -188,9 +204,14 @@ const GROUP_TOOLS = {
     description: 'Hand your task on the group\'s task board to another member who is better placed to do it. Say why and what you already found. Your turn ends.',
     parameters: { type: 'object', properties: { to: { type: 'string', description: 'The member\'s name.' }, note: { type: 'string', description: 'Why, and what you already did or found.' } }, required: ['to', 'note'] },
   },
+  task_ask_member: {
+    name: 'task_ask_member',
+    description: 'Ask a teammate in the group for one piece your task needs (a number, a check, a file) while you keep ownership. The board gives them a helper task; when it is done your task starts again with their result. Your turn ends.',
+    parameters: { type: 'object', properties: { to: { type: 'string', description: 'The member\'s name.' }, request: { type: 'string', description: 'Exactly what you need from them, with inputs and where to put the result.' } }, required: ['to', 'request'] },
+  },
   task_ask_human: {
     name: 'task_ask_human',
-    description: 'Ask the human a question your task cannot go on without (a decision, a preference, missing information). It is posted in the group; your task waits and continues with the answer. Your turn ends.',
+    description: 'Ask the human a question your task cannot go on without: a preference, a choice between options, or facts only they have. Not for "should I hand this to someone else?" - use task_handoff for that. It is posted in the group; your task waits and continues with the answer. Your turn ends.',
     parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
   },
 };
@@ -489,7 +510,7 @@ export class AgentRuntime {
     // speak in the group directly; a member reached by bot_message does not.
     const coordinatorTurn = Boolean(groupContext && (groupRole === 'coordinator' || groupRole === 'speaker' || groupRole === 'task'));
     // Task-board tools this turn may use.
-    const boardTools = !groupContext ? [] : groupRole === 'coordinator' && !noPlan && !kickoff ? ['group_plan'] : groupRole === 'task' ? ['task_handoff', 'task_ask_human'] : [];
+    const boardTools = !groupContext ? [] : groupRole === 'coordinator' && !noPlan && !kickoff ? ['group_plan'] : groupRole === 'task' ? ['task_handoff', 'task_ask_member', 'task_ask_human'] : [];
     let boardOutcome = null;
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
@@ -963,6 +984,12 @@ export class AgentRuntime {
         result = { ok: true, planId: made.plan.id, tasks: made.plan.tasks.length };
         board = { plan: made.plan, say: `分成 ${made.plan.tasks.length} 项，由${owners.join('、')}分别负责，做完我来汇总。` };
       }
+    } else if (call.name === 'task_ask_member') {
+      const to = resolveMember(members, args.to);
+      const request = String(args.request || '').trim();
+      if (!to || to.id === bot.id) result = { error: { code: 'BAD_MEMBER', message: `「${args.to || ''}」不是群里的其他成员（成员：${members.map((m) => m.name).join('、')}）` } };
+      else if (!request) result = { error: { code: 'NO_REQUEST', message: 'request 不能为空' } };
+      else { result = { ok: true }; board = { askMember: { to: to.id, request: request.slice(0, 1500) }, say: `@${to.name} 请帮个忙：${request.slice(0, 400)}` }; }
     } else if (call.name === 'task_handoff') {
       const to = resolveMember(members, args.to);
       if (!to || to.id === bot.id) result = { error: { code: 'BAD_MEMBER', message: `「${args.to || ''}」不是群里的其他成员（成员：${members.map((m) => m.name).join('、')}）` } };
@@ -1013,8 +1040,11 @@ export class AgentRuntime {
         running.set(t.id, this.runPlanTask(group, plan, t, byId, names).finally(() => running.delete(t.id)));
       }
       if (!running.size) break;
-      await Promise.race(running.values());
+      // Wake up when a task ends - or when the human answers a waiting task (answerBoard).
+      this.planWakers = this.planWakers || new Map();
+      await Promise.race([...running.values(), new Promise((resolve) => this.planWakers.set(plan.id, resolve))]);
     }
+    this.planWakers?.delete(plan.id);
     if (plan.status === 'stopped') { await this.boardChanged(plan); return; }
     if (plan.tasks.some((t) => t.status === 'waiting_human')) {
       plan.status = 'waiting';
@@ -1072,6 +1102,23 @@ export class AgentRuntime {
       task.owner = res.board.handoff.to;
       task.status = 'todo';
       task.question = '';
+    } else if ((res?.board?.askMember || askedByMention(res, task, owner, group)) && (task.helps || 0) < 3) {
+      const ask = res.board?.askMember || askedByMention(res, task, owner, group);
+      const helper = {
+        id: `t${plan.tasks.length + 1}`,
+        title: `协助「${task.title}」`.slice(0, 120),
+        owner: ask.to,
+        brief: `「${names.get(task.owner) || task.owner}」在做「${task.title}」，请你帮忙：${ask.request}`,
+        deliverable: '把结果直接写在你的汇报里（有文件就写路径）',
+        needs: [],
+        status: 'todo',
+        result: '',
+        helperFor: task.id,
+      };
+      plan.tasks.push(helper);
+      task.helps = (task.helps || 0) + 1;
+      task.needs = [...new Set([...task.needs, helper.id])];
+      task.status = 'todo';
     } else if (res?.board?.askHuman) {
       task.status = 'waiting_human';
       task.question = res.board.askHuman;
@@ -1090,12 +1137,17 @@ export class AgentRuntime {
   /** The human answered a task's question: it goes back to work, the board goes on. -> true when it took the message */
   async answerBoard(group, text) {
     const plan = await this.groupPlan(group.id);
-    const waiting = plan?.status === 'waiting' && plan.tasks.find((t) => t.status === 'waiting_human');
+    // A task asked the human: the next thing they say in the group is the answer,
+    // even while other tasks are still running.
+    const waiting = plan && ['waiting', 'running'].includes(plan.status) && plan.tasks.find((t) => t.status === 'waiting_human');
     if (!waiting) return false;
     await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
     waiting.answer = String(text).slice(0, 2000);
     waiting.status = 'todo';
-    this.runPlan(group, plan).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    await this.boardChanged(plan);
+    const wake = this.planWakers?.get(plan.id);
+    if (plan.status === 'running' && wake) wake();
+    else this.runPlan(group, plan).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
     return true;
   }
 
