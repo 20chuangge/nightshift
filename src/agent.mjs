@@ -935,6 +935,13 @@ export class AgentRuntime {
       else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
     }
 
+    // Handing work to Claude Code / Codex: another program that changes files on
+    // the human's subscription. It asks every time - no level, rule or trust
+    // setting turns that into "auto" (a "deny" still denies).
+    if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
+    }
+
     this.bus.emit({
       type: 'tool.call',
       ...baseEvent,

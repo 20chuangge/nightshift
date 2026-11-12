@@ -3379,6 +3379,12 @@
             <button class="btn tiny danger" id="vision-clear" type="button" hidden>清除看图密钥</button>
           </div>
         </div>
+        <div class="voice-set" id="cliagents-set">
+          <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">用订阅额度的编程助手</div>
+          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code 或 Codex，用的是你自己的 Claude / ChatGPT 订阅，不按次花 API 费用。需要你在这台机器上自己装好、用官方方式登录一次；夜班不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
+          <div id="cliagents-list" class="row-note">正在检查…</div>
+          <div class="btn-row"><button class="btn tiny" id="cliagents-refresh" type="button">重新检查</button></div>
+        </div>
         <div class="voice-set media-set" id="media-image-set" data-kind="image">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">生图</div>
           <div class="row-note">让助手画图：海报、插画、头像、分镜。硅基流动的密钥就能用（和语音、看图同一个）。</div>
@@ -5156,6 +5162,7 @@ const ABILITIES = [
   { id: 'team', label: '建机器人和群、派活', note: '', tools: ['bot_list', 'bot_message', 'bot_create', 'bot_update', 'bot_delete', 'group_create', 'group_post', 'group_list', 'group_update', 'group_delete'] },
   { id: 'settings', label: '改设置', note: '模型、主题等', tools: ['settings_get', 'settings_update', 'ui_get', 'ui_set'] },
   { id: 'machines', label: '切换机器', note: '把任务交给另一台机器', tools: ['machine_list', 'machine_switch'] },
+  { id: 'codecli', label: '交给 Claude Code / Codex', note: '用你的订阅额度写代码，每次都先问你', tools: ['cli_agent_run'] },
 ];
 
 function renderAbilities(bot) {
@@ -6732,6 +6739,30 @@ async function saveVoice(clear = false) {
 /* --- vision (image_view) settings ------------------------------------------ */
 const vision = { status: null, providers: [] };
 
+/** Settings → 模型 → 用订阅额度的编程助手: what this machine has. */
+async function loadCliAgents(refresh = false) {
+  const box = $('cliagents-list');
+  if (!box) return;
+  let data;
+  try { data = await api(`/api/cliagents${refresh ? '?refresh=1' : ''}`); } catch { box.textContent = '这台机器的夜班版本太旧，还不支持。'; return; }
+  box.innerHTML = '';
+  for (const a of data.agents || []) {
+    const row = document.createElement('div');
+    row.style.margin = '6px 0';
+    const name = document.createElement('b');
+    name.textContent = a.label;
+    const state = document.createElement('span');
+    state.textContent = a.installed ? (a.loggedIn ? '：已装好，已登录，可以用' : '：已装好，还没登录') : '：没装';
+    row.append(name, state);
+    const how = document.createElement('div');
+    how.className = 'mono';
+    how.style.fontSize = '12px';
+    how.textContent = !a.installed ? `安装：${a.install}` : !a.loggedIn ? `登录：在这台机器的终端里运行 ${a.login}` : '';
+    if (how.textContent) row.appendChild(how);
+    box.appendChild(row);
+  }
+}
+
 async function loadVision() {
   const v = await api('/api/vision');
   vision.status = v;
@@ -7284,6 +7315,7 @@ const TOOL_TEXT = {
   browser_fill_secret: { label: '填入登录信息', title: '想把保险箱里的登录信息填进网页', impact: '机器人看不到密码本身。' },
   request_takeover: { label: '请你接管屏幕', title: '需要你接管屏幕', impact: '你来操作这一步。' },
   image_view: { label: '看图片', title: '想看一张图片', impact: '只读取，不改动。' },
+  cli_agent_run: { label: '交给编程助手', title: '想把写代码的活交给 Claude Code / Codex', impact: '用你的订阅额度，在工作区的一个文件夹里写文件；勾了「运行命令」时还会运行命令。' },
   briefing_collect: { label: '汇总近况', title: '想汇总各台机器的近况', impact: '只读取，不改动。' },
   page_save: { label: '做页面', title: '想把结果做成一个页面', impact: '页面存进工作区的页面库。' },
   file_send: { label: '发文件到另一台机器', title: '想把一个文件发到另一台机器', impact: '那台机器的工作区里会多一个文件。' },
@@ -9437,6 +9469,7 @@ function openSettings(section) {
   loadSettings().catch(() => { /* keep whatever we have */ });
   loadVoice().catch(() => { /* older server: no voice */ });
   loadVision().catch(() => { /* older server: no vision */ });
+  loadCliAgents().catch(() => {});
   loadMedia().catch(() => { /* older server: no generation */ });
   loadPolicy().catch(() => { /* older server: switch stays off */ });
   loadAudit().catch(() => {});
@@ -12527,6 +12560,7 @@ function wireChrome() {
   }
   $('vision-clear')?.addEventListener('click', () => saveVision(true));
   $('vision-provider')?.addEventListener('change', () => applyVisionProvider(true));
+  $('cliagents-refresh')?.addEventListener('click', () => loadCliAgents(true).catch(() => {}));
   $('voice-clear')?.addEventListener('click', () => saveVoice(true));
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'd' && !state.settingsOpen) {

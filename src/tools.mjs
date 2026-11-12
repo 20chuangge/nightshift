@@ -32,6 +32,7 @@ const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
+import { CLI_AGENTS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
 /** Same site: equal hosts, or one is a subdomain of the other's registrable part (passport.jd.com ~ www.jd.com). */
@@ -647,6 +648,49 @@ export function createRegistry(deps) {
         timeoutMs,
         signal: ctx.signal,
       });
+    },
+  });
+
+  // --- coding CLIs on the human's own subscription (Claude Code, Codex) ----
+  add({
+    name: 'cli_agent_run',
+    description:
+      'Hand a programming task to an official coding assistant installed and logged in on this machine - Claude Code (agent "claude", the human\'s Claude Pro/Max plan) or Codex CLI (agent "codex", their ChatGPT plan) - so the work uses that subscription instead of paid API calls. ' +
+      'It works in its own folder inside the workspace (default cli-tasks/<date>-<id>/) and may create and edit files there. Set allowShell when it must run commands (run tests, execute a script); the human sees that on the approval card. ' +
+      'Every call asks the human first. It can take up to 20 minutes; the stop button ends it. You get its summary, the last part of its output (the full log is output.log in the folder) and the files it left. ' +
+      'Write the task completely: what to build, in which language, how to check it works. Use it for code; do small edits yourself.',
+    risk: RISK.HIGH,
+    parameters: {
+      type: 'object',
+      properties: {
+        agent: { type: 'string', enum: ['claude', 'codex'], description: 'claude = Claude Code, codex = Codex CLI.' },
+        task: { type: 'string', description: 'The whole task, in plain words (Chinese is fine).' },
+        dir: { type: 'string', description: 'Folder in the workspace to work in (optional; default a new cli-tasks/<date>-<id>/).' },
+        allowShell: { type: 'boolean', description: 'Let it run commands (tests, scripts). Default false: it only reads and edits files in the folder.' },
+      },
+      required: ['agent', 'task'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const agent = String(args?.agent || '');
+      const task = String(args?.task || '').trim();
+      if (!CLI_AGENTS[agent]) throw toolError('CLI_BAD_ARGS', 'agent must be "claude" or "codex"');
+      if (!task) throw toolError('CLI_BAD_ARGS', 'cli_agent_run needs a task');
+      let dir;
+      if (args?.dir) {
+        const r = resolvePath(ctx.workspaceDir, args.dir);
+        // Its own folder inside the workspace, never the workspace itself or beyond.
+        if (!r.inWorkspace || r.abs === path.resolve(ctx.workspaceDir)) throw toolError('CLI_DIR_OUTSIDE', `the folder must be a subfolder of the workspace (got ${r.abs})`);
+        dir = r.abs;
+      } else {
+        dir = newTaskDir(ctx.workspaceDir);
+      }
+      try {
+        const res = await runCliAgent({ agent, task, dir, allowShell: Boolean(args?.allowShell), signal: ctx.signal });
+        return { ...res, dir: path.relative(ctx.workspaceDir, res.dir), outputFile: path.relative(ctx.workspaceDir, res.outputFile) };
+      } catch (err) {
+        throw toolError(err.code || 'CLI_FAILED', err.message);
+      }
     },
   });
 

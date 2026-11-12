@@ -364,7 +364,7 @@ async function avatarFilesByBot() {
  */
 export const SEED_GRANTS = {
   chief: {
-    version: 5,
+    version: 6,
     tools: [
       'machine_list', 'machine_switch',
       'bot_create', 'bot_update', 'bot_delete',
@@ -372,6 +372,8 @@ export const SEED_GRANTS = {
       'settings_get', 'settings_update', 'ui_get', 'ui_set',
       'shell', 'fs_delete', 'browser_open',
       'desktop_ui',
+      // Claude Code / Codex on the human's subscription; every call still asks.
+      'cli_agent_run',
     ],
     // The primary bot is the human's single point of contact; it may change
     // product settings without a second confirmation. HIGH risk still asks,

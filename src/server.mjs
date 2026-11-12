@@ -1338,6 +1338,18 @@ route('DELETE', /^\/api\/vault\/(?<id>[^/]+)$/, async (_req, _res, { params, sta
 
 const visionCtx = (state) => ({ settings: state.settings, chatKey: state.apiKey, voice: state.voice });
 
+// Coding CLIs on the human's subscription (cli_agent_run): installed? logged in?
+// Only each tool's own status command is asked; their login files are never read.
+//   GET /api/cliagents -> {agents:[{id, label, installed, loggedIn, install, login}]}
+let cliAgentsCache = { at: 0, agents: null };
+route('GET', /^\/api\/cliagents$/, async (_req, _res, { query }) => {
+  if (!cliAgentsCache.agents || query.get('refresh') || Date.now() - cliAgentsCache.at > 60000) {
+    const { detectCliAgents } = await import('./cliagents.mjs');
+    cliAgentsCache = { at: Date.now(), agents: await detectCliAgents() };
+  }
+  return { agents: cliAgentsCache.agents };
+});
+
 route('GET', /^\/api\/vision$/, async (_req, _res, { state }) => visionModule.publicVision(state.vision, visionCtx(state)));
 
 route('PUT', /^\/api\/vision$/, async (_req, _res, { body, state }) => {

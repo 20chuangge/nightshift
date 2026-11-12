@@ -136,6 +136,7 @@ async function main() {
       unitChecks({ approvals, routines, skillsMod, memoryMod, toolsMod, botsMod, storeMod, home }),
     );
     await stage('machines and policy', () => scenarioMachinesAndPolicy({ approvals, toolsMod }));
+    await stage('coding CLIs on the subscription', () => scenarioCliAgents({ toolsMod, home }));
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
   } finally {
@@ -3238,6 +3239,71 @@ main().catch(async (err) => {
   process.exitCode = 1;
 });
 
+/** Batch L: cli_agent_run with a fake claude / codex (scripts/fixtures/fake-cli.*). */
+async function scenarioCliAgents({ toolsMod, home }) {
+  const fake = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', process.platform === 'win32' ? 'fake-cli.cmd' : 'fake-cli.sh');
+  const saved = { claude: process.env.DESK_CLI_CLAUDE, codex: process.env.DESK_CLI_CODEX };
+  process.env.DESK_CLI_CLAUDE = fake;
+  process.env.DESK_CLI_CODEX = fake;
+  try {
+    const cli = await import('../src/cliagents.mjs');
+    const found = await cli.detectCliAgents();
+    check('L cli: both tools found and reported logged in by their own status command', found.length === 2 && found.every((a) => a.installed && a.loggedIn));
+    // A folder with a space in its name: the Windows .cmd path must quote it.
+    const ws = path.join(home, 'cli ws');
+    await fsp.mkdir(ws, { recursive: true });
+    const task = '写一个 hello.py，"引号" & 符号 | 也要原样送到';
+    const dir1 = path.join(ws, 'cli-tasks', 'a');
+    const r1 = await cli.runCliAgent({ agent: 'claude', task, dir: dir1 });
+    const call1 = JSON.parse(await fsp.readFile(path.join(dir1, 'cli-call.json'), 'utf8'));
+    check('L cli: Claude Code runs with -p, JSON output, acceptEdits, no prompts, no saved session, in its folder; no Bash unless asked',
+      ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--permission-prompts', 'none', '--no-session-persistence'].every((a) => call1.argv.includes(a))
+      && !call1.argv.includes('--allowedTools') && path.resolve(call1.cwd) === path.resolve(dir1), JSON.stringify(call1.argv));
+    check('L cli: the task goes in on stdin exactly as written (never on a command line)', call1.stdin.trim() === task && !call1.argv.some((a) => a.includes('hello')));
+    check('L cli: result comes back with its summary, the files it made and the full log on disk', r1.exitCode === 0 && r1.summary === 'wrote hello.py' && r1.files.includes('hello.py') && (await fsp.readFile(r1.outputFile, 'utf8')).includes('some progress'));
+    check('L cli: what Claude Code was refused comes back as "denied" (the bot then knows it did not run the script)', Array.isArray(r1.denied) && r1.denied[0] === 'PowerShell: python hello.py');
+    const dir2 = path.join(ws, 'cli-tasks', 'b');
+    const r2 = await cli.runCliAgent({ agent: 'claude', task: 'x', dir: dir2, allowShell: true });
+    check('L cli: nothing refused, no "denied" field', r2.denied === undefined);
+    const call2 = JSON.parse(await fsp.readFile(path.join(dir2, 'cli-call.json'), 'utf8'));
+    check('L cli: allowShell lets it run commands with both of its command tools (Bash, and PowerShell on Windows), nothing more', call2.argv.join(' ').includes('--allowedTools Bash,PowerShell'));
+    const dir3 = path.join(ws, 'cli-tasks', 'c');
+    const r3 = await cli.runCliAgent({ agent: 'codex', task: '写 hello.py', dir: dir3 });
+    const call3 = JSON.parse(await fsp.readFile(path.join(dir3, 'cli-call.json'), 'utf8'));
+    check('L cli: Codex runs exec --cd <folder> --sandbox workspace-write, task on stdin (-), last message read back',
+      call3.argv[0] === 'exec' && path.resolve(call3.argv[call3.argv.indexOf('--cd') + 1]) === path.resolve(dir3)
+      && call3.argv.join(' ').includes('--sandbox workspace-write') && call3.argv.at(-1) === '-' && call3.stdin.trim() === '写 hello.py' && r3.summary === 'wrote hello.py');
+    let t0 = Date.now();
+    const r4 = await cli.runCliAgent({ agent: 'claude', task: 'SLEEP', dir: path.join(ws, 'cli-tasks', 'd'), timeoutMs: 1500 });
+    check('L cli: a run past its time limit is ended (whole process tree)', r4.timedOut && Date.now() - t0 < 20000, `${Date.now() - t0} ms`);
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 800);
+    t0 = Date.now();
+    const r5 = await cli.runCliAgent({ agent: 'claude', task: 'SLEEP', dir: path.join(ws, 'cli-tasks', 'e'), signal: ctrl.signal });
+    check('L cli: the stop button ends it', r5.stopped && Date.now() - t0 < 20000, `${Date.now() - t0} ms`);
+
+    const registry = toolsMod.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => { throw new Error('no'); }, getRoutines: () => { throw new Error('no'); } });
+    const tool = registry.get('cli_agent_run');
+    let outside = null;
+    try { await tool.run({ agent: 'claude', task: 'x', dir: '../escape' }, { workspaceDir: ws }); } catch (err) { outside = err; }
+    let whole = null;
+    try { await tool.run({ agent: 'claude', task: 'x', dir: '.' }, { workspaceDir: ws }); } catch (err) { whole = err; }
+    const viaTool = await tool.run({ agent: 'claude', task: '写 hello.py' }, { workspaceDir: ws });
+    check('L tool: its folder must be a subfolder of the workspace; by default a new cli-tasks/<date>-<id>', outside?.code === 'CLI_DIR_OUTSIDE' && whole?.code === 'CLI_DIR_OUTSIDE' && /^cli-tasks[\\/]\d{4}-\d{2}-\d{2}-/.test(viaTool.dir) && viaTool.files.includes('hello.py'));
+    check('L tool: HIGH risk; not granted to a bot unless switched on', tool.risk === 'HIGH' && registry.isGranted({ tools: [] }, 'cli_agent_run') === false && registry.isGranted({ tools: ['cli_agent_run'] }, 'cli_agent_run') === true);
+    const agentSrc = await readText('../src/agent.mjs');
+    const botsSrc = await readText('../src/bots.mjs');
+    const pageSrc = await readText('../public/index.html');
+    check('L approval: every call asks, after levels, rules and the trust switch (a deny still denies)', agentSrc.includes("if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {") && agentSrc.indexOf("name === 'cli_agent_run'") > agentSrc.indexOf('const fence = checkBoundary('));
+    check('L grants and settings: main assistant has it by default, each bot has a switch, settings show installed / logged in', botsSrc.includes("'cli_agent_run',") && botsSrc.includes('version: 6,') && pageSrc.includes("{ id: 'codecli', label: '交给 Claude Code / Codex'") && pageSrc.includes('id="cliagents-list"'));
+    const listed = await api('/api/cliagents');
+    check('L api: GET /api/cliagents answers with both tools', listed.status === 200 && Array.isArray(listed.json?.agents) && listed.json.agents.map((a) => a.id).join(',') === 'claude,codex');
+  } finally {
+    if (saved.claude === undefined) delete process.env.DESK_CLI_CLAUDE; else process.env.DESK_CLI_CLAUDE = saved.claude;
+    if (saved.codex === undefined) delete process.env.DESK_CLI_CODEX; else process.env.DESK_CLI_CODEX = saved.codex;
+  }
+}
+
 async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
   // Approval levels and the human's own blocked words.
   {
@@ -4248,7 +4314,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const toolsSrc = await readText('../src/tools.mjs');
       check('desktop_ui: looking is low risk, pressing and typing are medium (approval rules apply)', toolsSrc.includes("name: 'desktop_ui'") && toolsSrc.includes("args?.action === 'click' || args?.action === 'type' ? { risk: RISK.MEDIUM } : { risk: RISK.LOW }"));
       const botsSrc = await readText('../src/bots.mjs');
-      check('desktop_ui: the primary bot gets it on upgrade (seed grants version 5)', /chief: \{\s*version: 5,/.test(botsSrc) && botsSrc.includes("'desktop_ui',"));
+      check('desktop_ui: the primary bot gets it on upgrade (seed grants version 5 or later)', /chief: \{\s*version: [5-9],/.test(botsSrc) && botsSrc.includes("'desktop_ui',"));
       const B = await import('../src/browser.mjs');
       const launch = B.buildLaunchArgs({ port: 9, profileDir: 'x' });
       check('browsers: a covered or minimised bot window keeps full speed', ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'].every((a) => launch.includes(a)));
