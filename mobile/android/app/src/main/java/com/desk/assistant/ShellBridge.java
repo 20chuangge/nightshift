@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.content.pm.ActivityInfo;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -76,6 +78,26 @@ public class ShellBridge {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /*
+     * A sign-in page (a connected app's OAuth) in the phone's browser: the
+     * app's page comes back to the machine's address, which the browser reaches
+     * the same way this app does.
+     */
+    @JavascriptInterface
+    public boolean openExternal(final String url) {
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return false;
+        activity.runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(intent);
+            } catch (Exception ignored) {
+                // no browser: the page shows a link to copy
+            }
+        });
+        return true;
     }
 
     @JavascriptInterface

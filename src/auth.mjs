@@ -267,6 +267,9 @@ export function isAuthExemptPath(method, pathname) {
   const value = String(pathname || '');
   if (value === '/api/auth' && (verb === 'GET' || verb === 'HEAD')) return true;
   if (value === '/api/pair' && verb === 'POST') return true;
+  // A connected app sends the browser back here after sign-in, maybe in the
+  // system browser (no session). The one-time state in the query is the check.
+  if (value === '/api/mcp/oauth/callback' && verb === 'GET') return true;
   return false;
 }
 

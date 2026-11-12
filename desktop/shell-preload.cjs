@@ -35,4 +35,6 @@ contextBridge.exposeInMainWorld('desk', {
   // The system clipboard: a machine's page is plain http, where navigator.clipboard is absent.
   clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read'),
   clipboardWrite: (text) => ipcRenderer.invoke('desk:clipboard-write', String(text ?? '')),
+  // A sign-in page (a connected app's OAuth) in the system browser, never in this window.
+  openExternal: (url) => ipcRenderer.invoke('desk:open-external', String(url ?? '')),
 });

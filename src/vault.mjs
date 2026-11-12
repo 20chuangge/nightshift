@@ -22,7 +22,7 @@ const KEY_FILE = () => path.join(P.dataDir, 'vault.key');
 const VAULT_FILE = () => path.join(P.dataDir, 'vault.json');
 const MAX_ENTRIES = 200;
 const MAX_FIELDS = 8;
-const MAX_VALUE = 2000;
+const MAX_VALUE = 8000; // OAuth access tokens from connected apps can be long
 
 function vaultError(status, code, message) {
   const err = new Error(message);

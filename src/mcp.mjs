@@ -22,6 +22,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
 import { putVault, deleteVault, revealVault, listVault } from './vault.mjs';
+import crypto from 'node:crypto';
+import { discoverOAuth, registerClient, authorizeUrl, exchangeCode, refreshAccess, pkcePair } from './mcpauth.mjs';
 
 export const MCP_PROTOCOL = '2025-06-18';
 export const MCP_CALL_TIMEOUT_MS = 120000;
@@ -51,6 +53,42 @@ export const MCP_PRESETS = [
     id: 'notion', name: 'Notion', transport: 'stdio', command: 'npx',
     args: ['-y', '@notionhq/notion-mcp-server'], env: { NOTION_TOKEN: '${NOTION_TOKEN}' }, secrets: ['NOTION_TOKEN'],
     note: 'Notion 官方 MCP。在 notion.so/my-integrations 建一个集成拿到 token，再把要用的页面分享给这个集成。',
+  },
+];
+
+/**
+ * The app catalog (Settings → 连接应用): one 「连接」 per app. `auth` says what
+ * that button does:
+ *   oauth   the app's own sign-in page (MCP OAuth with dynamic registration)
+ *   token   a small box for a personal token, with where to make one
+ *   feishu  the App ID / Secret already set in Settings → 飞书, read at start
+ *   none    nothing to sign in
+ * The custom form below the catalog stays for anything not listed.
+ */
+export const MCP_CATALOG = [
+  {
+    id: 'notion', name: 'Notion', category: '效率', badge: 'N', color: '#111111',
+    desc: '读写你的 Notion 页面和数据库', auth: 'oauth', transport: 'http', url: 'https://mcp.notion.com/mcp',
+    help: '会打开 Notion 的授权页：选要给机器人看的页面，点「允许」。',
+  },
+  {
+    id: 'github', name: 'GitHub', category: '开发', badge: 'GH', color: '#24292f',
+    desc: '仓库、Issue、Pull Request', auth: 'token', transport: 'http', url: 'https://api.githubcopilot.com/mcp/',
+    headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN',
+    help: '在 GitHub 建一个 Personal access token（Fine-grained 就行，选要给的仓库和权限），贴到下面。',
+    tokenUrl: 'https://github.com/settings/personal-access-tokens/new',
+  },
+  {
+    id: 'feishu', name: '飞书', category: '通信', badge: '飞', color: '#3370ff',
+    desc: '消息、文档、多维表格、日历（飞书官方 MCP，测试版）', auth: 'feishu', transport: 'stdio', command: 'npx',
+    args: ['-y', '@larksuiteoapi/lark-mcp', 'mcp', '-a', '${APP_ID}', '-s', '${APP_SECRET}'],
+    help: '用「设置 → 飞书」里那个应用的 App ID 和 App Secret。能用哪些功能取决于你在飞书开放平台给这个应用开的权限。',
+  },
+  {
+    id: 'filesystem', name: '文件系统', category: '本机', badge: '文', color: '#5b6474',
+    desc: '读写工作区里的文件', auth: 'none', transport: 'stdio', command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '{workspace}'],
+    help: '第一次连接会用 npx 下载官方的 @modelcontextprotocol/server-filesystem。',
   },
 ];
 
@@ -317,7 +355,15 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
 // --------------------------------------------------------------------------
 // the manager: config, connections, tools
 
-export function createMcpManager({ registry, workspaceDir, version = '0', emit = () => {}, makeClient = (cfg, opts) => new McpClient(cfg, opts) } = {}) {
+export function createMcpManager({
+  registry, workspaceDir, version = '0', emit = () => {},
+  makeClient = (cfg, opts) => new McpClient(cfg, opts),
+  readFeishu = async () => null,
+  catalog = MCP_CATALOG, // tests pass their own
+  fetchImpl = fetch,
+} = {}) {
+  /** OAuth sign-ins waiting for their callback: state -> {...}. Ten minutes, used once. */
+  const pendingAuth = new Map();
   /** id -> {cfg, client, state, error, tools:[], retries, timer} */
   const live = new Map();
   let configs = [];
@@ -328,9 +374,12 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
       id: cfg.id, name: cfg.name, transport: cfg.transport,
       command: cfg.command || '', args: cfg.args || [], env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {},
       // Only names: the values are in the vault.
-      secrets: secretNames(cfg), hasSecrets: Boolean(cfg.secretRef),
+      // Signed in with OAuth or using the Feishu app from settings: nothing to type here.
+      secrets: cfg.oauth || cfg.secretSource === 'feishu' ? [] : secretNames(cfg), hasSecrets: Boolean(cfg.secretRef || cfg.secretSource),
       enabled: cfg.enabled !== false, trust: cfg.trust === 'always' ? 'always' : 'ask', bots: cfg.bots || 'all',
-      state: l?.state || (cfg.enabled === false ? 'off' : 'idle'), error: l?.error || '',
+      catalogId: cfg.catalogId || '', oauth: Boolean(cfg.oauth),
+      state: l?.state || (cfg.enabled === false ? 'off' : cfg.oauth && !cfg.secretRef ? 'needs_auth' : 'idle'),
+      error: l?.error || (cfg.oauth && !cfg.secretRef ? '还没授权：点「连接」去那个应用的页面登录' : ''),
       tools: (l?.tools || []).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 200), readOnly: Boolean(t.annotations?.readOnlyHint) })),
       server: l?.client?.serverInfo || null,
     };
@@ -343,11 +392,40 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
   async function secretsFor(cfg) {
     const names = secretNames(cfg);
     const out = {};
+    // Feishu from the catalog: the app set up in Settings → 飞书, read now so a
+    // changed secret there is used on the next connect.
+    if (cfg.secretSource === 'feishu') {
+      const f = await readFeishu().catch(() => null);
+      return { APP_ID: f?.appId || '', APP_SECRET: f?.appSecret || '' };
+    }
     if (!cfg.secretRef || !names.length) return out;
     for (const n of names) {
       try { out[n] = (await revealVault(cfg.secretRef, n)).value; } catch { /* missing: left empty */ }
     }
     return out;
+  }
+
+  async function vaultValue(cfg, field) {
+    if (!cfg.secretRef) return '';
+    try { return (await revealVault(cfg.secretRef, field)).value; } catch { return ''; }
+  }
+
+  /** OAuth: a new access token from the refresh token. false when that is not possible. */
+  async function refreshOAuth(cfg) {
+    const refreshToken = await vaultValue(cfg, 'REFRESH_TOKEN');
+    if (!cfg.oauth || !refreshToken) return false;
+    try {
+      const tok = await refreshAccess({
+        tokenEndpoint: cfg.oauth.tokenEndpoint, refreshToken, clientId: cfg.oauth.clientId,
+        clientSecret: await vaultValue(cfg, 'CLIENT_SECRET'), resource: cfg.oauth.resource,
+      }, { fetchImpl });
+      await putVault({ id: cfg.secretRef, name: `MCP · ${cfg.name}`, values: { ACCESS_TOKEN: tok.accessToken, ...(tok.refreshToken ? { REFRESH_TOKEN: tok.refreshToken } : {}) } });
+      cfg.oauth.expiresAt = tok.expiresAt;
+      await save();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function unregister(id) {
@@ -372,7 +450,17 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
           if (!l || l.state !== 'ready') {
             throw Object.assign(new Error(`「${cfg.name}」现在没连上${l?.error ? `（${l.error}）` : ''}`), { code: 'MCP_NOT_CONNECTED' });
           }
-          const res = await l.client.callTool(t.name, args);
+          let res;
+          try {
+            res = await l.client.callTool(t.name, args);
+          } catch (err) {
+            // The sign-in ran out mid-session: renew it in the background.
+            if (l.cfg.oauth && (err.status === 401 || err.status === 403)) {
+              start(l.cfg).catch(() => {});
+              throw Object.assign(new Error(`「${cfg.name}」的登录刚过期，正在续期，等几秒再试一次`), { code: 'MCP_REAUTH' });
+            }
+            throw err;
+          }
           const out = await toolResultForBot(res, { workspaceDir: ctx?.workspaceDir || workspaceDir, serverId: cfg.id });
           if (res?.isError) throw Object.assign(new Error(out.text || `${t.name} failed`), { code: 'MCP_TOOL_ERROR' });
           return out;
@@ -387,7 +475,39 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
     const l = { cfg, state: 'connecting', error: '', tools: [], retries: live.get(cfg.id)?.retries || 0, client: null, timer: null };
     live.set(cfg.id, l);
     emit({ type: 'mcp.changed', id: cfg.id });
+    if (cfg.oauth && !cfg.secretRef) {
+      l.state = 'needs_auth';
+      l.error = '还没授权：点「连接」去那个应用的页面登录';
+      emit({ type: 'mcp.changed', id: cfg.id });
+      return;
+    }
+    // An access token about to run out: renew it before connecting.
+    if (cfg.oauth?.expiresAt && cfg.oauth.expiresAt < Date.now() + 120000) await refreshOAuth(cfg);
     try {
+      await connectOnce(cfg, l);
+    } catch (err) {
+      if (live.get(cfg.id) !== l) return;
+      try { l.client?.close(); } catch { /* fine */ }
+      // Signed out on the app's side: renew once; if that fails, the human signs in again.
+      if (cfg.oauth && (err.status === 401 || err.status === 403)) {
+        if (!l.refreshed && await refreshOAuth(cfg)) {
+          l.refreshed = true;
+          try { await connectOnce(cfg, l); emit({ type: 'mcp.changed', id: cfg.id }); return; } catch (again) { err = again; }
+        }
+        l.state = 'needs_auth';
+        l.error = '登录过期了：点「重新授权」再登录一次';
+        emit({ type: 'mcp.changed', id: cfg.id });
+        return;
+      }
+      l.state = 'failed';
+      l.error = err.message;
+      retry(cfg.id);
+    }
+    emit({ type: 'mcp.changed', id: cfg.id });
+  }
+
+  async function connectOnce(cfg, l) {
+    {
       l.client = makeClient(cfg, {
         secrets: await secretsFor(cfg), workspaceDir, clientVersion: version,
         onNotify: (ev) => {
@@ -400,15 +520,9 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
       if (live.get(cfg.id) !== l) return;
       register(cfg, l.tools);
       l.state = 'ready';
+      l.error = '';
       l.retries = 0;
-    } catch (err) {
-      if (live.get(cfg.id) !== l) return;
-      l.state = 'failed';
-      l.error = err.message;
-      try { l.client?.close(); } catch { /* fine */ }
-      retry(cfg.id);
     }
-    emit({ type: 'mcp.changed', id: cfg.id });
   }
 
   function retry(id) {
@@ -459,6 +573,21 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
     return cfg;
   }
 
+  // A short id: it is part of every tool name (mcp__<id>__<tool>, at most 64).
+  async function freshId() {
+    let id;
+    do { id = `m${crypto.randomBytes(4).toString('hex').slice(0, 5)}`; } while (configs.some((c) => c.id === id));
+    return id;
+  }
+
+  /** Fields only the catalog sets: which entry it came from, where Feishu keys come from. */
+  function keep(input) {
+    const out = {};
+    if (input.catalogId && catalog.some((e) => e.id === input.catalogId)) out.catalogId = input.catalogId;
+    if (input.secretSource !== undefined) out.secretSource = input.secretSource === 'feishu' ? 'feishu' : '';
+    return out;
+  }
+
   /** Secret values go to the vault; only its id stays in the config. */
   async function storeSecrets(cfg, values) {
     const pairs = Object.entries(values && typeof values === 'object' ? values : {}).filter(([, v]) => String(v ?? '') !== '');
@@ -486,10 +615,7 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
       return configs.map(publicCfg);
     },
     async add(input) {
-      // A short id: it is part of every tool name (mcp__<id>__<tool>, at most 64).
-      let id;
-      do { id = `m${Math.random().toString(36).slice(2, 7)}`; } while (configs.some((c) => c.id === id));
-      const cfg = { id, ...clean(input) };
+      const cfg = { id: await freshId(), ...clean(input), ...keep(input) };
       await storeSecrets(cfg, input.secrets);
       configs.push(cfg);
       await save();
@@ -500,10 +626,11 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
       const i = configs.findIndex((c) => c.id === id);
       if (i < 0) throw Object.assign(new Error('没有这个连接'), { status: 404, code: 'MCP_NOT_FOUND' });
       const old = configs[i];
-      const cfg = { ...clean(input, old), id };
+      const cfg = { ...clean(input, old), id, ...keep(input) };
+      if (cfg.secretSource === 'feishu' && cfg.secretRef) { await deleteVault(cfg.secretRef).catch(() => {}); delete cfg.secretRef; }
       await storeSecrets(cfg, input.secrets);
       // Only who may use it / whether to ask changed: no need to reconnect.
-      const how = (c) => JSON.stringify([c.transport, c.command, c.args, c.env, c.url, c.headers, c.enabled, c.secretRef, c.name]);
+      const how = (c) => JSON.stringify([c.transport, c.command, c.args, c.env, c.url, c.headers, c.enabled, c.secretRef, c.secretSource, c.name]);
       const reconnect = how(cfg) !== how(old) || Object.values(input.secrets || {}).some((v) => String(v ?? '') !== '');
       configs[i] = cfg;
       await save();
@@ -532,6 +659,103 @@ export function createMcpManager({ registry, workspaceDir, version = '0', emit =
       await start({ ...cfg, enabled: true });
       return publicCfg(cfg);
     },
+    /** The catalog with what is connected: [{...entry, serverId, state, tools}] */
+    catalog() {
+      return catalog.map((e) => {
+        const cfg = configs.find((c) => c.catalogId === e.id);
+        const pub = cfg ? publicCfg(cfg) : null;
+        return {
+          id: e.id, name: e.name, category: e.category, badge: e.badge, color: e.color, desc: e.desc,
+          auth: e.auth, help: e.help, tokenUrl: e.tokenUrl || '',
+          server: pub,
+        };
+      });
+    },
+
+    /**
+     * 「连接」 in the catalog. -> {server} when connected (or connecting), or
+     * {authorizeUrl, server} for an OAuth app: the page opens that URL.
+     * `origin` is where this hub's page was opened (the callback comes back there).
+     */
+    async connectCatalog(catalogId, { origin = '', token = '', appId = '', appSecret = '' } = {}) {
+      const e = catalog.find((x) => x.id === catalogId);
+      if (!e) throw Object.assign(new Error('目录里没有这个应用'), { status: 404, code: 'MCP_NOT_IN_CATALOG' });
+      let cfg = configs.find((c) => c.catalogId === e.id);
+      const base = { name: e.name, transport: e.transport, command: e.command, args: e.args, env: e.env, url: e.url, headers: e.headers };
+      if (e.auth === 'token') {
+        if (!String(token).trim() && !cfg?.secretRef) throw Object.assign(new Error('先把 token 贴进来'), { status: 400, code: 'MCP_TOKEN_NEEDED' });
+        const secrets = String(token).trim() ? { [e.secret]: String(token).trim() } : undefined;
+        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, secrets }) : await api.add({ ...base, secrets, catalogId: e.id });
+        return { server };
+      }
+      if (e.auth === 'feishu') {
+        const f = await readFeishu().catch(() => null);
+        const typed = String(appId).trim() && String(appSecret).trim();
+        if (!typed && !(f?.appId && f?.appSecret)) {
+          throw Object.assign(new Error('还没有飞书应用：先在「设置 → 飞书」里填 App ID 和 App Secret，或者在这里直接填'), { status: 400, code: 'MCP_FEISHU_NEEDED' });
+        }
+        const extra = typed ? { secrets: { APP_ID: String(appId).trim(), APP_SECRET: String(appSecret).trim() }, secretSource: '' } : { secretSource: 'feishu' };
+        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, ...extra }) : await api.add({ ...base, ...extra, catalogId: e.id });
+        return { server };
+      }
+      if (e.auth === 'none') {
+        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true }) : await api.add({ ...base, catalogId: e.id });
+        return { server };
+      }
+      // OAuth: register this hub with the app and hand back its sign-in page.
+      if (!/^https?:\/\/[^/]+$/i.test(String(origin))) throw Object.assign(new Error('缺少页面地址（origin）'), { status: 400, code: 'MCP_ORIGIN_NEEDED' });
+      const redirectUri = `${origin}/api/mcp/oauth/callback`;
+      const found = await discoverOAuth(e.url, { fetchImpl, clientVersion: version });
+      const client = await registerClient(found.meta, redirectUri, { fetchImpl });
+      if (!cfg) {
+        cfg = { id: await freshId(), ...clean({ ...base, enabled: true }), catalogId: e.id };
+        configs.push(cfg);
+      }
+      cfg.oauth = { ...(cfg.oauth || {}), pending: true };
+      await save();
+      const { verifier, challenge } = pkcePair();
+      const state = crypto.randomBytes(24).toString('base64url');
+      for (const [k, v] of pendingAuth) if (v.at < Date.now() - 600000) pendingAuth.delete(k);
+      pendingAuth.set(state, {
+        id: cfg.id, at: Date.now(), verifier, redirectUri, resource: found.resource,
+        clientId: client.client_id, clientSecret: client.client_secret, tokenEndpoint: found.meta.token_endpoint,
+      });
+      emit({ type: 'mcp.changed', id: cfg.id });
+      return {
+        authorizeUrl: authorizeUrl({ meta: found.meta, clientId: client.client_id, redirectUri, challenge, state, resource: found.resource, scopes: found.scopes }),
+        server: publicCfg(cfg),
+      };
+    },
+
+    /** The app sent the browser back. -> {ok, name} or {ok:false, message} */
+    async oauthCallback({ state, code, error, error_description: errorDescription }) {
+      const p = pendingAuth.get(String(state || ''));
+      if (!p || p.at < Date.now() - 600000) return { ok: false, message: '这次授权已经过期或无效，回到夜班再点一次「连接」。' };
+      pendingAuth.delete(String(state));
+      const cfg = configs.find((c) => c.id === p.id);
+      if (!cfg) return { ok: false, message: '这个连接已经被删掉了。' };
+      if (error || !code) return { ok: false, name: cfg.name, message: `没有授权（${errorDescription || error || '没有收到授权码'}）。` };
+      try {
+        const tok = await exchangeCode({
+          tokenEndpoint: p.tokenEndpoint, code, redirectUri: p.redirectUri, clientId: p.clientId,
+          clientSecret: p.clientSecret, verifier: p.verifier, resource: p.resource,
+        }, { fetchImpl });
+        const entry = await putVault({
+          id: cfg.secretRef || null, name: `MCP · ${cfg.name}`,
+          values: { ACCESS_TOKEN: tok.accessToken, ...(tok.refreshToken ? { REFRESH_TOKEN: tok.refreshToken } : {}), ...(p.clientSecret ? { CLIENT_SECRET: p.clientSecret } : {}) },
+        });
+        cfg.secretRef = entry.id;
+        cfg.headers = { Authorization: 'Bearer ${ACCESS_TOKEN}' };
+        cfg.oauth = { clientId: p.clientId, tokenEndpoint: p.tokenEndpoint, resource: p.resource, expiresAt: tok.expiresAt, redirectUri: p.redirectUri };
+        cfg.enabled = true;
+        await save();
+        start(cfg).catch(() => {});
+        return { ok: true, name: cfg.name };
+      } catch (err) {
+        return { ok: false, name: cfg.name, message: err.message };
+      }
+    },
+
     /** May this bot use the MCP tool `name`? */
     allowed(bot, name) {
       const t = registry.tools.get(name);

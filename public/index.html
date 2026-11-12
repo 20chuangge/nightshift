@@ -2712,6 +2712,19 @@
   /* vault ------------------------------------------------------------- */
   .vault-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
   .vault-row { border: 1px solid var(--border-soft); border-radius: 12px; padding: 9px 11px; }
+  /* 连接应用: the catalog */
+  .mcp-catalog { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+  .mcp-cat { font-weight: 600; font-size: 13px; color: var(--muted); margin: 14px 0 4px; }
+  .mcp-app { border: 1px solid var(--border-soft); border-radius: 12px; padding: 10px 12px; }
+  .mcp-app-head { display: flex; align-items: center; gap: 12px; }
+  .mcp-badge { width: 38px; height: 38px; border-radius: 10px; flex: none; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 14px; }
+  .mcp-app-meta { flex: 1; min-width: 0; }
+  .mcp-app-meta b { display: block; }
+  .mcp-app-meta small { display: block; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .mcp-ok { color: var(--green); font-size: 13px; white-space: nowrap; background: none; border: 0; cursor: pointer; padding: 6px 4px; }
+  .mcp-warn { color: var(--amber); }
+  .mcp-app-body { margin-top: 10px; }
+  .mcp-app-body .field { margin-top: 6px; }
   .vault-head { display: flex; align-items: center; gap: 8px; }
   .vault-title { flex: 1; min-width: 0; }
   .vault-title b { display: block; }
@@ -3601,9 +3614,10 @@
         <div class="dsec-head">连接应用</div>
         <div class="row-note">把别的应用（MCP 服务器）接进来，它提供的工具就成了机器人能用的工具，比如飞书、GitHub、Notion。连接跑在这台机器上。</div>
         <div class="row-note">默认每次调用前先问你；应用自己声明「只读」的工具不问。信得过的应用可以设成「始终允许」。</div>
-        <div class="vault-list" id="mcp-list"></div>
+        <input class="field" id="mcp-search" type="search" placeholder="搜索应用" autocomplete="off" />
+        <div class="mcp-catalog" id="mcp-catalog"></div>
         <details class="vault-add" id="mcp-add">
-          <summary>添加一个应用</summary>
+          <summary>自己添加一个（目录里没有的应用）</summary>
           <label class="lbl" for="mcp-preset">从常用的开始</label>
           <select class="field" id="mcp-preset"></select>
           <div class="row-note" id="mcp-preset-note"></div>
@@ -7470,10 +7484,23 @@ const TOOL_TEXT = {
   skill_list: { label: '查看技能', title: '想看看有哪些技能', impact: '只读取列表。' },
   skill_read: { label: '读取技能', title: '想读一个技能的步骤', impact: '只读取内容。' },
   task_finish: { label: '结束任务', title: '想结束这一轮', impact: '它会停下来，把结果交给你。' },
+  mcp_find_tools: { label: '找应用里的工具', title: '想在连接的应用里找合适的工具', impact: '只是查找，不做任何改动。' },
+  mcp_call: { label: '用连接的应用', title: '想用连接应用里的一个工具', impact: '和直接调用那个工具一样，该问你的照样会问。' },
 };
 
+/** A connected app's tool (mcp__<server>__<tool>): its app's name and the tool's own name. */
+function mcpToolText(name) {
+  const m = String(name || '').match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
+  if (!m) return null;
+  let servers = [];
+  try { servers = mcpUi.servers || []; } catch { /* before the settings code ran */ }
+  const server = servers.find((x) => x.id === m[1]);
+  const app = server?.name || '连接的应用';
+  return { label: `「${app}」${m[2]}`, title: `想用「${app}」的 ${m[2]}`, impact: '连接应用里的工具；在「设置 → 连接应用」里设成「始终允许」后就不再问你。' };
+}
+
 function toolNameLabel(name) {
-  return (TOOL_TEXT[name] && TOOL_TEXT[name].label) || name || '操作';
+  return (TOOL_TEXT[name] && TOOL_TEXT[name].label) || mcpToolText(name)?.label || name || '操作';
 }
 
 function safeArgs(raw) {
@@ -7514,7 +7541,7 @@ function humanSchedule(schedule) {
 
 function describeTool(name, rawArgs) {
   const args = safeArgs(rawArgs);
-  const base = TOOL_TEXT[name] || { label: name || '操作', title: `想使用「${name || '工具'}」`, impact: '' };
+  const base = TOOL_TEXT[name] || mcpToolText(name) || { label: name || '操作', title: `想使用「${name || '工具'}」`, impact: '' };
   const out = { label: base.label, title: base.title, impact: base.impact, detail: '', facts: [] };
   const set = (key, label, value) => {
     if (value === undefined || value === null || value === '') return;
@@ -10198,9 +10225,16 @@ const MCP_STATE_TEXT = { ready: '已连接', connecting: '连接中…', failed:
 
 async function loadMcp() {
   let data;
-  try { data = await api('/api/mcp'); } catch { if ($('mcp-list')) $('mcp-list').textContent = '这台机器的夜班版本太旧，还不支持连接应用。'; return; }
+  let cat;
+  try {
+    [data, cat] = await Promise.all([api('/api/mcp'), api('/api/mcp/catalog')]);
+  } catch {
+    if ($('mcp-catalog')) $('mcp-catalog').textContent = '这台机器的夜班版本太旧，还不支持连接应用。';
+    return;
+  }
   mcpUi.servers = data.servers || [];
   mcpUi.presets = data.presets || [];
+  mcpUi.apps = cat.apps || [];
   renderMcp();
   fillMcpPresets();
 }
@@ -10312,107 +10346,236 @@ async function patchMcp(id, body, okText) {
   } catch (err) { toast(`保存失败：${err.message}`, true); }
 }
 
+/** What a connected server's row says on the right. */
+function mcpStateLabel(srv) {
+  if (!srv) return '';
+  if (srv.state === 'ready') return `✓ 已连接`;
+  if (srv.state === 'needs_auth') return '需要重新授权';
+  if (srv.state === 'connecting') return '连接中…';
+  if (srv.state === 'failed') return '连接失败';
+  if (srv.state === 'off') return '已停用';
+  return '还没连接';
+}
+
+/** The settings of one connected server: on/off, ask or always, which bots, keys, tools. */
+function mcpServerPanel(s) {
+  const box = el('div', 'mcp-app-body');
+  if (s.state === 'ready') box.appendChild(el('div', 'row-note', `已连接 · ${s.tools.length} 个工具`));
+  if ((s.state === 'failed' || s.state === 'needs_auth') && s.error) box.appendChild(el('div', 'row-note mcp-warn', `原因：${s.error}`));
+  const onLbl = el('label', 'row-note');
+  const on = document.createElement('input');
+  on.type = 'checkbox';
+  on.checked = s.enabled;
+  onLbl.append(on, document.createTextNode(' 启用'));
+  on.addEventListener('change', () => patchMcp(s.id, { enabled: on.checked }, on.checked ? `已启用「${s.name}」` : `已停用「${s.name}」`));
+  const trust = document.createElement('select');
+  trust.className = 'field';
+  trust.append(new Option('每次调用前先问我（只读的不问）', 'ask'), new Option('始终允许，不用问', 'always'));
+  trust.value = s.trust;
+  trust.addEventListener('change', () => patchMcp(s.id, { trust: trust.value }, trust.value === 'always' ? `「${s.name}」的工具以后不再问你` : `「${s.name}」的工具每次先问你`));
+  const who = document.createElement('select');
+  who.className = 'field';
+  who.appendChild(new Option('所有机器人都能用', 'all'));
+  for (const b of state.bots || []) who.appendChild(new Option(`只给「${b.name}」`, b.id));
+  who.value = s.bots === 'all' ? 'all' : (Array.isArray(s.bots) && s.bots[0]) || 'all';
+  who.addEventListener('change', () => patchMcp(s.id, { bots: who.value === 'all' ? 'all' : [who.value] }, '已保存'));
+  box.append(onLbl, el('label', 'lbl', '要不要先问你'), trust, el('label', 'lbl', '哪些机器人能用'), who);
+  if (s.secrets.length) {
+    const sec = el('details', 'vault-add');
+    sec.appendChild(el('summary', '', '更新密钥'));
+    const inputs = s.secrets.map((name) => {
+      const i = document.createElement('input');
+      i.className = 'field';
+      i.type = 'password';
+      i.autocomplete = 'new-password';
+      i.placeholder = `${name}（留空不改）`;
+      i.dataset.secret = name;
+      sec.appendChild(i);
+      return i;
+    });
+    const save = el('button', 'btn primary tiny', '保存并重新连接');
+    save.type = 'button';
+    save.addEventListener('click', () => {
+      const secrets = {};
+      for (const i of inputs) if (i.value) secrets[i.dataset.secret] = i.value;
+      if (!Object.keys(secrets).length) { toast('没有要改的内容'); return; }
+      patchMcp(s.id, { secrets }, '已更新密钥，正在重新连接');
+    });
+    sec.appendChild(save);
+    box.appendChild(sec);
+  }
+  if (s.tools.length) {
+    const tools = el('details', 'vault-add');
+    tools.appendChild(el('summary', '', `它提供的工具（${s.tools.length} 个）`));
+    for (const t of s.tools) {
+      const line = el('div', 'row-note');
+      line.appendChild(el('b', '', t.name));
+      line.appendChild(document.createTextNode(`${t.readOnly ? '（只读）' : ''}：${t.description}`));
+      tools.appendChild(line);
+    }
+    box.appendChild(tools);
+  }
+  const row = el('div', 'btn-row');
+  const test = el('button', 'btn tiny', s.oauth && s.state === 'needs_auth' ? '重新授权' : '重新连接');
+  test.type = 'button';
+  const del = el('button', 'btn tiny danger', '断开并删除');
+  del.type = 'button';
+  row.append(test, del);
+  box.appendChild(row);
+  test.addEventListener('click', async () => {
+    if (s.oauth && s.state === 'needs_auth' && s.catalogId) { connectMcpApp({ id: s.catalogId, name: s.name, auth: 'oauth' }); return; }
+    test.disabled = true;
+    test.textContent = '连接中…';
+    try {
+      const r = await api(`/api/mcp/${encodeURIComponent(s.id)}/test`, { method: 'POST' });
+      const srv = r.server || {};
+      toast(srv.state === 'ready' ? `「${s.name}」连上了，${srv.tools.length} 个工具` : `「${s.name}」没连上：${srv.error || srv.state}`, srv.state !== 'ready');
+    } catch (err) { toast(`连接失败：${err.message}`, true); }
+    await loadMcp();
+  });
+  del.addEventListener('click', async () => {
+    if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次断开'; return; }
+    try { await api(`/api/mcp/${encodeURIComponent(s.id)}`, { method: 'DELETE' }); toast(`已断开「${s.name}」`); loadMcp(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+  });
+  return box;
+}
+
+/** A URL in the device's own browser: the app shells' native call, else a new tab. */
+async function openSignInPage(url) {
+  if (typeof window.desk?.openExternal === 'function') {
+    try { if (await window.desk.openExternal(url)) return true; } catch { /* fall back */ }
+  }
+  try { window.open(url, '_blank', 'noopener'); } catch { /* a blocked pop-up: the row has the link */ }
+  return true;
+}
+
+/** 「连接」 on a catalog app. Token / Feishu details come from the row's own inputs. */
+async function connectMcpApp(app, extra = {}, btn = null) {
+  if (btn) { btn.disabled = true; btn.textContent = '连接中…'; }
+  try {
+    const out = await api(`/api/mcp/catalog/${encodeURIComponent(app.id)}/connect`, { method: 'POST', body: { origin: location.origin, ...extra } });
+    if (out.authorizeUrl) {
+      // The app's own sign-in page, in this device's browser (the computer's
+      // or the phone's); it comes back to this machine when done. This window
+      // never goes there itself: the row keeps a link in case nothing opened.
+      mcpUi.signIn = { app: app.id, url: out.authorizeUrl };
+      await openSignInPage(out.authorizeUrl);
+      toast(`在浏览器里登录「${app.name}」并点允许，完成后回到这里`);
+    } else {
+      toast(`正在连接「${app.name}」${app.auth === 'none' || app.auth === 'feishu' ? '（第一次会下载它，稍等）' : ''}`);
+    }
+    mcpUi.open = app.id;
+  } catch (err) {
+    toast(`连接失败：${err.message}`, true);
+  }
+  await loadMcp();
+}
+
+/** Under an app that is not connected yet: what 「连接」 needs. */
+function mcpConnectForm(app) {
+  const box = el('div', 'mcp-app-body');
+  box.appendChild(el('div', 'row-note', app.help || ''));
+  const go = el('button', 'btn primary tiny', '连接');
+  go.type = 'button';
+  if (app.auth === 'token') {
+    if (app.tokenUrl) {
+      const a = el('a', '', '去建一个 token ↗');
+      a.href = app.tokenUrl;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      box.appendChild(a);
+    }
+    const tok = document.createElement('input');
+    tok.className = 'field';
+    tok.type = 'password';
+    tok.autocomplete = 'new-password';
+    tok.placeholder = '粘贴 token';
+    box.appendChild(tok);
+    go.addEventListener('click', () => {
+      if (!tok.value.trim()) { toast('先把 token 贴进来', true); return; }
+      connectMcpApp(app, { token: tok.value.trim() }, go);
+    });
+  } else if (app.auth === 'feishu') {
+    const id = document.createElement('input');
+    id.className = 'field';
+    id.placeholder = 'App ID（已在「设置 → 飞书」填过就留空）';
+    id.autocomplete = 'off';
+    const secret = document.createElement('input');
+    secret.className = 'field';
+    secret.type = 'password';
+    secret.autocomplete = 'new-password';
+    secret.placeholder = 'App Secret（同上）';
+    box.append(id, secret);
+    go.addEventListener('click', () => connectMcpApp(app, { appId: id.value.trim(), appSecret: secret.value.trim() }, go));
+  } else {
+    go.addEventListener('click', () => connectMcpApp(app, {}, go));
+  }
+  const row = el('div', 'btn-row');
+  row.appendChild(go);
+  box.appendChild(row);
+  return box;
+}
+
 function renderMcp() {
-  const list = $('mcp-list');
+  const list = $('mcp-catalog');
   if (!list) return;
   list.innerHTML = '';
-  if (!mcpUi.servers.length) { list.appendChild(el('div', 'row-note', '还没有接任何应用。在下面添加一个。')); return; }
-  for (const s of mcpUi.servers) {
-    const row = el('div', 'vault-row');
-    const head = el('div', 'vault-head');
-    const title = el('div', 'vault-title');
-    title.appendChild(el('b', '', s.name));
-    const stateText = s.state === 'ready' ? `已连接 · ${s.tools.length} 个工具` : (MCP_STATE_TEXT[s.state] || s.state);
-    title.appendChild(el('small', '', [s.transport === 'http' ? hostOfUrl(s.url) : s.command, stateText].filter(Boolean).join(' · ')));
-    head.appendChild(title);
-    const test = el('button', 'btn tiny', '重新连接');
-    test.type = 'button';
-    const del = el('button', 'btn tiny danger', '删除');
-    del.type = 'button';
-    head.append(test, del);
-    row.appendChild(head);
-    if (s.state === 'failed' && s.error) row.appendChild(el('div', 'row-note', `原因：${s.error}`));
-
-    const opts = el('div', 'vault-edit');
-    // On / off
-    const onLbl = el('label', 'row-note');
-    const on = document.createElement('input');
-    on.type = 'checkbox';
-    on.checked = s.enabled;
-    onLbl.append(on, document.createTextNode(' 启用'));
-    on.addEventListener('change', () => patchMcp(s.id, { enabled: on.checked }, on.checked ? `已启用「${s.name}」` : `已停用「${s.name}」`));
-    // Ask or always
-    const trust = document.createElement('select');
-    trust.className = 'field';
-    trust.append(new Option('每次调用前先问我（只读的不问）', 'ask'), new Option('始终允许，不用问', 'always'));
-    trust.value = s.trust;
-    trust.addEventListener('change', () => patchMcp(s.id, { trust: trust.value }, trust.value === 'always' ? `「${s.name}」的工具以后不再问你` : `「${s.name}」的工具每次先问你`));
-    // Which bots
-    const who = document.createElement('select');
-    who.className = 'field';
-    who.appendChild(new Option('所有机器人都能用', 'all'));
-    for (const b of state.bots || []) who.appendChild(new Option(`只给「${b.name}」`, b.id));
-    who.value = s.bots === 'all' ? 'all' : (Array.isArray(s.bots) && s.bots[0]) || 'all';
-    who.addEventListener('change', () => patchMcp(s.id, { bots: who.value === 'all' ? 'all' : [who.value] }, '已保存'));
-    opts.append(onLbl, el('label', 'lbl', '要不要先问你'), trust, el('label', 'lbl', '哪些机器人能用'), who);
-    // Secrets: names only; new values replace the saved ones.
-    if (s.secrets.length) {
-      const sec = el('details', 'vault-add');
-      sec.appendChild(el('summary', '', '更新密钥'));
-      const inputs = s.secrets.map((name) => {
-        const i = document.createElement('input');
-        i.className = 'field';
-        i.type = 'password';
-        i.autocomplete = 'new-password';
-        i.placeholder = `${name}（留空不改）`;
-        i.dataset.secret = name;
-        sec.appendChild(i);
-        return i;
-      });
-      const save = el('button', 'btn primary tiny', '保存并重新连接');
-      save.type = 'button';
-      save.addEventListener('click', () => {
-        const secrets = {};
-        for (const i of inputs) if (i.value) secrets[i.dataset.secret] = i.value;
-        if (!Object.keys(secrets).length) { toast('没有要改的内容'); return; }
-        patchMcp(s.id, { secrets }, '已更新密钥，正在重新连接');
-      });
-      sec.appendChild(save);
-      opts.appendChild(sec);
-    }
-    if (s.tools.length) {
-      const tools = el('details', 'vault-add');
-      tools.appendChild(el('summary', '', `它提供的工具（${s.tools.length} 个）`));
-      for (const t of s.tools) {
-        const line = el('div', 'row-note');
-        line.appendChild(el('b', '', t.name));
-        line.appendChild(document.createTextNode(`${t.readOnly ? '（只读）' : ''}：${t.description}`));
-        tools.appendChild(line);
+  const q = String($('mcp-search')?.value || '').trim().toLowerCase();
+  const custom = mcpUi.servers.filter((s) => !s.catalogId).map((s) => ({ id: `custom-${s.id}`, name: s.name, category: '自己添加的', badge: s.name.slice(0, 1).toUpperCase(), color: '#7a5af8', desc: s.transport === 'http' ? hostOfUrl(s.url) : s.command, auth: 'custom', server: s }));
+  const apps = [...(mcpUi.apps || []), ...custom].filter((a) => !q || `${a.name} ${a.desc} ${a.category}`.toLowerCase().includes(q));
+  if (!apps.length) { list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
+  const cats = [...new Set(apps.map((a) => a.category))];
+  for (const cat of cats) {
+    list.appendChild(el('div', 'mcp-cat', cat));
+    for (const app of apps.filter((a) => a.category === cat)) {
+      const card = el('div', 'mcp-app');
+      const head = el('div', 'mcp-app-head');
+      const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));
+      badge.style.background = app.color || '#5b6474';
+      const meta = el('div', 'mcp-app-meta');
+      meta.appendChild(el('b', '', app.name));
+      meta.appendChild(el('small', '', app.desc || ''));
+      head.append(badge, meta);
+      const srv = app.server;
+      let btn;
+      if (srv && srv.state === 'ready') {
+        btn = el('button', 'mcp-ok', mcpStateLabel(srv));
+      } else if (srv) {
+        btn = el('button', `btn tiny${srv.state === 'needs_auth' || srv.state === 'failed' ? ' mcp-warn' : ''}`, mcpStateLabel(srv));
+      } else {
+        btn = el('button', 'btn tiny', '连接');
       }
-      opts.appendChild(tools);
+      btn.type = 'button';
+      head.appendChild(btn);
+      card.appendChild(head);
+      const body = srv ? mcpServerPanel(srv) : mcpConnectForm(app);
+      // Waiting for a sign-in: a link to the page, for when the browser did not open.
+      if (mcpUi.signIn?.app === app.id && srv?.state === 'needs_auth') {
+        const a = el('a', '', '浏览器没打开？点这里去登录 ↗');
+        a.href = mcpUi.signIn.url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.addEventListener('click', (e) => { e.preventDefault(); openSignInPage(mcpUi.signIn.url); });
+        body.prepend(a);
+      }
+      body.hidden = mcpUi.open !== app.id;
+      card.appendChild(body);
+      const toggle = () => { body.hidden = !body.hidden; mcpUi.open = body.hidden ? '' : app.id; };
+      btn.addEventListener('click', () => {
+        // One click is enough when there is nothing to type: an OAuth sign-in, or a ready Feishu app.
+        if (!srv && app.auth === 'oauth') { connectMcpApp(app, {}, btn); return; }
+        toggle();
+      });
+      meta.addEventListener('click', toggle);
+      list.appendChild(card);
     }
-    row.appendChild(opts);
-    test.addEventListener('click', async () => {
-      test.disabled = true;
-      test.textContent = '连接中…';
-      try {
-        const r = await api(`/api/mcp/${encodeURIComponent(s.id)}/test`, { method: 'POST' });
-        const srv = r.server || {};
-        toast(srv.state === 'ready' ? `「${s.name}」连上了，${srv.tools.length} 个工具` : `「${s.name}」没连上：${srv.error || srv.state}`, srv.state !== 'ready');
-      } catch (err) { toast(`连接失败：${err.message}`, true); }
-      await loadMcp();
-    });
-    del.addEventListener('click', async () => {
-      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次删除'; return; }
-      try { await api(`/api/mcp/${encodeURIComponent(s.id)}`, { method: 'DELETE' }); toast(`已删除「${s.name}」`); loadMcp(); } catch (err) { toast(`删除失败：${err.message}`, true); }
-    });
-    list.appendChild(row);
   }
 }
 
 function setupMcpForm() {
   if (!$('mcp-preset')) return;
   $('mcp-preset').addEventListener('change', (e) => applyMcpPreset(e.target.value));
+  $('mcp-search')?.addEventListener('input', renderMcp);
   $('mcp-transport').addEventListener('change', syncMcpTransport);
   for (const id of ['mcp-args', 'mcp-env', 'mcp-url', 'mcp-headers']) $(id).addEventListener('input', renderMcpSecretInputs);
   $('mcp-save').addEventListener('click', saveMcp);

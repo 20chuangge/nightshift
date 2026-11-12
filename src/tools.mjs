@@ -1948,6 +1948,68 @@ export function createRegistry(deps) {
 
   // --- registry surface ---------------------------------------------------
 
+  // --- connected apps (MCP), past the per-request tool limit ----------------
+  // Model APIs take at most 128 tools a request; one app can bring 80. Past
+  // MAX_DIRECT_TOOLS the rest are reached through these two (the agent turns
+  // mcp_call into the real tool before checking it, so approvals are the same).
+  add({
+    name: 'mcp_find_tools',
+    description: 'Find tools of the connected apps (MCP) that are not in your tool list: give words for what you want to do (e.g. "notion search", "create page"). Returns tool names, what they do and their parameters; call one with mcp_call.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What you want to do, a few words.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const words = String(args?.query || '').toLowerCase().split(/[\s,，、]+/).filter(Boolean);
+      const mine = api.grantedFor(ctx?.bot).filter((t) => t.mcp);
+      const score = (t) => words.reduce((n, w) => n + (t.name.toLowerCase().includes(w) ? 2 : 0) + (String(t.description).toLowerCase().includes(w) ? 1 : 0), 0);
+      const hits = mine.map((t) => [score(t), t]).filter(([n]) => n > 0).sort((a, b) => b[0] - a[0]).slice(0, 12).map(([, t]) => t);
+      return {
+        count: hits.length,
+        tools: hits.map((t) => ({ name: t.name, description: String(t.description).slice(0, 400), readOnly: Boolean(t.mcp.readOnly), parameters: t.parameters })),
+        ...(hits.length ? {} : { note: `no match; the connected apps have ${mine.length} tools - try other words` }),
+      };
+    },
+  });
+
+  add({
+    name: 'mcp_call',
+    description: 'Call a tool of a connected app (MCP) by its full name (mcp__...), found with mcp_find_tools. Same checks and approvals as calling it directly.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', description: 'The full tool name, e.g. mcp__m1a2b__notion-search.' },
+        arguments: { type: 'object', description: 'Its arguments, as its parameters say.' },
+      },
+      required: ['tool'],
+      additionalProperties: false,
+    },
+    async run() {
+      // The agent replaces this call with the tool it names before running anything.
+      throw toolError('MCP_CALL_UNRESOLVED', 'mcp_call needs "tool": a full mcp__... name from mcp_find_tools');
+    },
+  });
+
+  const MAX_DIRECT_TOOLS = 110;
+
+  /** This bot's tools for one request: everything, or past the limit the MCP overflow behind the two helpers. */
+  function requestTools(bot) {
+    const granted = api.grantedFor(bot);
+    const own = granted.filter((t) => !t.mcp && t.name !== 'mcp_find_tools' && t.name !== 'mcp_call');
+    const apps = granted.filter((t) => t.mcp);
+    if (own.length + apps.length <= MAX_DIRECT_TOOLS) return { direct: [...own, ...apps], hidden: [] };
+    // Read-only tools first: looking things up is what a bot does most.
+    const room = Math.max(0, MAX_DIRECT_TOOLS - own.length - 2);
+    const ordered = [...apps.filter((t) => t.mcp.readOnly), ...apps.filter((t) => !t.mcp.readOnly)];
+    return { direct: [...own, ...ordered.slice(0, room), tools.get('mcp_find_tools'), tools.get('mcp_call')], hidden: ordered.slice(room) };
+  }
+
   const api = {
     tools,
     get(name) {
@@ -1971,6 +2033,7 @@ export function createRegistry(deps) {
       if (name === 'task_finish' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       // Tools of connected MCP servers: Settings → 连接应用 says which bots get them.
       if (name.startsWith('mcp__')) return Boolean(api.mcpGate?.(bot, name));
+      if (name === 'mcp_find_tools' || name === 'mcp_call') return [...tools.keys()].some((n) => n.startsWith('mcp__') && api.mcpGate?.(bot, n));
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
@@ -1980,15 +2043,18 @@ export function createRegistry(deps) {
     },
     /** OpenAI function-tool schemas for the model call. */
     schemasFor(bot) {
-      return api.grantedFor(bot).map((t) => ({
+      return requestTools(bot).direct.map((t) => ({
         type: 'function',
         function: { name: t.name, description: t.description, parameters: t.parameters },
       }));
     },
     /** Human-readable tool list for the system prompt. */
     renderToolDigest(bot) {
-      return api
-        .grantedFor(bot)
+      const { direct, hidden } = requestTools(bot);
+      const more = hidden.length
+        ? `\n- (+${hidden.length} more tools of connected apps: ${[...new Set(hidden.map((t) => String(t.description).match(/^［([^］]+)］/)?.[1] || 'app'))].join(', ')}; find them with mcp_find_tools, call with mcp_call)`
+        : '';
+      return direct
         .map((t) => {
           const risk = typeof t.risk === 'string' ? t.risk : 'LOW/HIGH depending on arguments';
           // A connected app can bring dozens of tools: one line each here; the
@@ -1996,7 +2062,7 @@ export function createRegistry(deps) {
           if (t.mcp) return `- ${t.name}: ${String(t.description).split(/(?<=[.。!！?？])\s/)[0].slice(0, 140)}`;
           return `- ${t.name} (${risk}): ${t.description}`;
         })
-        .join('\n');
+        .join('\n') + more;
     },
   };
 

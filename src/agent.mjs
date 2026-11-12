@@ -864,6 +864,12 @@ export class AgentRuntime {
    *   { termination }  -> needs_approval (unattended) or cancelled
    */
   async executeToolCall({ call, ctx, bot, turnId, baseEvent, messages }) {
+    // mcp_call is a way to reach a connected app's tool that did not fit in the
+    // request: from here on it IS that tool (grant, approval, record).
+    if (call.name === 'mcp_call' && String(call.arguments?.tool || '').startsWith('mcp__')) {
+      const inner = call.arguments.arguments;
+      call = { ...call, name: String(call.arguments.tool), arguments: inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : {} };
+    }
     const name = call.name;
     const args = call.arguments || {};
     const tool = this.registry.get(name);

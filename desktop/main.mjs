@@ -878,6 +878,11 @@ ipcMain.handle('desk:machines-attention', async () => {
 // brings the window back and tells the page what it was about.
 const liveNotes = new Set();
 ipcMain.handle('desk:clipboard-read', () => clipboard.readText());
+ipcMain.handle('desk:open-external', async (_event, url) => {
+  if (!/^https?:\/\//i.test(String(url))) return false;
+  await shell.openExternal(String(url));
+  return true;
+});
 ipcMain.handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
 
 ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {

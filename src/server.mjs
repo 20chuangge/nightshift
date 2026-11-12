@@ -78,7 +78,7 @@ import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
-import { createFeishu } from './feishu.mjs';
+import { createFeishu, loadFeishu } from './feishu.mjs';
 import { createPeers } from './peers.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
@@ -443,7 +443,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   state.videoJobs = refs.videoJobs;
 
   // Connected apps (MCP): their tools join the registry while connected.
-  state.mcp = createMcpManager({ registry, workspaceDir, version: VERSION, emit: () => bus.emit({ type: 'settings.changed', section: 'mcp' }) });
+  state.mcp = createMcpManager({ registry, workspaceDir, version: VERSION, readFeishu: () => loadFeishu(path.join(P.dataDir, 'feishu.json')), emit: () => bus.emit({ type: 'settings.changed', section: 'mcp' }) });
   registry.mcpGate = (bot, name) => state.mcp.allowed(bot, name);
   registry.mcpTrust = (name) => state.mcp.trustFor(name);
   await state.mcp.load().catch((err) => console.error('[assistant] mcp.json:', err.message));
@@ -1408,6 +1408,26 @@ route('DELETE', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { stat
   return out;
 });
 route('POST', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)\/test$/, async (_req, _res, { state, params }) => ({ server: await state.mcp.test(params.id) }));
+
+// The app catalog: 「连接」 per app.
+//   GET  /api/mcp/catalog               -> {apps:[{id, name, category, auth, help, server}]}
+//   POST /api/mcp/catalog/:id/connect   {origin?, token?, appId?, appSecret?} -> {server} | {authorizeUrl, server}
+//   GET  /api/mcp/oauth/callback        the app's sign-in page comes back here (no session needed)
+route('GET', /^\/api\/mcp\/catalog$/, async (_req, _res, { state }) => ({ apps: state.mcp.catalog() }));
+route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/connect$/, async (_req, _res, { state, body, params }) => {
+  const out = await state.mcp.connectCatalog(params.id, body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  return out;
+});
+route('GET', /^\/api\/mcp\/oauth\/callback$/, async (_req, res, { state, query }) => {
+  const out = await state.mcp.oauthCallback(Object.fromEntries(query.entries()));
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const title = out.ok ? `已连接「${esc(out.name)}」` : '没有连上';
+  const text = out.ok ? '可以关掉这个页面，回到夜班。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
+  res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);
+});
 
 route('GET', /^\/api\/vision$/, async (_req, _res, { state }) => visionModule.publicVision(state.vision, visionCtx(state)));
 

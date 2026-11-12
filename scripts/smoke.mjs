@@ -139,6 +139,7 @@ async function main() {
     await stage('coding CLIs on the subscription', () => scenarioCliAgents({ toolsMod, home }));
     await stage('screen clipboard', () => scenarioClipboard({ home }));
     await stage('connected apps (MCP)', () => scenarioMcp({ home, toolsMod }));
+    await stage('app catalog and sign-in (MCP OAuth)', () => scenarioMcpCatalog({ home, toolsMod }));
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
   } finally {
@@ -3552,6 +3553,152 @@ async function scenarioMcp({ home, toolsMod }) {
       /if \(tool\.mcp && verdict\.decision === DECISION\.AUTO\) \{[\s\S]{0,200}t\.trust !== 'always' && !t\.readOnly/.test(agentSrc));
     check('M4 mcp settings: 连接应用 page with presets, ${name} key boxes, trust and bots per server',
       page.includes('id="sec-mcp"') && page.includes('data-set-target="sec-mcp"') && page.includes('function renderMcpSecretInputs()') && page.includes("new Option('始终允许，不用问', 'always')") && page.includes("if (section === 'mcp') loadMcp()"));
+  }
+}
+
+async function scenarioMcpCatalog({ home, toolsMod }) {
+  const mcp = await import('../src/mcp.mjs');
+  const crypto = await import('node:crypto');
+  const fake = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-mcp.mjs');
+  const wait = async (fn, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
+  // A stand-in app: an MCP endpoint that wants a bearer token, and its OAuth server.
+  const seen = { grants: [], registered: null, challenge: '' };
+  const valid = new Set(['TOK']);
+  const srv = http.createServer(async (req, res) => {
+    const origin = 'http://' + req.headers.host;
+    let body = '';
+    for await (const c of req) body += c;
+    const json = (code, obj, headers = {}) => { res.writeHead(code, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(obj)); };
+    const url = new URL(req.url, origin);
+    if (url.pathname === '/mcp') {
+      const auth = String(req.headers.authorization || '').replace(/^Bearer /, '');
+      if (!valid.has(auth)) return json(401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer resource_metadata="' + origin + '/.well-known/oauth-protected-resource/mcp"' });
+      if (req.method === 'DELETE') { res.writeHead(200); return res.end(); }
+      const m = JSON.parse(body);
+      if (m.id === undefined) { res.writeHead(202); return res.end(); }
+      if (m.method === 'initialize') return json(200, { jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: {}, serverInfo: { name: 'fake-app' } } });
+      if (m.method === 'tools/list') return json(200, { jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'hello', description: 'Say hello.', inputSchema: { type: 'object', properties: {} } }] } });
+      return json(200, { jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'hello with ' + auth }] } });
+    }
+    if (url.pathname === '/.well-known/oauth-protected-resource/mcp') return json(200, { resource: origin + '/mcp', authorization_servers: [origin + '/as'], scopes_supported: ['default'] });
+    if (url.pathname === '/.well-known/oauth-authorization-server/as') return json(200, { issuer: origin + '/as', authorization_endpoint: origin + '/as/authorize', token_endpoint: origin + '/as/token', registration_endpoint: origin + '/as/register', code_challenge_methods_supported: ['S256'] });
+    if (url.pathname === '/as/register') { seen.registered = JSON.parse(body); return json(201, { client_id: 'cid-1' }); }
+    if (url.pathname === '/as/token') {
+      const p = new URLSearchParams(body);
+      seen.grants.push(p.get('grant_type'));
+      if (p.get('grant_type') === 'authorization_code') {
+        const ok = p.get('code') === 'code-1' && p.get('client_id') === 'cid-1'
+          && crypto.createHash('sha256').update(p.get('code_verifier') || '').digest('base64url') === seen.challenge;
+        if (!ok) return json(400, { error: 'invalid_grant' });
+        valid.add('AT1');
+        return json(200, { access_token: 'AT1', refresh_token: 'RT1', expires_in: 3600, token_type: 'Bearer' });
+      }
+      if (p.get('grant_type') === 'refresh_token' && p.get('refresh_token') === 'RT1') { valid.add('AT2'); return json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }); }
+      return json(400, { error: 'invalid_grant' });
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const appBase = 'http://127.0.0.1:' + srv.address().port;
+  const catalog = [
+    { id: 'fake-oauth', name: '假应用', category: '效率', auth: 'oauth', transport: 'http', url: appBase + '/mcp' },
+    { id: 'fake-token', name: '假令牌', category: '开发', auth: 'token', transport: 'http', url: appBase + '/mcp', headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN' },
+    { id: 'fake-feishu', name: '假飞书', category: '通信', auth: 'feishu', transport: 'stdio', command: process.execPath, args: [fake, '-a', '${APP_ID}', '-s', '${APP_SECRET}'] },
+  ];
+  let feishu = { appId: 'cli_test', appSecret: 'sec_test' };
+  const registry = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
+  const m = mcp.createMcpManager({ registry, workspaceDir: path.join(home, 'workspace'), catalog, readFeishu: async () => feishu });
+  await m.load();
+  try {
+    const out = await m.connectCatalog('fake-oauth', { origin: 'http://127.0.0.1:9' });
+    const au = new URL(out.authorizeUrl);
+    seen.challenge = au.searchParams.get('code_challenge');
+    const st = au.searchParams.get('state');
+    check('M5 oauth: discovery from the 401, client registered with this hub\'s callback, PKCE S256, state and resource in the sign-in URL',
+      au.pathname === '/as/authorize' && au.searchParams.get('client_id') === 'cid-1' && au.searchParams.get('code_challenge_method') === 'S256'
+      && au.searchParams.get('redirect_uri') === 'http://127.0.0.1:9/api/mcp/oauth/callback' && seen.registered?.redirect_uris?.[0] === 'http://127.0.0.1:9/api/mcp/oauth/callback'
+      && seen.registered?.token_endpoint_auth_method === 'none' && au.searchParams.get('resource') === appBase + '/mcp' && st.length >= 30, out.authorizeUrl);
+    const id = out.server.id;
+    check('M5 oauth: before sign-in the app waits for it (no retries)', (await wait(() => m.list().find((x) => x.id === id)?.state === 'needs_auth', 3000)));
+    const wrong = await m.oauthCallback({ state: 'nope', code: 'code-1' });
+    const good = await m.oauthCallback({ state: st, code: 'code-1' });
+    const again = await m.oauthCallback({ state: st, code: 'code-1' });
+    check('M5 oauth callback: an unknown state does nothing; the right one signs in; it works only once', !wrong.ok && good.ok && !again.ok, JSON.stringify([wrong, good, again]));
+    const ready = await wait(() => m.list().find((x) => x.id === id)?.state === 'ready');
+    const name = mcp.mcpToolName(id, 'hello');
+    check('M5 oauth: connected with the access token; its tools are there', ready && (await registry.get(name).run({}, {})).text === 'hello with AT1');
+    const saved = await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8');
+    const pub = m.list().find((x) => x.id === id);
+    check('M5 oauth: tokens only in the vault (not mcp.json, not the list); no key boxes for a signed-in app',
+      !/AT1|RT1/.test(saved) && !/AT1|RT1/.test(JSON.stringify(m.list())) && pub.oauth && pub.secrets.length === 0 && pub.catalogId === 'fake-oauth');
+    valid.delete('AT1'); // the app revokes the old token
+    await m.test(id);
+    const renewed = await wait(() => m.list().find((x) => x.id === id)?.state === 'ready');
+    check('M5 oauth refresh: a revoked token is renewed with the refresh token and it reconnects', renewed && seen.grants.includes('refresh_token') && (await registry.get(name).run({}, {})).text === 'hello with AT2', JSON.stringify(seen.grants));
+    valid.delete('AT2');
+    seen.grants.length = 0;
+    await m.test(id);
+    const lost = await wait(() => m.list().find((x) => x.id === id)?.state === 'needs_auth', 5000);
+    check('M5 oauth refresh: when renewing fails too, it asks to sign in again instead of retrying', lost && /重新授权/.test(m.list().find((x) => x.id === id).error));
+    // Token apps
+    let noTok = null;
+    try { await m.connectCatalog('fake-token', {}); } catch (e) { noTok = e; }
+    const tok = await m.connectCatalog('fake-token', { token: 'TOK' });
+    const tokReady = await wait(() => m.list().find((x) => x.id === tok.server.id)?.state === 'ready');
+    check('M5 token app: needs the token; with it, it connects (the token in the header, kept in the vault)', noTok?.code === 'MCP_TOKEN_NEEDED' && tokReady && !(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8')).includes('"TOK"'));
+    // Feishu from settings
+    const fs1 = await m.connectCatalog('fake-feishu', {});
+    const fsReady = await wait(() => m.list().find((x) => x.id === fs1.server.id)?.state === 'ready');
+    const envOut = await registry.get(mcp.mcpToolName(fs1.server.id, 'env')).run({}, {});
+    const fsPub = m.list().find((x) => x.id === fs1.server.id);
+    check('M5 feishu app: one click uses the App ID / Secret from Settings → 飞书, read when it starts; nothing copied',
+      fsReady && /args -a cli_test -s sec_test/.test(envOut.text) && fsPub.secrets.length === 0 && !JSON.stringify(m.list()).includes('sec_test') && !(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8')).includes('sec_test'), envOut.text);
+    await m.remove(fs1.server.id);
+    feishu = null;
+    let noFs = null;
+    try { await m.connectCatalog('fake-feishu', {}); } catch (e) { noFs = e; }
+    check('M5 feishu app: without a Feishu app it says where to set one up', noFs?.code === 'MCP_FEISHU_NEEDED' && /设置 → 飞书/.test(noFs.message));
+  } finally {
+    m.stopAll();
+    srv.close();
+  }
+  // An app with very many tools (Notion has 77): requests stay under the APIs' 128-tool limit.
+  {
+    const reg = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
+    reg.mcpGate = () => true;
+    for (let i = 0; i < 100; i += 1) {
+      const name = `mcp__mbig__tool-${i}`;
+      reg.tools.set(name, { name, description: i === 77 ? '［大应用］Create a calendar event.' : `［大应用］Tool number ${i}.`, risk: () => ({ risk: 'MEDIUM' }), parameters: { type: 'object', properties: {} }, mcp: { serverId: 'mbig', tool: `tool-${i}`, readOnly: i < 10 } });
+    }
+    const bot = { id: 'b1', tools: [...reg.tools.keys()].filter((n) => !n.startsWith('mcp_')) };
+    const schemas = reg.schemasFor(bot).map((x) => x.function.name);
+    const found = await reg.get('mcp_find_tools').run({ query: 'calendar event' }, { bot });
+    check('M6 tool limit: past 110 tools the rest of an app\'s tools sit behind mcp_find_tools / mcp_call, read-only ones stay direct',
+      schemas.length <= 110 && schemas.includes('mcp_find_tools') && schemas.includes('mcp_call') && schemas.includes('mcp__mbig__tool-0') && !schemas.includes('mcp__mbig__tool-99')
+      && /more tools of connected apps: 大应用/.test(reg.renderToolDigest(bot)), String(schemas.length));
+    check('M6 tool limit: mcp_find_tools finds a hidden tool with its parameters', found.tools[0]?.name === 'mcp__mbig__tool-77' && found.tools[0].parameters?.type === 'object');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('M6 tool limit: mcp_call becomes the named tool before grants and approvals', /if \(call\.name === 'mcp_call' && String\(call\.arguments\?\.tool \|\| ''\)\.startsWith\('mcp__'\)\) \{[\s\S]{0,300}call = \{ \.\.\.call, name: String\(call\.arguments\.tool\)/.test(agentSrc) && agentSrc.indexOf("call.name === 'mcp_call'") < agentSrc.indexOf('const granted = this.registry.isGranted(bot, name);'));
+    const small = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
+    small.mcpGate = () => true;
+    small.tools.set('mcp__ms__a', { name: 'mcp__ms__a', description: '［小］A.', risk: 'LOW', parameters: { type: 'object', properties: {} }, mcp: { serverId: 'ms', tool: 'a', readOnly: true } });
+    const smallNames = small.schemasFor({ id: 'b', tools: [] }).map((x) => x.function.name);
+    check('M6 tool limit: under the limit every app tool is direct and the helpers are not added', smallNames.includes('mcp__ms__a') && !smallNames.includes('mcp_call'));
+  }
+  // The hub: catalog, callback without a session.
+  {
+    const cat = await api('/api/mcp/catalog');
+    const kinds = Object.fromEntries((cat.json?.apps || []).map((a) => [a.id, a.auth]));
+    check('M5 catalog api: Notion signs in (OAuth), GitHub takes a token, 飞书 uses the Feishu app, files need nothing',
+      kinds.notion === 'oauth' && kinds.github === 'token' && kinds.feishu === 'feishu' && kinds.filesystem === 'none');
+    const res = await fetch(base + '/api/mcp/oauth/callback?state=bad&code=x').catch(() => null);
+    const authSrc = await readText('../src/auth.mjs');
+    check('M5 oauth callback route: reachable without a session (the one-time state is the check); a bad state changes nothing',
+      authSrc.includes("if (value === '/api/mcp/oauth/callback' && verb === 'GET') return true;") && res?.status === 400 && /已经过期或无效/.test(await res.text()));
+    const page = await readText('../public/index.html');
+    check('M5 catalog page: search, categories, 连接 / ✓ 已连接, one-click OAuth opens the app\'s page, custom form kept',
+      page.includes('id="mcp-search"') && page.includes('id="mcp-catalog"') && page.includes("if (!srv && app.auth === 'oauth') { connectMcpApp(app, {}, btn); return; }")
+      && page.includes('await openSignInPage(out.authorizeUrl);') && !page.includes('location.href = out.authorizeUrl') && page.includes('自己添加一个（目录里没有的应用）'));
   }
 }
 
