@@ -3752,6 +3752,32 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         && srvSrc.includes('/api\\/desktops\\/install-full$/') && srvSrc.includes("sudoInstall('xfce4 xfce4-terminal dbus-x11'") && srvSrc.includes("if (getDesktopMode() === 'full') setTimeout(() => startFullDesktopInstall(state, { quiet: true }), 20000)")
         && clipSrc.includes('export function sudoInstall(pkg,') && pageSrc.includes('id="desktop-full-install"') && pageSrc.includes('id="desktop-mode-none"'));
     }
+    {
+      // A message while the bot is busy: answered at once from what it is doing, and handed to the running turn.
+      const { AgentRuntime } = await import('../src/agent.mjs');
+      const events = [];
+      let seenPrompt = null;
+      const model = { provider: 'fake', model: 'fake', complete: async (msgs, opts) => { seenPrompt = { msgs, opts }; return { content: '在下载安装 XFCE，已经 3 分钟，还在下载。', usage: null }; } };
+      const bot = { id: 'm12bot', name: '助理', role: '', tools: [], policy: {} };
+      const rt = new AgentRuntime({ config: { workspaceDir: path.join(home, 'workspace') }, registry: { schemasFor: () => [] }, model, bots: { getBot: async () => bot, listBots: async () => [bot] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) } });
+      rt.active.set('turn_main', { controller: new AbortController(), botId: 'm12bot', task: '帮我安装 XFCE', startedAt: Date.now() - 200000, steps: 2, step: { name: 'shell', args: { command: 'sudo apt-get install -y xfce4' }, startedAt: Date.now() - 180000 }, last: '', inbox: [], depth: 0, group: false, unattended: false });
+      const busy = rt.busyTurn('m12bot');
+      const r = await rt.aside({ botId: 'm12bot', text: '为什么这么慢呀' });
+      const sys = seenPrompt?.msgs?.[0]?.content || '';
+      check('M12 busy bot: a message is answered at once from what it is doing (task, step, time), without tools, and handed to the running turn',
+        busy?.turnId === 'turn_main' && r.text.includes('XFCE') && /帮我安装 XFCE/.test(sys) && /shell/.test(sys) && /sudo apt-get install -y xfce4/.test(sys) && /已经 1\d\d 秒/.test(sys)
+        && Array.isArray(seenPrompt.opts.tools) && seenPrompt.opts.tools.length === 0 && rt.active.get('turn_main').inbox[0] === '为什么这么慢呀'
+        && events.some((e) => e.type === 'message' && e.aside && e.turnId === r.turnId) && events.some((e) => e.type === 'turn.end' && e.aside), sys.slice(0, 300));
+      const agentSrc2 = await readText('../src/agent.mjs');
+      check('M12 busy bot: the running turn reads the human\'s new words before its next step; the chat route and Feishu answer instead of starting a second turn; the page shows it without disturbing the running one',
+        agentSrc2.includes('while (live.inbox.length) {') && agentSrc2.indexOf('while (live.inbox.length) {') < agentSrc2.indexOf('response = await turnModel.complete(messages, {')
+        && srvSrc.includes('if (!h && state.runtime.busyTurn?.(bot.id)) {') && (await readText('../src/feishu.mjs')).includes('if (o.runtime.busyTurn?.(id) && typeof o.runtime.aside === \'function\') {')
+        && pageSrc.includes('if (ev.aside) {') && pageSrc.indexOf('if (ev.aside) {') < pageSrc.indexOf("    case 'turn.start':\n      if (isGroupMode()"));
+    }
+    check('M13 phone home page: the bot list is a page of its own (main bot big on top, last message and time per row, search and settings at the bottom); a bot opens the chat, a back arrow returns; the phone starts there',
+      pageSrc.includes("document.body.classList.add('m-home');") && pageSrc.includes("document.body.classList.remove('m-home');") && pageSrc.includes('id="home-search"') && pageSrc.includes('function filterHome()')
+      && pageSrc.includes('function homeTime(ts)') && pageSrc.includes("row.appendChild(el('span', 'bot-time', when));") && pageSrc.includes("${bot.primary ? ' is-primary' : ''}")
+      && pageSrc.includes('.sidebar.open .bot.is-primary .av { --av-size: 104px !important; }') && pageSrc.includes('class="nav-back-ico"') && pageSrc.includes('else if (isMobile()) openSidebar();'));
     check('M10 iPhone home-screen app: header below the clock, a page that never scrolls up, no second home-bar gap, 16px text boxes so typing does not zoom', pageSrc.includes("if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');") && /position: fixed; top: 0; left: 0; right: 0;\s+height: var\(--app-height, 100dvh\);/.test(pageSrc) && pageSrc.includes('html.ios-standalone, html.ios-standalone body { overflow: hidden; }') && pageSrc.includes('html.ios-short-vp { --safe-b: 0px; }') && pageSrc.includes('html.ios textarea, html.ios select {') && pageSrc.includes('font-size: 16px !important;') && pageSrc.includes('.chat-head { padding: calc(var(--s2) + var(--safe-t)) var(--s4) var(--s2);'));
     check('M10 iPhone: another machine opened from the home-screen app (iOS in-app browser, its own bars) is laid out as a browser page, not under the clock', pageSrc.includes('const gap = (window.screen?.height || 0) - window.innerHeight;') && pageSrc.includes('const standalone = flagged && gap < 100;') && pageSrc.includes("if (isIphone && standalone && gap >= 40) document.documentElement.classList.add('ios-short-vp');"));
     check('M10 iPhone: full-screen settings and the page viewer start below the clock; the status bar height is known per screen size', /\.settings-modal \{\s+width: 100%; height: 100%; max-height: none;\s+border: 0; border-radius: 0;[\s\S]{0,120}padding-top: var\(--safe-t\);/.test(pageSrc) && pageSrc.includes('.page-viewer { padding-top: var(--safe-t); }') && pageSrc.includes('({ 956: 62, 932: 59, 926: 47, 896: 48, 874: 62, 852: 59, 844: 47, 812: 50 })[h]'));
@@ -4475,7 +4501,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const page = await readText('../public/index.html');
     check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
-    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text, botId || state.botId))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
+    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text, botId || state.botId))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && !page.includes('id="tts-voice"') && page.includes('id="tts-auto"') && page.includes('每个机器人的声音在「管理助手」里选'));
   }
   // Tailscale key on a real machine: the write must end its input (cat waits for it), and a failure is said.
   {

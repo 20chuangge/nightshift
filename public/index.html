@@ -2788,6 +2788,67 @@
   .audit-row.bad .audit-tag { color: #f07060; }
 
   /* bot abilities ------------------------------------------------------- */
+  /* phone home page (Grok-style): the bot list is a page of its own */
+  .bot-time, .home-search, .nav-back-ico { display: none; }
+  @media (max-width: 860px) {
+    .nav-menu-ico { display: none; }
+    .nav-back-ico { display: block; }
+    /* home and chat are two pages: switch at once, no drawer slide */
+    .sidebar { transition: none; }
+    body.m-home #sidebar-scrim { display: none; }
+    .sidebar.open {
+      left: 0; right: 0; top: 0; bottom: 0; width: 100%; max-width: none;
+      border-right: 0; box-shadow: none; background: var(--bg);
+      padding-top: calc(var(--safe-t) + 6px); padding-bottom: 0;
+      transition: none;
+    }
+    body.m-home .chat, body.m-home .panel { visibility: hidden; }
+    .sidebar.open .sidebar-resizer, .sidebar.open #sidebar-close { display: none; }
+    .sidebar.open .side-top { padding: 6px 16px 4px; gap: 10px; border-bottom: 0; }
+    .sidebar.open .side-brand { flex: 0 1 auto; width: auto; max-width: 72%; border-radius: 999px; padding: 6px 14px 6px 6px; background: var(--panel); }
+    .sidebar.open .new-bot { margin-left: auto; }
+    .sidebar.open #new-bot-btn { width: 46px; height: 46px; border-radius: 50%; background: var(--panel); border: 1px solid var(--border-soft); }
+    .sidebar.open #new-bot-btn svg { width: 22px; height: 22px; }
+    .sidebar.open .side-head { display: none; }
+    .sidebar.open #groups-section .side-head { display: flex; padding: 14px 20px 4px; }
+    .sidebar.open .sidebar-scroll { padding-bottom: calc(96px + var(--safe-b)); }
+    .sidebar.open .bot-list { padding: 0; gap: 0; }
+    .sidebar.open .bot, .sidebar.open .group {
+      min-height: 78px; padding: 12px 20px; gap: 14px; border-radius: 0; border: 0; background: transparent;
+    }
+    .sidebar.open .bot.active { background: transparent; border: 0; }
+    .sidebar.open .bot:active, .sidebar.open .group:active { background: var(--panel); }
+    .sidebar.open .bot .av { --av-size: 54px !important; }
+    .sidebar.open .bot-name { font-size: 17px; font-weight: 650; }
+    .sidebar.open .bot-name .badge { display: none; }
+    .sidebar.open .bot-preview { font-size: 14.5px; color: var(--muted); margin-top: 4px; }
+    .sidebar.open .bot-time { display: block; align-self: flex-start; margin-top: 4px; flex: none; color: var(--dim); font-size: 13px; }
+    .sidebar.open .bot-more { opacity: .45; }
+    /* the main bot: big and centred at the top */
+    .sidebar.open .bot.is-primary { flex-direction: column; gap: 10px; padding: 18px 20px 26px; min-height: 0; }
+    .sidebar.open .bot.is-primary .av { --av-size: 104px !important; }
+    .sidebar.open .bot.is-primary .bot-text { flex: none; text-align: center; }
+    .sidebar.open .bot.is-primary .bot-name { justify-content: center; font-size: 15px; font-weight: 500; }
+    .sidebar.open .bot.is-primary .bot-preview, .sidebar.open .bot.is-primary .bot-time, .sidebar.open .bot.is-primary .bot-more { display: none; }
+    /* bottom: settings and a search pill, floating */
+    .sidebar.open .sidebar-bottom {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+      display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 0;
+      padding: 12px 16px calc(12px + var(--safe-b));
+      background: linear-gradient(to top, var(--bg) 60%, transparent);
+    }
+    .sidebar.open .side-actions { order: -1; padding: 0; width: auto; flex: none; margin: 0; }
+    .sidebar.open #settings-btn { width: 54px; height: 54px; border-radius: 50%; justify-content: center; padding: 0; background: var(--panel); border: 1px solid var(--border-soft); }
+    .sidebar.open #settings-btn span:not(.dot) { display: none; }
+    .sidebar.open #settings-btn svg { width: 22px; height: 22px; margin: 0; }
+    .sidebar.open #settings-btn .dot { position: absolute; top: 10px; right: 10px; }
+    .sidebar.open .home-search {
+      flex: 1; display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 18px;
+      border-radius: 999px; background: var(--panel); border: 1px solid var(--border-soft); color: var(--dim);
+    }
+    .sidebar.open .home-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 16px; }
+  }
+
   /* bot settings: a calm list - who it is, its model, what it may do, approvals */
   #botedit-sheet { display: flex; flex-direction: column; }
   .be-body { padding: var(--s5); }
@@ -3182,6 +3243,10 @@
       </div><!-- /sidebar-scroll -->
 
       <div class="sidebar-bottom" id="sidebar-bottom">
+        <label class="home-search" for="home-search">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="home-search" type="search" placeholder="搜索" autocomplete="off" enterkeyhint="search" />
+        </label>
         <div class="side-actions">
           <button class="side-action" id="settings-btn" type="button" title="设置">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="7" cy="17" r="2"/></svg>
@@ -3198,7 +3263,8 @@
       <div class="conn-banner" id="conn-banner" role="status" hidden><span id="conn-text"></span><button class="btn tiny" id="conn-retry" type="button">重试</button><button class="btn tiny" id="conn-local" type="button" hidden>切换到本机</button></div>
       <div class="chat-head">
         <button class="icon-btn" id="nav-toggle" type="button" aria-label="打开助手列表" aria-expanded="false" title="助手列表">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          <svg class="nav-menu-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          <svg class="nav-back-ico" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <div class="chat-title-wrap">
           <button class="av chat-avatar" id="chat-avatar" type="button" aria-label="更换头像" title="更换头像"><span class="av-face"></span></button>
@@ -3457,16 +3523,13 @@
             <button class="btn tiny danger" id="voice-clear" type="button" hidden>清除语音密钥</button>
           </div>
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">朗读回复</div>
-          <div class="row-note" id="tts-state">用上面同一个语音服务和密钥。</div>
-          <label class="lbl" for="tts-voice">默认声音（每个机器人可以在「管理助手」里单独选）</label>
-          <select class="field" id="tts-voice"></select>
+          <div class="row-note" id="tts-state">用上面同一个语音服务和密钥。每个机器人的声音在「管理助手」里选。</div>
           <label class="lbl" for="tts-auto">自动朗读</label>
           <select class="field" id="tts-auto">
             <option value="voice">我用语音说话时，回复也读出来</option>
             <option value="always">每条回复都读出来</option>
             <option value="never">不自动读（点回复下面的「朗读」）</option>
           </select>
-          <div class="btn-row"><button class="btn tiny" id="tts-try" type="button">试听</button></div>
         </div>
         <div class="voice-set" id="vision-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">看图</div>
@@ -4128,7 +4191,7 @@
         <select class="field" id="botedit-voice" aria-label="朗读声音"></select>
         <button class="btn" id="botedit-voice-try" type="button">试听</button>
       </div>
-      <div class="be-hint">它的回复读出来用这个声音，飞书里的语音回复也是。选「默认」就跟着 设置 → 模型 → 朗读回复。</div>
+      <div class="be-hint">它的回复读出来用这个声音，飞书里的语音回复也是。什么时候自动读，在 设置 → 模型 → 朗读回复。</div>
     </section>
     <section class="be-section">
       <div class="be-section-title">它能做什么</div>
@@ -4755,6 +4818,31 @@ function padName(name) {
 }
 
 /** Last-message preview for the sidebar row; role when there is nothing yet. */
+/** Like a messenger's list: the time today (下午5:57), yesterday, the weekday this week, else the date. */
+function homeTime(ts) {
+  const t = ts ? new Date(ts) : null;
+  if (!t || Number.isNaN(t.getTime())) return '';
+  const lang = window.deskI18n?.lang === 'en' ? 'en' : 'zh-CN';
+  const now = new Date();
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(now) - day(t)) / 86400000);
+  try {
+    if (days === 0) return t.toLocaleTimeString(lang, { hour: 'numeric', minute: '2-digit', hour12: true });
+    if (days === 1) return new Intl.RelativeTimeFormat(lang, { numeric: 'auto' }).format(-1, 'day');
+    if (days > 1 && days < 7) return t.toLocaleDateString(lang, { weekday: 'long' });
+    return t.toLocaleDateString(lang, { month: 'numeric', day: 'numeric' });
+  } catch { return ''; }
+}
+
+/** The home page's search: bots and groups whose name, role or last message match. */
+function filterHome() {
+  const q = String($('home-search')?.value || '').trim().toLowerCase();
+  for (const row of document.querySelectorAll('#bot-list .bot, #group-list .group')) {
+    const hay = row.dataset.search || row.textContent.toLowerCase();
+    row.hidden = Boolean(q) && !hay.includes(q);
+  }
+}
+
 function previewText(bot) {
   const p = bot && bot.preview;
   const text = p && typeof p.text === 'string' ? p.text.replace(/\s+/g, ' ').trim() : '';
@@ -5878,6 +5966,8 @@ async function boot() {
   if (dest) await selectBot(dest.id);
   else renderMessages();
   if (target) focusApprovalFromLink(target);
+  // A phone opens on the home page (the list of bots), unless a notification named a chat.
+  else if (isMobile()) openSidebar();
 
   await Promise.allSettled([loadSkills(), loadRoutines(), loadActivity()]);
   state.ready = true;
@@ -6059,8 +6149,9 @@ function renderBots() {
   const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)));
   for (const bot of ordered) {
     const active = !isGroupMode() && bot.id === state.botId;
-    const row = el('div', `bot${active ? ' active' : ''}`);
+    const row = el('div', `bot${active ? ' active' : ''}${bot.primary ? ' is-primary' : ''}`);
     row.dataset.bot = bot.id;
+    row.dataset.search = `${bot.name} ${bot.role || ''} ${previewText(bot)}`.toLowerCase();
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
     row.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -6070,6 +6161,8 @@ function renderBots() {
     av.setAttribute('aria-label', `${bot.name} 的头像，点按自定义`);
     av.title = '自定义头像';
     av.addEventListener('click', (event) => {
+      // On the phone's home page the avatar is the way into the chat.
+      if (isMobile()) return;
       event.stopPropagation();
       openAvatarCustomizer(bot.id);
     });
@@ -6115,6 +6208,8 @@ function renderBots() {
 
     row.appendChild(av);
     row.appendChild(text);
+    const when = homeTime(bot.preview?.ts);
+    if (when) row.appendChild(el('span', 'bot-time', when));
     const botAtt = attentionBadge(`bot:${bot.id}`);
     if (botAtt) row.appendChild(botAtt);
     row.appendChild(more);
@@ -6132,6 +6227,7 @@ function renderBots() {
     });
     list.appendChild(row);
   }
+  filterHome();
   if ($('perm-summary')) renderPermOverview();
 }
 
@@ -6836,14 +6932,9 @@ async function loadVoice() {
   $('voice-apikey').placeholder = v.hasKey ? '已保存（留空不改）' : 'sk-…';
   $('voice-clear').hidden = !v.hasKey;
   const tts = v.tts || {};
-  const sel = $('tts-voice');
-  if (sel) {
-    sel.innerHTML = (tts.voices || []).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join('');
-    sel.value = tts.voice || '';
-    sel.disabled = !tts.available;
-    $('tts-try').disabled = !tts.available;
+  if ($('tts-auto')) {
     $('tts-auto').value = readAloudMode();
-    $('tts-state').textContent = tts.available ? '用上面同一个语音服务和密钥。' : '现在的语音服务不支持朗读：选硅基流动（或 OpenAI）并填密钥就能用。';
+    $('tts-state').textContent = tts.available ? '用上面同一个语音服务和密钥。每个机器人的声音在「管理助手」里选。' : '现在的语音服务不支持朗读：选硅基流动（或 OpenAI）并填密钥就能用。';
   }
   return v;
 }
@@ -8169,6 +8260,21 @@ function handleEvent(ev) {
   const sender = isGroupMode()
     ? senderOf({ from: ev.botId, name: ev.botName })
     : null;
+
+  // A quick answer the bot gave while busy with something else: its own
+  // bubble; the running turn's live state and "working…" line stay as they are.
+  if (ev.aside) {
+    if (ev.type === 'message' && ev.text) {
+      if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
+      const row = assistantRow(ev.text);
+      row.classList.add('aside');
+      messagesEl.appendChild(row);
+      if (state.readAloudTurn && voice.status?.tts?.available) queueSpeech(ev.text, ev.botId);
+      keepTypingLast();
+      scrollToBottom();
+    }
+    return;
+  }
 
   switch (ev.type) {
     case 'turn.start':
@@ -10066,10 +10172,9 @@ function renderBotVoiceSelect(bot) {
   sec.hidden = !tts.available;
   if (!tts.available) return;
   const voices = tts.voices || [];
-  const def = voices.find((x) => x.id === tts.voice)?.label || tts.voice || '';
-  select.innerHTML = `<option value="">${escapeHtml(def ? `默认（${def}）` : '默认')}</option>`
-    + voices.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join('');
-  select.value = voices.some((x) => x.id === bot.voice) ? bot.voice : '';
+  select.innerHTML = voices.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join('');
+  // Never picked one: the voice it has been speaking with (the machine's old setting).
+  select.value = voices.some((x) => x.id === bot.voice) ? bot.voice : (voices.some((x) => x.id === tts.voice) ? tts.voice : voices[0]?.id || '');
 }
 
 function renderBotModelSelect(bot) {
@@ -12868,12 +12973,16 @@ function openSidebar() {
   // A drawer only exists below the breakpoint; refuse it on the desktop layout.
   if (!isMobile()) { closeSidebar(); return; }
   closePanel();
+  // On a phone it is the home page (every bot and group, like a messenger), not a drawer.
+  document.body.classList.add('m-home');
   $('sidebar').classList.add('open');
   $('sidebar-scrim').classList.add('show');
   $('nav-toggle').setAttribute('aria-expanded', 'true');
 }
 
 function closeSidebar() {
+  document.body.classList.remove('m-home');
+  if ($('home-search')?.value) { $('home-search').value = ''; filterHome(); }
   $('sidebar').classList.remove('open');
   $('sidebar-scrim').classList.remove('show');
   $('nav-toggle').setAttribute('aria-expanded', 'false');
@@ -13031,6 +13140,7 @@ function wireChrome() {
     else { closePanel(); openSidebar(); }
   });
   $('sidebar-close').addEventListener('click', closeSidebar);
+  $('home-search')?.addEventListener('input', filterHome);
   $('sidebar-scrim').addEventListener('click', closeSidebar);
 
   $('settings-btn').addEventListener('click', () => {
@@ -13311,19 +13421,12 @@ function wireChrome() {
     stopSpeaking();
     try { await speakText(`你好，我是${bot?.name || '助理'}。这是我朗读回复时的声音。`, null, picked ? { voice: picked } : {}); } catch (err) { toast(`朗读失败：${err.message}`, true); }
   });
-  $('tts-voice')?.addEventListener('change', async () => {
-    try { voice.status = await api('/api/voice', { method: 'PUT', body: { ttsVoice: $('tts-voice').value } }); toast('朗读声音已更换'); } catch (err) { toast(err.message, true); }
-  });
   $('tts-auto')?.addEventListener('change', () => {
     try { localStorage.setItem('desk.readAloud', $('tts-auto').value); } catch { /* private window */ }
   });
   $('speak-stop')?.addEventListener('click', stopSpeaking);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && (speech.playing || speech.loading)) stopSpeaking();
-  });
-  $('tts-try')?.addEventListener('click', async () => {
-    stopSpeaking();
-    try { await speakText('你好，我是夜班的助理。这是我朗读回复时的声音。'); } catch (err) { toast(`朗读失败：${err.message}`, true); }
   });
   $('voice-provider')?.addEventListener('change', () => applyVoiceProvider(true));
   $('vision-save')?.addEventListener('click', () => saveVision(false));

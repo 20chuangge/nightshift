@@ -186,6 +186,66 @@ export class AgentRuntime {
     return [...this.active.entries()].map(([turnId, info]) => ({ turnId, botId: info.botId }));
   }
 
+  /** The turn this bot is working on for the human right now (not a hand-off or a group turn), or null. */
+  busyTurn(botId) {
+    for (const [turnId, info] of this.active) {
+      if (info.botId === botId && !info.depth && !info.group && !info.unattended) return { turnId, ...info };
+    }
+    return null;
+  }
+
+  /**
+   * A message the human sent while the bot is busy: answered at once, in one
+   * model call without tools (it knows what it is doing, for how long, and the
+   * latest output), and handed to the running turn, which reads it before its
+   * next step - "停", "换个办法" take effect there. -> {turnId, text}
+   */
+  async aside({ botId, text, turnId: providedTurnId = null, source = 'chat' }) {
+    const busy = this.busyTurn(botId);
+    const bot = await this.bots.getBot(botId);
+    if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
+    const turnId = providedTurnId || uid('turn');
+    const said = String(text);
+    if (busy) this.active.get(busy.turnId)?.inbox.push(said);
+    const now = Date.now();
+    const secs = (ms) => `${Math.max(1, Math.round(ms / 1000))} 秒`;
+    const step = busy?.step;
+    const status = busy ? [
+      `用户交给你的事（他的原话，不代表你已经在照做）：「${String(busy.task || '').slice(0, 300)}」。从开始到现在 ${secs(now - busy.startedAt)}，已经做完 ${busy.steps || 0} 步。`,
+      step ? `你此刻实际在做的（唯一可信）：调用工具 ${step.name}，参数 ${JSON.stringify(step.args || {}).slice(0, 300)}，这一步已经 ${secs(now - step.startedAt)}，还没结束。` : '你此刻实际在做的（唯一可信）：没有在跑工具，在想下一步怎么做（模型在思考）。',
+      busy.last ? `上一步的结果（节选）：${busy.last}` : '',
+    ].filter(Boolean).join('\n') : '你手上没有正在做的事。';
+    const model = (await this.modelFor(bot).catch(() => null)) || this.model;
+    const baseEvent = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true };
+    await this.record(bot.id, { kind: 'user', text: said, turnId, source });
+    this.bus.emit({ type: 'turn.start', ...baseEvent, text: said });
+    let answer = '';
+    try {
+      const history = await this.loadHistory(bot.id, 8);
+      const response = await model.complete([
+        { role: 'system', content: [
+          `你是「${bot.name}」。${bot.role || ''}`,
+          '你正在做一件事，用户在你干活时发来一条消息。现在不能用任何工具，只用一两句话直接回答他。',
+          '他问进度、为什么慢：只按「你此刻实际在做的」那一行说在做什么、做了多久；可以按那个工具和参数解释为什么要这么久（例如在下载、在编译、在等网页）。用户交给你的事只是他的原话，没写在那一行里的就是还没做，不能说成正在做。不要编造状态里没有的信息。',
+          '他让你停下、改做法或补充要求：说你会在当前这一步结束后照办（这条消息已经转给手上的那件事）；要立刻停，告诉他点输入框旁边的停止按钮。',
+          '他问的和手上的事无关：简短回答；需要动手的，说做完手上的事再来。',
+          '',
+          status,
+        ].join('\n') },
+        ...history,
+        { role: 'user', content: said },
+      ], { tools: [] });
+      noteUsage({ botId: bot.id, provider: model.provider || '', model: model.model || '', usage: response.usage, source }, { audit, bus: this.bus }).catch(() => {});
+      answer = String(response.content || '').trim() || '收到，我手上的事做完这一步就看你这条。';
+    } catch (err) {
+      answer = busy ? `收到。我正在做「${String(busy.task || '').slice(0, 40)}」${step ? `，这一步（${step.name}）已经 ${secs(now - step.startedAt)}` : ''}，这条消息我会在这一步结束后接着看。` : `没能回答：${err.message}`;
+    }
+    this.bus.emit({ type: 'message', ...baseEvent, text: answer, final: true });
+    await this.record(bot.id, { kind: 'assistant', text: answer, turnId, source, final: true });
+    this.bus.emit({ type: 'turn.end', ...baseEvent, status: 'success', summary: answer.slice(0, 200), steps: 0 });
+    return { turnId, text: answer };
+  }
+
   cancel(turnId) {
     const entry = this.active.get(turnId);
     if (!entry) return false;
@@ -360,7 +420,10 @@ export class AgentRuntime {
       if (signal.aborted) controller.abort();
       else signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
-    this.active.set(turnId, { controller, botId: bot.id });
+    // What it is doing, for a message the human sends meanwhile (aside()): the
+    // task, the step in progress, the latest result, and the human's new words.
+    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), unattended });
+    const live = this.active.get(turnId);
 
     // Work until done, like comparable agents: a step is one tool call, and
     // real work (search, open, read, fix, check) easily takes dozens. The old
@@ -468,6 +531,10 @@ export class AgentRuntime {
           status = 'cancelled';
           summary = 'Turn cancelled.';
           break;
+        }
+        // Said by the human while this turn worked: read before the next step.
+        while (live.inbox.length) {
+          messages.push({ role: 'user', content: `（你干活时，用户又发来一条消息，已经先简短回过他了：）\n${live.inbox.shift()}\n（照这句话调整：让你停就收尾停下，让你改就改；和手上的事无关的，做完再处理。）` });
         }
         if (Date.now() > deadline) {
           status = 'timeout';
@@ -587,7 +654,10 @@ export class AgentRuntime {
         });
 
         for (const call of response.toolCalls) {
+          live.step = { name: call.name, args: call.arguments || call.args || {}, startedAt: Date.now() };
           const outcome = await this.executeToolCall({ call, ctx, bot, turnId, baseEvent, messages });
+          live.step = null;
+          { const m = messages[messages.length - 1]; live.last = m?.role === 'tool' ? String(m.content || '').slice(-400) : ''; }
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
           if (trail.length > 12) trail.shift();
           recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
@@ -637,6 +707,7 @@ export class AgentRuntime {
         }
 
         steps += 1;
+        live.steps = steps;
         if (finished) break;
         if (status === 'needs_approval') break;
         if (stuck) {

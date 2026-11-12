@@ -360,6 +360,12 @@ export function createFeishu(o) {
     }
     const id = target.botId;
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
+    // Busy with an earlier message: answer now, and pass this one to that work.
+    if (o.runtime.busyTurn?.(id) && typeof o.runtime.aside === 'function') {
+      const r = await o.runtime.aside({ botId: id, text: full, source: 'feishu' }).catch((err) => ({ text: `没能回答：${err.message}` }));
+      await sendText(to, label ? `${label}\n${r.text}` : r.text).catch(() => {});
+      return;
+    }
     feishuTurns.set(turnId, { ...to, botId: id, texts: [], spoken, label });
     lastChat.set(id, { ...to, at: Date.now() });
     o.runtime.runTurn({ botId: id, text: `${full}\n\n（这条消息来自飞书，用户在手机上；回复会发回飞书。飞书这条通道能收文字、图片和语音：你回复里写到的工作区图片和视频，会作为真正的图片、视频发过去；用户发语音来时，你的文字回复也会自动附一条语音。所以别说飞书只能发文字。）`, source: 'feishu', turnId })
