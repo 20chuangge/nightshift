@@ -69,7 +69,7 @@ import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
 import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv } from './desktops.mjs';
-import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS } from './clipboard.mjs';
+import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './clipboard.mjs';
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
@@ -237,6 +237,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // Light or full desktops for the bots (Linux), and stopping the idle ones:
   // a desktop counts as in use while its bot's browser works.
   setDesktopMode(readJsonSync(path.join(P.dataDir, 'desktop.json'), {})?.mode || process.env.DESK_DESKTOP_MODE || 'light');
+  // Full desktop picked (in 添加机器, or before XFCE was there): install it now, in the background.
+  if (getDesktopMode() === 'full') setTimeout(() => startFullDesktopInstall(state, { quiet: true }), 20000).unref?.();
   {
     const { browserManagers } = await import('./browser.mjs');
     const managerOf = (botId) => browserManagers().find((m) => m.key === botId);
@@ -477,8 +479,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     machineName: () => selfMachineName(),
     // Voice messages in and out, through this machine's voice service.
     transcribe: (bytes, mime) => voiceModule.transcribe(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), bytes, mime),
-    speak: async (text) => {
-      const tts = voiceModule.ttsFor(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), state.voice);
+    speak: async (text, botId) => {
+      const tts = voiceModule.ttsFor(voiceModule.resolveVoice(state.voice, state.settings, state.apiKey), { ttsVoice: await voiceForBot(state, botId) });
       const bytes = await voiceModule.speak(tts, voiceModule.speakableText(text, 500), { format: 'opus' });
       return { bytes, durationMs: voiceModule.oggDurationMs(bytes) };
     },
@@ -970,7 +972,36 @@ route('GET', /^\/api\/providers$/, async () => ({ providers: publicProviderCatal
 
 // Per-bot desktops. `support` explains why it is off (non-Linux hub, missing
 // Xvfb) so the UI can say something more useful than "failed".
-route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops(), mode: getDesktopMode(), idleMinutes: Math.round(DESKTOP_IDLE_MS / 60000), fullInstalled: fullDesktopInstalled() }));
+route('GET', /^\/api\/desktops$/, async () => ({ support: desktopSupport(), desktops: listDesktops(), mode: getDesktopMode(), idleMinutes: Math.round(DESKTOP_IDLE_MS / 60000), fullInstalled: fullDesktopInstalled(), install: { ...fullInstall } }));
+
+// XFCE for the full desktop, installed by the Hub itself (sudo -n, as other hub
+// tasks): one click in Settings, or right after setup when 添加机器 chose it.
+//   POST /api/desktops/install-full -> {fullInstalled, install:{state, detail}}
+const fullInstall = { state: 'idle', detail: '', startedAt: 0 };
+/** Can this machine have the XFCE desktop at all? (X11 screens; Rocky/RHEL 10 has none.) */
+function fullDesktopPossible() {
+  const s = desktopSupport();
+  return process.platform === 'linux' && Boolean(s?.available) && !s?.shared && s?.backend !== 'wayland';
+}
+function startFullDesktopInstall(state, { quiet = false } = {}) {
+  if (!fullDesktopPossible() || fullDesktopInstalled() || fullInstall.state === 'running') return;
+  Object.assign(fullInstall, { state: 'running', detail: '正在下载安装 XFCE（几百 MB，通常 3–10 分钟）', startedAt: Date.now() });
+  state.bus.emit({ type: 'settings.changed', section: 'machines' });
+  sudoInstall('xfce4 xfce4-terminal dbus-x11', { timeoutMs: 30 * 60000, dnf: 'groupinstall -y -q Xfce' }).then((ok) => {
+    const done = fullDesktopInstalled();
+    Object.assign(fullInstall, done
+      ? { state: 'done', detail: '' }
+      : { state: 'failed', detail: ok ? '装完了但没找到 xfce4-session' : '没装上：要么这台机器的 sudo 需要密码，要么下载失败。可以再点一次，或者让机器人帮你装。' });
+    if (!quiet || !done) audit({ kind: 'desktop.install-full', ok: done }).catch(() => {});
+    state.bus.emit({ type: 'settings.changed', section: 'machines' });
+  });
+}
+route('POST', /^\/api\/desktops\/install-full$/, async (_req, _res, { state }) => {
+  if (!fullDesktopPossible()) throw httpError(400, 'NO_FULL_DESKTOP', '这台机器没有可装的完整桌面（只有 X11 屏幕的 Linux 才有 XFCE）');
+  await audit({ kind: 'desktop.install-full', started: true });
+  startFullDesktopInstall(state);
+  return { fullInstalled: fullDesktopInstalled(), install: { ...fullInstall } };
+});
 
 // Light (openbox only) or full (XFCE) desktops for the bots; new desktops use it.
 route('PUT', /^\/api\/desktops\/mode$/, async (_req, _res, { body, state }) => {
@@ -1053,7 +1084,8 @@ route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
 //   GET  /api/voice              -> {available, source:'own'|'model'|null, baseUrl, model, hasKey, preset}
 //   PUT  /api/voice              {baseUrl?, model?, apiKey?} -> same shape
 //   POST /api/voice/transcribe   raw audio (content-type audio/webm…), ?lang=zh -> {text, latencyMs}
-//   POST /api/voice/speak        {text, format?:'mp3'|'opus'} -> the reply read aloud (audio bytes)
+//   POST /api/voice/speak        {text, format?:'mp3'|'opus', botId?, voice?} -> the reply read aloud (audio bytes)
+//                                botId: in that bot's voice; voice: this voice (试听 before saving)
 
 // --- pages (the page library) --------------------------------------------------
 //   GET    /api/pages              -> {pages:[{name, title, path, size, updatedAt, botName}]}
@@ -1559,11 +1591,21 @@ route(
 // Replies read aloud. The same reply is often played twice (replay, another
 // window): a small cache saves paying for it again.
 const speechCache = new Map(); // hash -> bytes
+
+/** The voice a bot speaks with: its own choice, else the machine's (Settings → 模型 → 朗读回复). */
+async function voiceForBot(state, botId) {
+  if (botId) {
+    const bot = await getBot(String(botId)).catch(() => null);
+    if (bot?.voice) return bot.voice;
+  }
+  return state.voice?.ttsVoice || '';
+}
+
 route('POST', /^\/api\/voice\/speak$/, async (_req, res, { body, state }) => {
   const format = body?.format === 'opus' ? 'opus' : 'mp3';
   const text = voiceModule.speakableText(body?.text, Math.min(Number(body?.max) || 600, 1500));
   const service = voiceModule.resolveVoice(state.voice, state.settings, state.apiKey);
-  const tts = voiceModule.ttsFor(service, state.voice);
+  const tts = voiceModule.ttsFor(service, { ttsVoice: body?.voice ? String(body.voice) : await voiceForBot(state, body?.botId) });
   const key = crypto.createHash('sha256').update(`${tts?.model}|${tts?.voice}|${format}|${text}`).digest('hex');
   let bytes = speechCache.get(key);
   if (!bytes) {
@@ -3362,6 +3404,7 @@ function publicBot(bot) {
     skills: bot.skills,
     policy: bot.policy,
     model: bot.model || '',
+    voice: bot.voice || '',
     createdAt: bot.createdAt,
   };
 }

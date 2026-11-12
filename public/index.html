@@ -2813,6 +2813,9 @@
   .be-name:focus, .be-role:focus { outline: none; border-color: var(--accent); background: var(--panel); color: var(--text); }
   .be-section { margin-top: var(--s5); }
   .be-section-title { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--dim); margin: 0 0 8px 2px; }
+  .be-inline { display: flex; gap: 8px; align-items: center; }
+  .be-inline .field { flex: 1; min-width: 0; }
+  .be-inline .btn { flex: none; }
   .be-hint { font-size: 11.5px; color: var(--dim); margin: 6px 2px 0; line-height: 1.5; }
   .be-group { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel); overflow: hidden; }
   .be-row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; cursor: pointer; transition: background 120ms var(--ease); }
@@ -3455,7 +3458,7 @@
           </div>
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">朗读回复</div>
           <div class="row-note" id="tts-state">用上面同一个语音服务和密钥。</div>
-          <label class="lbl" for="tts-voice">声音</label>
+          <label class="lbl" for="tts-voice">默认声音（每个机器人可以在「管理助手」里单独选）</label>
           <select class="field" id="tts-voice"></select>
           <label class="lbl" for="tts-auto">自动朗读</label>
           <select class="field" id="tts-auto">
@@ -3793,7 +3796,9 @@
             <option value="full">完整：XFCE 桌面</option>
           </select>
           <div class="row-note" id="desktop-mode-note"></div>
+          <div class="btn-row" id="desktop-full-row" hidden><button class="btn tiny primary" id="desktop-full-install" type="button">安装 XFCE</button></div>
         </div>
+        <div class="row-note" id="desktop-mode-none" hidden></div>
       </section>
 
       <section class="dsec" id="sec-skills">
@@ -4042,6 +4047,13 @@
     <label class="form-label" for="vnc-ssh-pass" style="margin-top:8px">SSH 密码</label>
     <input class="field" id="vnc-ssh-pass" type="password" placeholder="••••••" autocomplete="new-password" />
 
+    <label class="form-label" for="vnc-desktop" style="margin-top:8px">机器人的桌面（Linux）</label>
+    <select class="field" id="vnc-desktop">
+      <option value="light">轻量：只有窗口，省内存（推荐）</option>
+      <option value="full">完整：XFCE 桌面（多下载几百 MB，每个机器人多占约 100 MB 内存）</option>
+    </select>
+    <div class="row-note">以后也能在「设置 → 机器」里改。Windows 机器和 Rocky / RHEL 10 没有这个选择，会忽略它。</div>
+
     <details class="vault-add" id="vnc-ts">
       <summary>在外面也要连上它（可选，Tailscale）</summary>
       <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。Linux 和 Windows 都可以。</div>
@@ -4109,6 +4121,14 @@
       <div class="be-section-title">模型</div>
       <select class="field" id="botedit-model" aria-label="模型"></select>
       <div class="be-hint" id="botedit-model-note">想要更多选择：设置 → 模型 → 其他模型。</div>
+    </section>
+    <section class="be-section" id="botedit-voice-sec" hidden>
+      <div class="be-section-title">朗读声音</div>
+      <div class="be-inline">
+        <select class="field" id="botedit-voice" aria-label="朗读声音"></select>
+        <button class="btn" id="botedit-voice-try" type="button">试听</button>
+      </div>
+      <div class="be-hint">它的回复读出来用这个声音，飞书里的语音回复也是。选「默认」就跟着 设置 → 模型 → 朗读回复。</div>
     </section>
     <section class="be-section">
       <div class="be-section-title">它能做什么</div>
@@ -5122,7 +5142,7 @@ function renderGroupItem(item) {
     }));
   }
   const bubble = el('div', `bubble${item.system ? ' system' : ''}`);
-  fillBubble(bubble, item.text || '', item.system);
+  fillBubble(bubble, item.text || '', item.system, sender?.id);
   return groupSenderRow(sender, bubble);
 }
 
@@ -5370,6 +5390,7 @@ function openBotEdit(botId, options = {}) {
   $('botedit-name-input').value = bot.name || '';
   $('botedit-role-input').value = bot.role || '';
   renderBotModelSelect(bot);
+  renderBotVoiceSelect(bot);
   renderAbilities(bot);
   $('botedit-note').hidden = true;
   const preview = $('botedit-preview');
@@ -5414,8 +5435,10 @@ async function saveBotEdit() {
     const tools = toolsFromAbilities(bot);
     const policy = { autoApproveMedium: $('botedit-trust').checked };
     const model = $('botedit-model')?.value || '';
-    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy, model } });
-    const updated = (res && res.bot) || { ...bot, name, role, tools, model, policy: { ...(bot.policy || {}), ...policy } };
+    const voiceSec = $('botedit-voice-sec');
+    const voiceId = voiceSec && !voiceSec.hidden ? ($('botedit-voice').value || '') : (bot.voice || '');
+    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy, model, voice: voiceId } });
+    const updated = (res && res.bot) || { ...bot, name, role, tools, model, voice: voiceId, policy: { ...(bot.policy || {}), ...policy } };
     const index = state.bots.findIndex((b) => b.id === bot.id);
     if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
     renderBots();
@@ -6853,13 +6876,14 @@ function stopSpeaking() {
   updateSpeakBar();
 }
 
-async function speakText(text, button = null) {
+/** voiceOf: {botId} reads in that bot's voice, {voice} in that voice (试听). */
+async function speakText(text, button = null, voiceOf = {}) {
   const asked = Date.now();
   speech.loading = true;
   updateSpeakBar();
   let blob;
   try {
-    const res = await fetch('/api/voice/speak', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    const res = await fetch('/api/voice/speak', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, ...(voiceOf.voice ? { voice: voiceOf.voice } : voiceOf.botId ? { botId: voiceOf.botId } : {}) }) });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data?.error?.message || `HTTP ${res.status}`);
@@ -6891,17 +6915,17 @@ async function speakText(text, button = null) {
 }
 
 /** Auto-read: replies of a turn this window started play one after another. */
-async function queueSpeech(text) {
-  speech.queue.push(text);
+async function queueSpeech(text, botId = '') {
+  speech.queue.push({ text, botId });
   if (speech.playing) return;
   while (speech.queue.length) {
     const next = speech.queue.shift();
-    if (!next) continue;
-    try { await speakText(next); } catch (err) { toast(`朗读失败：${err.message}`, true); speech.queue = []; }
+    if (!next?.text) continue;
+    try { await speakText(next.text, null, { botId: next.botId }); } catch (err) { toast(`朗读失败：${err.message}`, true); speech.queue = []; }
   }
 }
 
-function speakButton(text) {
+function speakButton(text, botId = '') {
   const btn = el('button', 'speak-btn', '🔊 朗读');
   btn.type = 'button';
   btn.addEventListener('click', async (event) => {
@@ -6909,7 +6933,7 @@ function speakButton(text) {
     if (speech.button === btn) { stopSpeaking(); return; }
     stopSpeaking();
     btn.textContent = '…';
-    try { await speakText(text, btn); } catch (err) { btn.textContent = '🔊 朗读'; toast(`朗读失败：${err.message}`, true); }
+    try { await speakText(text, btn, { botId }); } catch (err) { btn.textContent = '🔊 朗读'; toast(`朗读失败：${err.message}`, true); }
   });
   return btn;
 }
@@ -7462,7 +7486,8 @@ function openPageViewer(name, title, machine = null) {
 }
 
 /** Text (markdown when it looks like it) plus the images it points at. */
-function fillBubble(bubble, text, system = false) {
+/** botId: whose words these are (its voice reads them aloud); the open chat's bot when not given. */
+function fillBubble(bubble, text, system = false, botId = '') {
   if (!system && looksMarkdown(text)) {
     bubble.classList.add('md');
     bubble.innerHTML = mdToHtml(text);
@@ -7476,7 +7501,7 @@ function fillBubble(bubble, text, system = false) {
     for (const f of images) list.appendChild(attachmentNode(f));
     bubble.appendChild(list);
   }
-  if (voice.status?.tts?.available && String(text || '').trim()) bubble.appendChild(speakButton(text));
+  if (voice.status?.tts?.available && String(text || '').trim()) bubble.appendChild(speakButton(text, botId || state.botId));
 }
 
 /** Full-size image viewer inside the app; Esc or a click closes it. */
@@ -8309,8 +8334,9 @@ function finalizeLiveMessage(text, system, sender) {
     messagesEl.appendChild(live.row);
   }
   state.liveTurn.text = text;
-  fillBubble(state.liveTurn.bubble, text, system);
-  if (!system && state.readAloudTurn && voice.status?.tts?.available) queueSpeech(text);
+  const speaker = (sender || state.liveTurn.sender)?.id || state.botId;
+  fillBubble(state.liveTurn.bubble, text, system, speaker);
+  if (!system && state.readAloudTurn && voice.status?.tts?.available) queueSpeech(text, speaker);
   state.liveTurn.bubble.classList.remove('streaming');
   if (system) state.liveTurn.bubble.classList.add('system');
   state.liveTurn.bubble = null;
@@ -9740,13 +9766,40 @@ async function loadDesktopMode() {
   // Wayland (cage) screens have no light/full choice: they show the browser only.
   const perBot = Boolean(r.support?.available && !r.support?.shared && r.support?.backend !== 'wayland');
   box.hidden = !perBot || !r.mode;
+  // Where there is no choice, say why, so the option does not look lost.
+  const none = $('desktop-mode-none');
+  if (none) {
+    const why = r.support?.backend === 'wayland'
+      ? '这台机器的屏幕只显示机器人的浏览器（Rocky / RHEL 10 没有 X11，也就没有 XFCE），没有桌面可选。'
+      : r.support?.shared || state.computer?.host?.platform === 'win32'
+        ? '这台是 Windows：机器人用的就是这台电脑自己的桌面，没有轻量 / 完整之分。'
+        : '';
+    none.textContent = why;
+    none.hidden = !box.hidden || !why;
+  }
   if (box.hidden) return;
   $('desktop-mode').value = r.mode;
   const running = (r.desktops || []).filter((d) => d.running).length;
   const noXfce = r.mode === 'full' && r.fullInstalled === false
-    ? '这台机器没装 XFCE，现在仍用轻量桌面。要完整桌面，先在这台机器上运行 sudo apt install xfce4（Rocky 等用 sudo dnf groupinstall Xfce），或者让机器人帮你装。'
+    ? '这台机器还没装 XFCE，现在仍用轻量桌面：点下面的「安装 XFCE」。'
     : '';
-  $('desktop-mode-note').textContent = `每个机器人有一块自己的屏幕，开着的有 ${running} 块。没人用 ${r.idleMinutes || 15} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。${noXfce ? ` ${noXfce}` : ''}`;
+  const installing = r.install?.state === 'running';
+  const failed = r.install?.state === 'failed' ? r.install.detail : '';
+  const status = installing ? `${r.install.detail}。装好后新打开的桌面就是 XFCE。` : failed || noXfce;
+  $('desktop-mode-note').textContent = `每个机器人有一块自己的屏幕，开着的有 ${running} 块。没人用 ${r.idleMinutes || 15} 分钟就自动关掉，要用时再打开（浏览器的登录状态不会丢）。改了以后，新打开的桌面才生效。${status ? ` ${status}` : ''}`;
+  $('desktop-full-row').hidden = !(r.mode === 'full' && r.fullInstalled === false);
+  $('desktop-full-install').disabled = installing;
+  $('desktop-full-install').textContent = installing ? '正在安装…' : '安装 XFCE';
+  clearTimeout(loadDesktopMode.poll);
+  if (installing) loadDesktopMode.poll = setTimeout(() => { if (state.settingsOpen) loadDesktopMode().catch(() => {}); }, 15000);
+}
+
+async function installFullDesktop() {
+  try {
+    await api('/api/desktops/install-full', { method: 'POST' });
+    toast('开始安装 XFCE，几分钟后新打开的桌面就是完整桌面');
+  } catch (err) { toast(`安装失败：${err.message}`, true); }
+  loadDesktopMode().catch(() => {});
 }
 
 async function saveDesktopMode() {
@@ -10004,6 +10057,21 @@ function providerLabel(name) {
 }
 
 /** The bot's model picker: default, then every extra model. */
+/** 朗读声音 in the bot panel: the speech service's voices, "默认" = the machine's choice. */
+function renderBotVoiceSelect(bot) {
+  const sec = $('botedit-voice-sec');
+  const select = $('botedit-voice');
+  if (!sec || !select) return;
+  const tts = voice.status?.tts || {};
+  sec.hidden = !tts.available;
+  if (!tts.available) return;
+  const voices = tts.voices || [];
+  const def = voices.find((x) => x.id === tts.voice)?.label || tts.voice || '';
+  select.innerHTML = `<option value="">${escapeHtml(def ? `默认（${def}）` : '默认')}</option>`
+    + voices.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join('');
+  select.value = voices.some((x) => x.id === bot.voice) ? bot.voice : '';
+}
+
 function renderBotModelSelect(bot) {
   const select = $('botedit-model');
   if (!select) return;
@@ -12526,6 +12594,7 @@ function saveMachineFromModal() {
     sshPort: Number($('vnc-ssh-port').value) || 22,
     username: $('vnc-ssh-user').value.trim() || 'ubuntu',
     password,
+    desktop: $('vnc-desktop')?.value === 'full' ? 'full' : 'light',
     ...($('vnc-ts-key')?.value.trim() ? { tailscaleKey: $('vnc-ts-key').value.trim() } : {}),
   });
 }
@@ -13134,6 +13203,7 @@ function wireChrome() {
   $('feishu-save')?.addEventListener('click', saveFeishu);
   $('feishu-app-save')?.addEventListener('click', addFeishuApp);
   $('desktop-mode')?.addEventListener('change', saveDesktopMode);
+  $('desktop-full-install')?.addEventListener('click', installFullDesktop);
   $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);
   $('mp-test')?.addEventListener('click', testNewModel);
@@ -13235,6 +13305,12 @@ function wireChrome() {
   $('ts-go')?.addEventListener('click', installTailscale);
   $('busy-close')?.addEventListener('click', () => { busyWatch.dismissed = true; $('busy-banner').hidden = true; });
   setTimeout(checkBusy, 20000);
+  $('botedit-voice-try')?.addEventListener('click', async () => {
+    const bot = botById(state.botEditingId);
+    const picked = $('botedit-voice').value;
+    stopSpeaking();
+    try { await speakText(`你好，我是${bot?.name || '助理'}。这是我朗读回复时的声音。`, null, picked ? { voice: picked } : {}); } catch (err) { toast(`朗读失败：${err.message}`, true); }
+  });
   $('tts-voice')?.addEventListener('change', async () => {
     try { voice.status = await api('/api/voice', { method: 'PUT', body: { ttsVoice: $('tts-voice').value } }); toast('朗读声音已更换'); } catch (err) { toast(err.message, true); }
   });

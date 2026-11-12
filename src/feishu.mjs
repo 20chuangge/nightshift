@@ -272,7 +272,7 @@ export function createFeishu(o) {
   /** Answer with a voice message too (the human spoke): Opus upload + audio message. */
   async function sendVoice(to, text) {
     if (typeof o.speak !== 'function') return false;
-    const { bytes, durationMs } = await o.speak(text);
+    const { bytes, durationMs } = await o.speak(text, to.botId);
     const form = new FormData();
     form.append('file_type', 'opus');
     form.append('file_name', 'reply.opus');
@@ -360,7 +360,7 @@ export function createFeishu(o) {
     }
     const id = target.botId;
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
-    feishuTurns.set(turnId, { ...to, texts: [], spoken, label });
+    feishuTurns.set(turnId, { ...to, botId: id, texts: [], spoken, label });
     lastChat.set(id, { ...to, at: Date.now() });
     o.runtime.runTurn({ botId: id, text: `${full}\n\n（这条消息来自飞书，用户在手机上；回复会发回飞书。飞书这条通道能收文字、图片和语音：你回复里写到的工作区图片和视频，会作为真正的图片、视频发过去；用户发语音来时，你的文字回复也会自动附一条语音。所以别说飞书只能发文字。）`, source: 'feishu', turnId })
       .catch(async (err) => {

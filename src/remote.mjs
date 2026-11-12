@@ -484,7 +484,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     );
   }
 
-  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '' }) {
+  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '', desktop = '' }) {
     let client = null;
     try {
       phase(job, '连接 SSH');
@@ -551,7 +551,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           setProgress(job, '安装并启动（首次 3-10 分钟）…');
           result = await execStream(
             client,
-            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}${tsArg}`,
+            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}${tsArg}${desktop === 'full' || desktop === 'light' ? ` --desktop ${desktop}` : ''}`,
             {
               stdin: isRoot ? '' : `${password}\n`,
               onLine: (line) => {
@@ -684,7 +684,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           jobs.delete(id);
         }
       }
-      run(job, { host, sshPort, username, password, hubPort, tailscaleKey, tailscaleName: tailscaleDeviceName(input.name || host) });
+      run(job, { host, sshPort, username, password, hubPort, tailscaleKey, tailscaleName: tailscaleDeviceName(input.name || host), desktop: input.desktop === 'full' ? 'full' : input.desktop === 'light' ? 'light' : '' });
       return publicJob(job);
     },
     get(id) {

@@ -3735,6 +3735,23 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       && /localUrl: serverPort \? localUrl\(\)/.test(mainSrc));
     check('M8 disconnect: a catalog app can be disconnected here only or on every machine',
       srvSrc.includes("if (catalogId && query.get('everywhere') === '1')") && pageSrc.includes("'在所有机器上断开'") && pageSrc.includes('?everywhere=1'));
+    {
+      const feishuSrc = await readText('../src/feishu.mjs');
+      const botsSrc = await readText('../src/bots.mjs');
+      check('M11 voices: each bot can have its own reading voice (bot panel, with 试听); replies, auto-read and Feishu voice replies use it; "默认" follows Settings',
+        botsSrc.includes("voice: String(raw.voice || '').trim().slice(0, 120),") && srvSrc.includes('async function voiceForBot(state, botId)')
+        && srvSrc.includes('ttsVoice: body?.voice ? String(body.voice) : await voiceForBot(state, body?.botId)') && srvSrc.includes('speak: async (text, botId) =>')
+        && feishuSrc.includes('await o.speak(text, to.botId)') && feishuSrc.includes('botId: id, texts: [], spoken, label')
+        && pageSrc.includes('function renderBotVoiceSelect(bot)') && pageSrc.includes('voice: voiceId } });') && pageSrc.includes('queueSpeech(text, speaker)') && pageSrc.includes('id="botedit-voice-try"'));
+      const setupSrc = await readText('../hub/setup-linux.sh');
+      const remoteSrc = await readText('../src/remote.mjs');
+      const clipSrc = await readText('../src/clipboard.mjs');
+      check('M11 desktops: 添加机器 picks light or full; setup records it; the Hub installs XFCE itself (also one click in Settings); Windows and Rocky say why there is no choice',
+        pageSrc.includes('id="vnc-desktop"') && pageSrc.includes("desktop: $('vnc-desktop')?.value === 'full' ? 'full' : 'light',")
+        && remoteSrc.includes('--desktop ${desktop}') && setupSrc.includes('full|light) printf') && setupSrc.includes('"$DESKTOP_CHOICE" > "$APP_DIR/data/desktop.json"')
+        && srvSrc.includes('/api\\/desktops\\/install-full$/') && srvSrc.includes("sudoInstall('xfce4 xfce4-terminal dbus-x11'") && srvSrc.includes("if (getDesktopMode() === 'full') setTimeout(() => startFullDesktopInstall(state, { quiet: true }), 20000)")
+        && clipSrc.includes('export function sudoInstall(pkg,') && pageSrc.includes('id="desktop-full-install"') && pageSrc.includes('id="desktop-mode-none"'));
+    }
     check('M10 iPhone home-screen app: header below the clock, a page that never scrolls up, no second home-bar gap, 16px text boxes so typing does not zoom', pageSrc.includes("if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');") && /position: fixed; top: 0; left: 0; right: 0;\s+height: var\(--app-height, 100dvh\);/.test(pageSrc) && pageSrc.includes('html.ios-standalone, html.ios-standalone body { overflow: hidden; }') && pageSrc.includes('html.ios-short-vp { --safe-b: 0px; }') && pageSrc.includes('html.ios textarea, html.ios select {') && pageSrc.includes('font-size: 16px !important;') && pageSrc.includes('.chat-head { padding: calc(var(--s2) + var(--safe-t)) var(--s4) var(--s2);'));
     check('M10 iPhone: another machine opened from the home-screen app (iOS in-app browser, its own bars) is laid out as a browser page, not under the clock', pageSrc.includes('const gap = (window.screen?.height || 0) - window.innerHeight;') && pageSrc.includes('const standalone = flagged && gap < 100;') && pageSrc.includes("if (isIphone && standalone && gap >= 40) document.documentElement.classList.add('ios-short-vp');"));
     check('M10 iPhone: full-screen settings and the page viewer start below the clock; the status bar height is known per screen size', /\.settings-modal \{\s+width: 100%; height: 100%; max-height: none;\s+border: 0; border-radius: 0;[\s\S]{0,120}padding-top: var\(--safe-t\);/.test(pageSrc) && pageSrc.includes('.page-viewer { padding-top: var(--safe-t); }') && pageSrc.includes('({ 956: 62, 932: 59, 926: 47, 896: 48, 874: 62, 852: 59, 844: 47, 812: 50 })[h]'));
@@ -4458,7 +4475,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const page = await readText('../public/index.html');
     check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
-    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
+    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text, botId || state.botId))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && page.includes('id="tts-voice"') && page.includes('id="tts-auto"'));
   }
   // Tailscale key on a real machine: the write must end its input (cat waits for it), and a failure is said.
   {
@@ -4953,7 +4970,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N2 takeover: the ring follows the picture after 全屏 or rotating (same remote point, re-placed on resize)', pageT.includes('function replaceCursor()') && pageT.includes('}).observe(layer);') && pageT.includes('phoneTouch.cursorAt = { fx: (phoneTouch.cursor.x - pic.left) / pic.width'));
       }
       check('desktops: an empty light desktop explains itself (no taskbar is normal), and the missing-tools hint fits the package manager', page.includes('id="pc-light-hint"') && page.includes("hint.hidden = mode !== 'light' && mode !== 'kiosk';") && (await readText('../src/server.mjs')).includes("display: perBot.display, mode: perBot.mode || 'full'") && deskSrc.includes("hasBinary('dnf') ? 'dnf install"));
-      check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器没装 XFCE，现在仍用轻量桌面') && modes.json?.fullInstalled !== undefined);
+      check('desktops: "full" on a machine without XFCE uses openbox, and Settings says how to get XFCE', deskSrc.includes("const wantLight = desktopMode === 'light' || !have('xfce4-session');") && page.includes('这台机器还没装 XFCE，现在仍用轻量桌面：点下面的「安装 XFCE」。') && modes.json?.fullInstalled !== undefined);
     }
     const page = await readText('../public/index.html');
     check('groups: the dialog offers bots on other machines; their messages show their name; the coordinator stays local', page.includes("api('/api/peers/bots')") && page.includes('function groupMemberById(id)') && page.includes("draft.members.find((id) => !String(id).includes('@'))") && page.includes('至少要有一位这台机器上的机器人来协调'));

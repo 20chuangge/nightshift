@@ -67,11 +67,22 @@ const installTried = new Set();
 export function installClipTool(pkg, { platform = process.platform } = {}) {
   if (platform === 'win32' || !pkg || installTried.has(pkg)) return Promise.resolve(false);
   installTried.add(pkg);
+  return sudoInstall(pkg, { timeoutMs: 300000 });
+}
+
+/**
+ * Install packages the way other hub tasks do (sudo -n, never a prompt): apt
+ * (refresh and retry; Ubuntu with an unreachable archive gets a domestic
+ * mirror in a list of its own) or dnf. `dnf` overrides what dnf installs
+ * (e.g. a group). -> true when the command succeeded.
+ */
+export function sudoInstall(pkg, { timeoutMs = 300000, dnf = '' } = {}) {
+  if (process.platform === 'win32' || !pkg) return Promise.resolve(false);
   // An old package list answers 404 for the file: refresh it and try once more.
   // Ubuntu whose own archive is unreachable (seen: a proxy answering 404 for
   // it): the mirror setup-linux.sh uses, in a list of its own, so the
   // system's sources stay as they are.
-  const apt = (o = '') => `sudo -n env DEBIAN_FRONTEND=noninteractive apt-get ${o} install -y -q ${pkg}`;
+  const apt = (o = '') => `sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 ${o} install -y -q ${pkg}`;
   const mirror = [
     '. /etc/os-release && [ "$ID" = ubuntu ] && [ -n "$VERSION_CODENAME" ]',
     'K=/usr/share/keyrings/ubuntu-archive-keyring.gpg && [ -f "$K" ]',
@@ -82,11 +93,11 @@ export function installClipTool(pkg, { platform = process.platform } = {}) {
     apt('$M'),
   ].join(' && ');
   const cmd = `if command -v apt-get >/dev/null; then ${apt()} || { sudo -n apt-get update -q && ${apt()}; } || { ${mirror}; }`
-    + `; elif command -v dnf >/dev/null; then sudo -n dnf install -y -q ${pkg}; else exit 1; fi`;
+    + `; elif command -v dnf >/dev/null; then sudo -n dnf ${dnf || `install -y -q ${pkg}`}; else exit 1; fi`;
   return new Promise((resolve) => {
     let child;
     try { child = spawn('sh', ['-c', cmd], { stdio: 'ignore' }); } catch { resolve(false); return; }
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve(false); }, 300000);
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve(false); }, timeoutMs);
     child.on('error', () => { clearTimeout(timer); resolve(false); });
     child.on('exit', (code) => { clearTimeout(timer); resolve(code === 0); });
   });

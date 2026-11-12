@@ -34,6 +34,7 @@ PKG=""
 NODE_TAR=""
 TS_KEY_FILE=""
 TS_NAME=""
+DESKTOP_CHOICE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)   PORT="$2"; shift ;;
@@ -46,6 +47,8 @@ while [ $# -gt 0 ]; do
     --tailscale-key-file=*) TS_KEY_FILE="${1#*=}" ;;
     --tailscale-name)   TS_NAME="$2"; shift ;;
     --tailscale-name=*) TS_NAME="${1#*=}" ;;
+    --desktop)   DESKTOP_CHOICE="$2"; shift ;;
+    --desktop=*) DESKTOP_CHOICE="${1#*=}" ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "[desk] 未知参数: $1" >&2; exit 1 ;;
   esac
@@ -302,6 +305,11 @@ for item in config skills; do
 done
 rm -rf "$STAGE"
 mkdir -p "$APP_DIR/data" "$APP_DIR/workspace"
+# The bots' desktop picked in 添加机器: full means XFCE, which the Hub installs
+# itself once it runs (in the background, after the screen programs).
+case "$DESKTOP_CHOICE" in
+  full|light) printf '{"mode":"%s"}\n' "$DESKTOP_CHOICE" > "$APP_DIR/data/desktop.json" ;;
+esac
 printf '%s
 ' "$SETUP_VERSION" > "$APP_DIR/.setup-version"
 chown -R "$RUN_USER:$RUN_GROUP" "$APP_DIR"
