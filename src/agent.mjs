@@ -36,6 +36,23 @@ import { checkBoundary } from './boundary.mjs';
 import { noteUsage } from './usage.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
+
+/**
+ * Tool-result clearing (context engineering): in a long turn every earlier
+ * tool output rides along in every later model call, which costs tokens and
+ * dulls the model. Keep the last KEEP results whole; older ones shrink to a
+ * short head with a note. The call records (what was done) stay intact.
+ */
+export function trimOldToolOutputs(messages, { keep = 6, head = 600 } = {}) {
+  const toolIdx = [];
+  for (let i = 0; i < messages.length; i += 1) if (messages[i]?.role === 'tool') toolIdx.push(i);
+  for (const i of toolIdx.slice(0, Math.max(0, toolIdx.length - keep))) {
+    const c = String(messages[i].content || '');
+    if (c.length <= head + 80 || c.endsWith('…(earlier output trimmed; read the file or run it again if you need it)')) continue;
+    messages[i] = { ...messages[i], content: `${c.slice(0, head)} …(earlier output trimmed; read the file or run it again if you need it)` };
+  }
+  return messages;
+}
 const RECOVERY_NOTE =
   'The server stopped while this turn was running, so it did not finish. Nothing is resumed automatically - ' +
   'check the workspace for partial changes (files written before the stop are kept) and ask me again. ' +
@@ -654,6 +671,9 @@ export class AgentRuntime {
           deltaOffset += chunk.length;
         };
 
+        // A long turn piles up tool output: only the latest results stay whole.
+        trimOldToolOutputs(messages);
+
         let response;
         try {
           response = await turnModel.complete(messages, {
@@ -1092,11 +1112,19 @@ export class AgentRuntime {
         .catch((err) => ({ status: 'failed', summary: err.message }));
     }
     task.endedAt = nowIso();
-    if (res?.board?.handoff && (task.handoffs || 0) >= 3) {
+    // Hand-offs: as many as there are other members (each may take it once);
+    // passing it back to someone who already passed it on is going round in
+    // circles - stop and leave it to the coordinator.
+    const handoffLimit = Math.max(3, (group.members || []).length - 1);
+    const backTo = res?.board?.handoff && (task.handedBy || []).includes(res.board.handoff.to);
+    if (res?.board?.handoff && ((task.handoffs || 0) >= handoffLimit || backTo)) {
       task.status = 'failed';
-      task.result = '这项已经被移交了 3 次，停下来等协调者处理。';
+      task.result = backTo
+        ? `这项在成员之间来回推（又要交回给「${names.get(res.board.handoff.to) || res.board.handoff.to}」），停下来等协调者处理。`
+        : `这项已经被移交了 ${task.handoffs} 次，停下来等协调者处理。`;
     } else if (res?.board?.handoff) {
       task.handoffs = (task.handoffs || 0) + 1;
+      task.handedBy = [...new Set([...(task.handedBy || []), task.owner])];
       task.handoffFrom = task.owner;
       task.handoffNote = res.board.handoff.note;
       task.owner = res.board.handoff.to;
@@ -1257,6 +1285,8 @@ export class AgentRuntime {
     const name = call.name;
     const args = call.arguments || {};
     const tool = this.registry.get(name);
+    // An app tool in use: it rides along directly in this bot's next requests.
+    if (tool?.mcp) this.registry.noteMcpUse?.(bot.id, name);
 
     // The call was cut off (too long for one answer): say how to do it in parts.
     if (args.__truncated && tool) {

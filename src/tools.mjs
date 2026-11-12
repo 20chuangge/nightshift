@@ -2010,21 +2010,37 @@ export function createRegistry(deps) {
   });
 
   const MAX_DIRECT_TOOLS = 110;
+  // Connected apps bring many tools (Notion 77, GitHub 46), and every tool's
+  // schema goes out with every model call: with four apps a call carried ~62k
+  // prompt tokens instead of ~14k. So app tools are on demand: a few apps' worth
+  // goes direct; past that only the ones this bot used lately do, and the rest
+  // are found with mcp_find_tools and called with mcp_call.
+  const MCP_DIRECT_ALL = 24;
+  const MCP_RECENT_MAX = 12;
+  /** botId -> app tool names it used, most recent last */
+  const recentMcp = new Map();
 
-  /** This bot's tools for one request: everything, or past the limit the MCP overflow behind the two helpers. */
+  /** This bot's tools for one request: its own, plus app tools as above. */
   function requestTools(bot) {
     const granted = api.grantedFor(bot);
     const own = granted.filter((t) => !t.mcp && t.name !== 'mcp_find_tools' && t.name !== 'mcp_call');
     const apps = granted.filter((t) => t.mcp);
-    if (own.length + apps.length <= MAX_DIRECT_TOOLS) return { direct: [...own, ...apps], hidden: [] };
-    // Read-only tools first: looking things up is what a bot does most.
-    const room = Math.max(0, MAX_DIRECT_TOOLS - own.length - 2);
-    const ordered = [...apps.filter((t) => t.mcp.readOnly), ...apps.filter((t) => !t.mcp.readOnly)];
-    return { direct: [...own, ...ordered.slice(0, room), tools.get('mcp_find_tools'), tools.get('mcp_call')], hidden: ordered.slice(room) };
+    if (apps.length <= MCP_DIRECT_ALL && own.length + apps.length <= MAX_DIRECT_TOOLS) return { direct: [...own, ...apps], hidden: [] };
+    const recent = new Set((recentMcp.get(bot?.id) || []).slice(-MCP_RECENT_MAX));
+    const direct = apps.filter((t) => recent.has(t.name));
+    const hidden = apps.filter((t) => !recent.has(t.name));
+    return { direct: [...own, ...direct, tools.get('mcp_find_tools'), tools.get('mcp_call')], hidden };
   }
 
   const api = {
     tools,
+    /** An app tool this bot just used: it goes direct in its next requests. */
+    noteMcpUse(botId, name) {
+      if (!botId || !String(name).startsWith('mcp__')) return;
+      const list = (recentMcp.get(botId) || []).filter((n) => n !== name);
+      list.push(name);
+      recentMcp.set(botId, list.slice(-MCP_RECENT_MAX));
+    },
     get(name) {
       return tools.get(name) || null;
     },
@@ -2064,8 +2080,15 @@ export function createRegistry(deps) {
     /** Human-readable tool list for the system prompt. */
     renderToolDigest(bot) {
       const { direct, hidden } = requestTools(bot);
-      const more = hidden.length
-        ? `\n- (+${hidden.length} more tools of connected apps: ${[...new Set(hidden.map((t) => String(t.description).match(/^［([^］]+)］/)?.[1] || 'app'))].join(', ')}; find them with mcp_find_tools, call with mcp_call)`
+      // One line per app (its name, how many tools, a few of them), not one per tool.
+      const byApp = new Map();
+      for (const t of hidden) {
+        const app = String(t.description).match(/^［([^］]+)］/)?.[1] || 'app';
+        if (!byApp.has(app)) byApp.set(app, []);
+        byApp.get(app).push(t.mcp?.tool || t.name);
+      }
+      const more = byApp.size
+        ? `\n- Connected apps (find a tool with mcp_find_tools, e.g. "notion search", then call it with mcp_call):\n${[...byApp].map(([app, names]) => `  - ${app}: ${names.length} tools, e.g. ${names.slice(0, 4).join(', ')}`).join('\n')}`
         : '';
       return direct
         .map((t) => {

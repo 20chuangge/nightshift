@@ -3901,9 +3901,26 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const bot = { id: 'b1', tools: [...reg.tools.keys()].filter((n) => !n.startsWith('mcp_')) };
     const schemas = reg.schemasFor(bot).map((x) => x.function.name);
     const found = await reg.get('mcp_find_tools').run({ query: 'calendar event' }, { bot });
-    check('M6 tool limit: past 110 tools the rest of an app\'s tools sit behind mcp_find_tools / mcp_call, read-only ones stay direct',
-      schemas.length <= 110 && schemas.includes('mcp_find_tools') && schemas.includes('mcp_call') && schemas.includes('mcp__mbig__tool-0') && !schemas.includes('mcp__mbig__tool-99')
-      && /more tools of connected apps: 大应用/.test(reg.renderToolDigest(bot)), String(schemas.length));
+    const digest = reg.renderToolDigest(bot);
+    reg.noteMcpUse('b1', 'mcp__mbig__tool-99');
+    const after = reg.schemasFor(bot).map((x) => x.function.name);
+    const other = reg.schemasFor({ ...bot, id: 'b2' }).map((x) => x.function.name);
+    check('M16 tokens: a big app\'s tools are on demand (none sent until used; one used goes direct for that bot only); the prompt lists the app once, not each tool',
+      schemas.includes('mcp_find_tools') && schemas.includes('mcp_call') && !schemas.some((n) => n.startsWith('mcp__'))
+      && after.includes('mcp__mbig__tool-99') && after.filter((n) => n.startsWith('mcp__')).length === 1 && !other.includes('mcp__mbig__tool-99')
+      && /大应用: 100 tools, e\.g\. tool-0/.test(digest) && digest.split('\n').filter((l) => l.includes('mcp__mbig__')).length === 0, String(schemas.length));
+    {
+      const A = await import('../src/agent.mjs');
+      const msgs = [{ role: 'system', content: 's' }];
+      for (let i = 0; i < 9; i += 1) msgs.push({ role: 'assistant', content: '', tool_calls: [] }, { role: 'tool', tool_call_id: `c${i}`, content: `out${i} ` + 'x'.repeat(3000) });
+      A.trimOldToolOutputs(msgs);
+      const tools = msgs.filter((m) => m.role === 'tool');
+      check('M16 tokens: in a long turn only the last 6 tool outputs stay whole; older ones shrink to a head with a note (the calls stay)',
+        tools.length === 9 && tools.slice(0, 3).every((m) => m.content.length < 800 && /earlier output trimmed/.test(m.content) && m.content.startsWith('out')) && tools.slice(3).every((m) => m.content.length > 3000) && msgs.length === 19);
+      const agentSrcT = await readText('../src/agent.mjs');
+      check('M16 hand-offs: as many as there are other members; handing a task back to someone who passed it on stops it (no ping-pong)',
+        agentSrcT.includes('const handoffLimit = Math.max(3, (group.members || []).length - 1);') && agentSrcT.includes('(task.handedBy || []).includes(res.board.handoff.to)') && agentSrcT.includes('trimOldToolOutputs(messages);'));
+    }
     check('M6 tool limit: mcp_find_tools finds a hidden tool with its parameters', found.tools[0]?.name === 'mcp__mbig__tool-77' && found.tools[0].parameters?.type === 'object');
     const agentSrc = await readText('../src/agent.mjs');
     check('M6 tool limit: mcp_call becomes the named tool before grants and approvals', /if \(call\.name === 'mcp_call' && String\(call\.arguments\?\.tool \|\| ''\)\.startsWith\('mcp__'\)\) \{[\s\S]{0,300}call = \{ \.\.\.call, name: String\(call\.arguments\.tool\)/.test(agentSrc) && agentSrc.indexOf("call.name === 'mcp_call'") < agentSrc.indexOf('const granted = this.registry.isGranted(bot, name);'));
