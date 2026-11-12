@@ -1673,7 +1673,7 @@ async function scenarioAttachmentsAndVoice() {
     const viaChat = vis.resolveVision({}, { settings: { provider: 'openai', baseUrl: 'https://api.openai.com/v1' }, chatKey: 'c-key' });
     const none = vis.resolveVision({}, { settings: { provider: 'deepseek' }, chatKey: 'd-key', voice: { apiKey: 'x', baseUrl: 'https://api.openai.com/v1' } });
     check('vision: own key wins, SiliconFlow voice key next, then a vision-capable chat provider',
-      own?.source === 'own' && own.model === 'Qwen/Qwen3-VL-32B-Instruct'
+      own?.source === 'own' && own.model === 'Qwen/Qwen3-VL-8B-Instruct'
       && viaVoice?.source === 'voice' && viaVoice.apiKey === 'sf-key' && /siliconflow/.test(viaVoice.baseUrl)
       && viaChat?.source === 'model' && viaChat.model === 'gpt-4o-mini' && none === null);
     let sent = null;
@@ -1684,6 +1684,36 @@ async function scenarioAttachmentsAndVoice() {
     let visErr = null;
     try { await vis.describeImage(own, Buffer.from('x'), 'image/png', '', { fetchImpl: async () => new Response('{"error":{"message":"bad key"}}', { status: 401 }) }); } catch (err) { visErr = err; }
     check('vision: a rejected key is reported in plain words', visErr?.code === 'VISION_FAILED' && /密钥无效/.test(visErr.message));
+    {
+      // N3: pictures are shrunk before they go to the vision model (long side <= 1568, JPEG).
+      const fit = await import('../src/imagefit.mjs');
+      const zlib = await import('node:zlib');
+      const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+      const crc = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+      const makePng = (w, h, ct = 2) => {
+        const ch = ct === 6 ? 4 : 3;
+        const raw = Buffer.alloc(h * (w * ch + 1));
+        for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) {
+          const o = y * (w * ch + 1) + 1 + x * ch;
+          raw[o] = (x * 7) & 255; raw[o + 1] = (y * 3) & 255; raw[o + 2] = ((x + y) >> 2) & 255; if (ch === 4) raw[o + 3] = 255;
+        }
+        const chunk = (type, data) => { const l = Buffer.alloc(4); l.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
+        const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = ct;
+        return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+      };
+      const big = fit.fitForVision(makePng(1080, 2400), 'image/png');
+      const isJpeg = (b) => b[0] === 0xff && b[1] === 0xd8;
+      check('N3 image: a 1080x2400 PNG screenshot goes to the vision model as a 706x1568 JPEG', big.changed && big.mime === 'image/jpeg' && isJpeg(big.bytes) && big.to.w === 706 && big.to.h === 1568, JSON.stringify(big.to));
+      const photo = fit.fitForVision(fit.fitForVision(makePng(4000, 3000, 6), 'image/png', { maxSide: 4000 }).bytes, 'image/jpeg');
+      check('N3 image: a large JPEG photo is decoded and shrunk too (long side 1568)', photo.changed && photo.from.w === 4000 && photo.to.w === 1568 && photo.to.h === 1176, JSON.stringify([photo.from, photo.to]));
+      const small = fit.fitForVision(makePng(800, 600), 'image/png');
+      const junk = fit.fitForVision(Buffer.from('not a picture'), 'image/png');
+      const gif = fit.fitForVision(Buffer.from('GIF89a...'), 'image/gif');
+      check('N3 image: small pictures, other formats and anything unreadable go as they are', !small.changed && small.mime === 'image/png' && !junk.changed && junk.bytes.toString() === 'not a picture' && !gif.changed);
+      const visSrc = await readText('../src/vision.mjs');
+      const toolSrc = await readText('../src/tools.mjs');
+      check('N3 image: image_view sends the shrunk picture and reports size and seconds; short default answer; 8B is the default, 32B selectable', toolSrc.includes('const fit = fitForVision(bytes, mime);') && toolSrc.includes('await describeImage(service, fit.bytes, fit.mime, args.question)') && toolSrc.includes('seconds: Math.round(seen.latencyMs / 100) / 10') && visSrc.includes('300 字以内') && visSrc.includes("model: 'Qwen/Qwen3-VL-8B-Instruct'") && visSrc.includes("id: 'siliconflow-32b'") && visSrc.includes('timeoutMs = 150000'));
+    }
     const vGet = await api('/api/vision');
     const vPut = await api('/api/vision', { method: 'PUT', body: { baseUrl: 'https://example.test/v1', model: 'vl-1', apiKey: 'vision-secret' } });
     check('vision settings: saved, available, key never returned', vGet.status === 200 && vPut.status === 200 && vPut.json.available && vPut.json.source === 'own' && vPut.json.model === 'vl-1' && !JSON.stringify(vPut.json).includes('vision-secret'));
@@ -4239,6 +4269,32 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('desktops: a viewer leaving counts once', watched.viewers === 1);
       for (const id of ['watched-bot', 'busy-bot', 'fresh-bot']) D.stopDesktop(id);
       D.setDesktopHooks({ busy: () => false, beforeStop: async () => {} });
+      {
+        // N3: the VNC part (x11vnc + websockify / wayvnc) runs only while someone watches.
+        const fakeProc = () => ({ killed: false, exitCode: null, kill() { this.killed = true; } });
+        let starts = 0;
+        const startViewer = async () => { starts += 1; return [fakeProc(), fakeProc()]; };
+        const longAgo = Date.now() - D.VIEWER_IDLE_MS - 1000;
+        D._testAddDesktop('view-idle', { procs: [fakeProc()], webPort: 1, startViewer, viewProcs: [fakeProc(), fakeProc()], lastViewerAt: longAgo });
+        D._testAddDesktop('view-watched', { procs: [fakeProc()], webPort: 1, startViewer, viewProcs: [fakeProc()], lastViewerAt: longAgo, viewers: 1 });
+        D._testAddDesktop('view-recent', { procs: [fakeProc()], webPort: 1, startViewer, viewProcs: [fakeProc()], lastViewerAt: Date.now() });
+        const idleViewers = D.reapIdleViewers();
+        const idleEntry = D._testDesktopEntry('view-idle');
+        check('N3 screens: nobody watching for 2 minutes stops only the VNC part; the screen keeps running; watched and recent ones stay',
+          idleViewers.join(',') === 'view-idle' && idleEntry.viewProcs.length === 0 && idleEntry.procs.every((p) => !p.killed)
+          && D._testDesktopEntry('view-watched').viewProcs.every((p) => !p.killed) && D._testDesktopEntry('view-recent').viewProcs.every((p) => !p.killed));
+        await D.ensureViewer('view-idle');
+        check('N3 screens: opening the screen starts the VNC part again', starts === 1 && D._testDesktopEntry('view-idle').viewProcs.length === 2);
+        const builderYml = await readText('../desktop/electron-builder.yml');
+        check('packaging: the desktop build ships src/vendor (.cjs + licence), not only .mjs - the hub would not start without jpeg-js', builderYml.includes('filter: ["**/*.mjs", "**/*.cjs", "**/LICENSE"]'));
+        const deskSrc = await readText('../src/desktops.mjs');
+        const relaySrc = await readText('../src/server.mjs');
+        check('N3 screens: x11 and wayland screens start without VNC; the relay starts it before connecting; liveness ignores the VNC part',
+          deskSrc.includes('const startViewer = async () => {') && deskSrc.split('const startViewer = async () => {').length === 3
+          && relaySrc.includes('void ensureViewer(safeDecode(match[1])).catch(() => false).then((ok) => {')
+          && deskSrc.includes('if (existing.procs.every(alive)) { existing.lastUsed = Date.now();'));
+        for (const id of ['view-idle', 'view-watched', 'view-recent']) D.stopDesktop(id);
+      }
 
       const modes = await api('/api/desktops');
       const toFull = await api('/api/desktops/mode', { method: 'PUT', body: { mode: 'full' } });

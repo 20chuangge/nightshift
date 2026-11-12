@@ -68,7 +68,7 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, DESKTOP_IDLE_MS, fullDesktopInstalled } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled } from './desktops.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
@@ -687,6 +687,9 @@ function attachHubUpgrade(server, state, viaPublic) {
     // Someone watching keeps the desktop from being stopped as idle.
     const viewerDone = desktopViewerOpened(safeDecode(match[1]));
     socket.on('close', viewerDone);
+    // The VNC part runs only while someone watches: start it now if needed.
+    void ensureViewer(safeDecode(match[1])).catch(() => false).then((ok) => {
+    if (!ok || socket.destroyed) { refuse(503, 'Service Unavailable'); return; }
     const upstream = net.connect(info.webPort, '127.0.0.1', () => {
       // Replay the client's handshake to websockify; it answers the upgrade.
       const lines = ['GET / HTTP/1.1'];
@@ -698,6 +701,7 @@ function attachHubUpgrade(server, state, viaPublic) {
     });
     upstream.on('error', () => socket.destroy());
     socket.on('close', () => upstream.destroy());
+    });
   });
 }
 

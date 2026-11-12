@@ -21,7 +21,10 @@ import { P, readJson, writeJsonAtomic } from './store.mjs';
 const VISION_FILE = path.join(P.dataDir, 'vision.json');
 
 export const VISION_PROVIDERS = [
-  { id: 'siliconflow', label: '硅基流动 Qwen3-VL（中文和小字识别好）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen3-VL-32B-Instruct', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
+  // 8B first: on a phone screenshot it read the text as well as 32B and answered about 3x faster
+  // (7.7 s vs 24 s for the default question, 19 s vs 68 s for a full transcription).
+  { id: 'siliconflow', label: '硅基流动 Qwen3-VL-8B（快，截图和文字够用）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen3-VL-8B-Instruct', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
+  { id: 'siliconflow-32b', label: '硅基流动 Qwen3-VL-32B（更准，慢约 3 倍）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen3-VL-32B-Instruct', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
   { id: 'dashscope', label: '阿里云百炼 通义千问 VL', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-vl-max', keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1' },
   { id: 'zhipu', label: '智谱 GLM-4V（有免费模型）', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4v-flash', keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
   { id: 'openai', label: 'OpenAI GPT-4o mini', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', keyUrl: 'https://platform.openai.com/api-keys' },
@@ -31,7 +34,7 @@ export const VISION_PRESET = VISION_PROVIDERS[0];
 
 /** Chat providers whose key also opens a vision model. */
 const FROM_CHAT_PROVIDER = {
-  siliconflow: 'Qwen/Qwen3-VL-32B-Instruct',
+  siliconflow: 'Qwen/Qwen3-VL-8B-Instruct',
   openai: 'gpt-4o-mini',
   qwen: 'qwen-vl-max',
   dashscope: 'qwen-vl-max',
@@ -112,14 +115,14 @@ export function imageMime(file) {
 }
 
 /** Ask the vision model about one image. -> {text, model, latencyMs} */
-export async function describeImage(service, bytes, mime, question, { timeoutMs = 90000, fetchImpl = fetch } = {}) {
+export async function describeImage(service, bytes, mime, question, { timeoutMs = 150000, fetchImpl = fetch } = {}) {
   if (!service) {
     throw visionError(409, 'VISION_NOT_CONFIGURED', '还没有配置看图模型：在「设置 → 模型 → 看图」里选一个服务并填密钥（硅基流动的密钥就能用）');
   }
   if (!bytes?.length) throw visionError(400, 'EMPTY_IMAGE', '图片是空的');
   if (bytes.length > IMAGE_MAX_BYTES) throw visionError(400, 'IMAGE_TOO_LARGE', '图片超过 12 MB，先缩小再看');
   const prompt = String(question || '').trim()
-    || '详细描述这张图片：画面里有什么；把能看到的文字（包括小字）尽量原样写出来；如果是界面或网页截图，说明是什么页面、有哪些按钮和信息。用中文回答。';
+    || '简要说明这张图片：是什么（界面截图的话是什么页面、处于什么状态），以及最重要的信息和文字（文字原样写出）。不要逐项罗列所有图标，不要分析和总结，300 字以内。用中文回答。';
   const started = Date.now();
   let res;
   try {

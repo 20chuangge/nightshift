@@ -67,13 +67,52 @@ export function desktopViewerOpened(botId) {
   if (!entry) return () => {};
   entry.viewers = (entry.viewers || 0) + 1;
   entry.lastUsed = Date.now();
+  entry.lastViewerAt = Date.now();
   let done = false;
   return () => {
     if (done) return;
     done = true;
     entry.viewers = Math.max(0, (entry.viewers || 1) - 1);
     entry.lastUsed = Date.now();
+    entry.lastViewerAt = Date.now();
   };
+}
+
+// The part of a screen only a viewer needs (x11vnc + websockify, or wayvnc on
+// Rocky): memory that did nothing while nobody watched. It starts when someone
+// opens the screen and stops this long after the last one leaves; the screen
+// itself (and the bot's browser on it) keeps running.
+export const VIEWER_IDLE_MS = Math.max(0.5, Number(process.env.DESK_VIEWER_IDLE_MIN) || 2) * 60 * 1000;
+const alive = (proc) => Boolean(proc) && !proc.killed && proc.exitCode === null;
+
+/** Start the viewer part of a running screen if it is not up. -> true when it serves. */
+export async function ensureViewer(botId) {
+  const entry = desktops.get(botId);
+  if (!entry || typeof entry.startViewer !== 'function') return Boolean(entry);
+  if (entry.viewerStarting) return entry.viewerStarting;
+  entry.lastViewerAt = Date.now();
+  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portOpen(entry.webPort))) return true;
+  entry.viewerStarting = (async () => {
+    for (const proc of entry.viewProcs || []) { try { proc.kill(); } catch { /* gone */ } }
+    entry.viewProcs = await entry.startViewer();
+    return portOpen(entry.webPort);
+  })().finally(() => { entry.viewerStarting = null; });
+  return entry.viewerStarting;
+}
+
+/** Stop the viewer part where nobody watched for VIEWER_IDLE_MS. -> bot ids. */
+export function reapIdleViewers(now = Date.now()) {
+  const stopped = [];
+  for (const [botId, entry] of desktops) {
+    if ((entry.viewers || 0) > 0 || entry.viewerStarting) continue;
+    if (!(entry.viewProcs || []).some(alive)) continue;
+    if (now - (entry.lastViewerAt || 0) < VIEWER_IDLE_MS) continue;
+    for (const proc of entry.viewProcs) { try { proc.kill(); } catch { /* gone */ } }
+    entry.viewProcs = [];
+    stopped.push(botId);
+  }
+  if (stopped.length) console.log('[desktops] nobody watching, viewer stopped:', stopped.join(', '));
+  return stopped;
 }
 
 /** Stop desktops nobody used for DESKTOP_IDLE_MS. -> the bot ids stopped. */
@@ -94,7 +133,10 @@ export async function reapIdleDesktops(now = Date.now()) {
 
 function startReaper() {
   if (reaper) return;
-  reaper = setInterval(() => { reapIdleDesktops().catch(() => {}); }, 60 * 1000);
+  reaper = setInterval(() => {
+    try { reapIdleViewers(); } catch { /* next round */ }
+    reapIdleDesktops().catch(() => {});
+  }, 30 * 1000);
   if (typeof reaper.unref === 'function') reaper.unref();
 }
 
@@ -312,11 +354,10 @@ async function ensureDesktopOnce(botId) {
   if (existing) {
     // The map is only a cache: the processes can be gone (killed by hand, OOM,
     // a host restart). A stale entry would hand the UI a dead viewer URL.
-    const alive = existing.procs.every((proc) => !proc.killed && proc.exitCode === null)
-      && (await portOpen(existing.vncPort))
-      && (await portOpen(existing.webPort));
-    if (alive) { existing.lastUsed = Date.now(); return { ...publicInfo(botId, existing), started: false }; }
-    for (const proc of existing.procs) {
+    // The viewer part may be stopped on purpose (nobody watching): only the
+    // screen's own processes decide whether it is alive.
+    if (existing.procs.every(alive)) { existing.lastUsed = Date.now(); return { ...publicInfo(botId, existing), started: false }; }
+    for (const proc of [...existing.procs, ...(existing.viewProcs || [])]) {
       try { proc.kill(); } catch { /* already gone */ }
     }
     desktops.delete(botId);
@@ -410,20 +451,26 @@ async function ensureDesktopOnce(botId) {
   // No VNC password on purpose: the display is bound to 127.0.0.1 and each bot
   // has its own websockify bridge, so "type a password to see your own bot"
   // would be friction with no real protection.
-  const args = ['-display', `:${display}`, '-localhost', '-nopw', '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-rfbport', String(vncPort)];
-  procs.push(spawnChild('x11vnc', args, { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')] }));
-  for (let i = 0; i < 50 && !(await portOpen(vncPort)); i += 1) await sleep(100);
+  // Started only while someone watches (ensureViewer), stopped after.
+  const startViewer = async () => {
+    const view = [];
+    killByPattern(`x11vnc -display :${display} `);
+    killByPattern(`websockify.* 127.0.0.1:${webPort} `);
+    const args = ['-display', `:${display}`, '-localhost', '-nopw', '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-rfbport', String(vncPort)];
+    view.push(spawnChild('x11vnc', args, { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')] }));
+    for (let i = 0; i < 50 && !(await portOpen(vncPort)); i += 1) await sleep(100);
+    // 3) WebSocket bridge for that one display, loopback only. Viewers never
+    // reach it directly: the hub relays /api/bots/<id>/desktop/ws to it after
+    // the same pairing check as the API, so nobody on the LAN can open a bot's
+    // screen without being paired.
+    view.push(spawnChild('websockify', [`127.0.0.1:${webPort}`, `127.0.0.1:${vncPort}`], {
+      stdio: ['ignore', childLog(botId, 'web'), childLog(botId, 'web')],
+    }));
+    for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
+    return view;
+  };
 
-  // 3) WebSocket bridge for that one display, loopback only. Viewers never
-  // reach it directly: the hub relays /api/bots/<id>/desktop/ws to it after
-  // the same pairing check as the API, so nobody on the LAN can open a bot's
-  // screen without being paired.
-  procs.push(spawnChild('websockify', [`127.0.0.1:${webPort}`, `127.0.0.1:${vncPort}`], {
-    stdio: ['ignore', childLog(botId, 'web'), childLog(botId, 'web')],
-  }));
-  for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
-
-  const entry = { display, vncPort, webPort, procs, startedAt: new Date().toISOString(), mode: sessionMode, viewers: 0, lastUsed: Date.now() };
+  const entry = { display, vncPort, webPort, procs, viewProcs: [], startViewer, startedAt: new Date().toISOString(), mode: sessionMode, viewers: 0, lastUsed: Date.now(), lastViewerAt: 0 };
   desktops.set(botId, entry);
   startReaper();
   return { ...publicInfo(botId, entry), started: true };
@@ -474,11 +521,15 @@ async function startWaylandDesktop(botId) {
     try { socket = fs.readdirSync(runtime).find((f) => /^wayland-\d+$/.test(f)) || ''; } catch { /* not yet */ }
   }
   const clientEnv = { ...env, WAYLAND_DISPLAY: socket || 'wayland-0' };
-  procs.push(spawnChild(cmd.vnc[0], cmd.vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv }));
-  for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
-  // One port: the WebSocket one (the liveness check looks at both fields).
+  const startViewer = async () => {
+    killByPattern(`wayvnc .*127.0.0.1 (${vncPort}|${webPort})$`);
+    const view = [spawnChild(cmd.vnc[0], cmd.vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv })];
+    for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
+    return view;
+  };
+  // One port: the WebSocket one.
   const entry = {
-    display, vncPort: webPort, webPort, procs, startedAt: new Date().toISOString(), mode: 'kiosk', viewers: 0, lastUsed: Date.now(),
+    display, vncPort: webPort, webPort, procs, viewProcs: [], startViewer, lastViewerAt: 0, startedAt: new Date().toISOString(), mode: 'kiosk', viewers: 0, lastUsed: Date.now(),
     wayland: { display: clientEnv.WAYLAND_DISPLAY, runtime },
   };
   desktops.set(botId, entry);
@@ -492,7 +543,9 @@ function publicInfo(botId, entry) {
     display: `:${entry.display}`,
     vncPort: entry.vncPort,
     webPort: entry.webPort,
-    running: entry.procs.every((p) => !p.killed && p.exitCode === null),
+    running: entry.procs.every(alive),
+    // Whether the viewer part (VNC + bridge) runs now; it starts on demand.
+    viewing: (entry.viewProcs || []).some(alive),
     startedAt: entry.startedAt,
     mode: entry.mode || 'full',
     viewers: entry.viewers || 0,
@@ -524,7 +577,7 @@ export function desktopEnv(botId) {
 export function stopDesktop(botId) {
   const entry = desktops.get(botId);
   if (!entry) return false;
-  for (const proc of entry.procs) {
+  for (const proc of [...entry.procs, ...(entry.viewProcs || [])]) {
     try { proc.kill(); } catch { /* already gone */ }
   }
   desktops.delete(botId);

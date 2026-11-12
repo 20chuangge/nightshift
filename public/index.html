@@ -6745,7 +6745,10 @@ async function loadVision() {
         : `已可用：沿用聊天模型的密钥，看图模型 ${v.model}。`;
   const select = $('vision-provider');
   select.innerHTML = vision.providers.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`).join('');
-  const match = vision.providers.find((p) => p.baseUrl && v.source === 'own' && p.baseUrl === v.baseUrl);
+  // Two SiliconFlow entries (8B / 32B): the model tells them apart.
+  const match = v.source === 'own'
+    ? (vision.providers.find((p) => p.baseUrl && p.baseUrl === v.baseUrl && p.model === v.model) || vision.providers.find((p) => p.baseUrl && p.baseUrl === v.baseUrl))
+    : null;
   select.value = v.source === 'own' ? (match ? match.id : 'custom') : (vision.providers[0]?.id || 'custom');
   applyVisionProvider(false);
   if (v.source === 'own') {

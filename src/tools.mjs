@@ -20,6 +20,7 @@ import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
 import { describeImage, imageMime } from './vision.mjs';
+import { fitForVision } from './imagefit.mjs';
 import { generateImages, generateVideo, submitVideo } from './media.mjs';
 
 // Bot-to-bot hand-offs (bot_message): how deep a chain may go (chief -> director
@@ -389,13 +390,13 @@ export function createRegistry(deps) {
   add({
     name: 'image_view',
     description:
-      'Look at an image in the workspace (an attachment the human sent, a screenshot you took) and get a description of it, including any text in it. Ask a specific question when you need something specific (e.g. "这个报错弹窗写了什么？", "表格第三列的数字"). Use it whenever the human sends an image or you need to know what a screenshot shows - you cannot see images otherwise.',
+      'Look at an image in the workspace (an attachment the human sent, a screenshot you took) and get a description of it, including any text in it. Ask a specific question (e.g. "这个报错弹窗写了什么？", "表格第三列的数字", "登录按钮在哪"): the answer comes back in a few seconds. Asking it to describe and transcribe everything makes it write for about a minute - do that only when you really need all of it. Use it whenever the human sends an image or you need to know what a screenshot shows - you cannot see images otherwise.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Image path relative to the workspace root, e.g. uploads/2026-11-08/a.png or artifacts/shot.png.' },
-        question: { type: 'string', description: 'What you want to know about it (optional; default: describe everything and transcribe the text).' },
+        question: { type: 'string', description: 'What you want to know about it (optional; default: a short description with the important text).' },
       },
       required: ['path'],
       additionalProperties: false,
@@ -413,9 +414,19 @@ export function createRegistry(deps) {
         throw err;
       }
       const service = typeof deps.getVision === 'function' ? deps.getVision() : null;
+      // The model reads by pixels: a long side over 1568 costs time and money and
+      // adds nothing (see imagefit.mjs). The file on disk stays as it is.
+      const fit = fitForVision(bytes, mime);
       try {
-        const seen = await describeImage(service, bytes, mime, args.question);
-        return { path: r.rel, model: seen.model, description: seen.text };
+        const seen = await describeImage(service, fit.bytes, fit.mime, args.question);
+        const size = (s) => (s.w ? `${s.w}x${s.h} ` : '') + `${Math.round(s.bytes / 1024)} KB`;
+        return {
+          path: r.rel,
+          model: seen.model,
+          description: seen.text,
+          sent: fit.changed ? `${size(fit.from)} -> ${size(fit.to)}` : size(fit.from),
+          seconds: Math.round(seen.latencyMs / 100) / 10,
+        };
       } catch (err) {
         throw toolError(err.code || 'VISION_FAILED', err.message);
       }

@@ -20,7 +20,7 @@ files:
 extraResources:
   - from: ../src
     to: server/src
-    filter: ["**/*.mjs"]
+    filter: ["**/*.mjs", "**/*.cjs", "**/LICENSE"]
   - from: ../public
     to: server/public
   - from: ../config
