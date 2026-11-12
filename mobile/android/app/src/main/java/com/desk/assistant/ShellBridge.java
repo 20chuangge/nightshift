@@ -1,6 +1,9 @@
 package com.desk.assistant;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -8,6 +11,9 @@ import android.webkit.JavascriptInterface;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Native window control for the takeover view.
@@ -46,5 +52,45 @@ public class ShellBridge {
             else requested = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
             activity.setRequestedOrientation(requested);
         });
+    }
+
+    /*
+     * The phone's clipboard. The hub page is plain http on the LAN, where
+     * navigator.clipboard does not exist; ClipboardManager is the system's own
+     * and carries any text (Chinese included). Read and written on the UI
+     * thread: Android 10+ only lets the app in focus read it.
+     */
+    @JavascriptInterface
+    public String clipboardRead() {
+        FutureTask<String> task = new FutureTask<>(() -> {
+            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) return "";
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return "";
+            CharSequence text = clip.getItemAt(0).coerceToText(activity);
+            return text == null ? "" : text.toString();
+        });
+        activity.runOnUiThread(task);
+        try {
+            return task.get(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    @JavascriptInterface
+    public boolean clipboardWrite(final String text) {
+        FutureTask<Boolean> task = new FutureTask<>(() -> {
+            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null) return false;
+            cm.setPrimaryClip(ClipData.newPlainText("Nightshift", text == null ? "" : text));
+            return true;
+        });
+        activity.runOnUiThread(task);
+        try {
+            return task.get(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

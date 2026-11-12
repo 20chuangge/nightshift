@@ -64,6 +64,8 @@ public class MainActivity extends BridgeActivity {
             + "var d=window.desk=window.desk||{};"
             + "d.setImmersive=function(on){try{if(s)s.setImmersive(!!on);}catch(e){}};"
             + "d.setOrientation=function(mode){try{if(s)s.setOrientation(String(mode||'portrait'));}catch(e){}};"
+            + "if(s&&s.clipboardRead){d.clipboardRead=async function(){return String(s.clipboardRead()||'');};"
+            + "d.clipboardWrite=async function(t){return !!s.clipboardWrite(String(t==null?'':t));};}"
             + "if(!n||d.voiceStart)return;"
             + "var parse=function(x){try{return JSON.parse(x);}catch(e){return null;}};"
             + "d.voiceStart=async function(){return parse(n.start())||{error:'Error'};};"

@@ -68,7 +68,8 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv } from './desktops.mjs';
+import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS } from './clipboard.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
@@ -986,6 +987,30 @@ route('GET', /^\/api\/bots\/(?<botId>[^/]+)\/desktop$/, async (_req, _res, { par
 route('POST', /^\/api\/bots\/(?<botId>[^/]+)\/desktop\/stop$/, async (_req, _res, { params }) => ({
   ok: stopDesktop(params.botId),
 }));
+
+// The screen's own clipboard, for text the VNC channel cannot carry (it is
+// Latin-1, so Chinese turns into "?"). The person viewing asks for it; the
+// answer says why not when this screen has no usable clipboard tool.
+function screenClipEnv(botId) {
+  return process.platform === 'win32' ? {} : desktopEnv(botId);
+}
+route('POST', /^\/api\/bots\/(?<botId>[^/]+)\/desktop\/clipboard$/, async (_req, _res, { params, body }) => {
+  const text = body?.text;
+  if (typeof text !== 'string') throw httpError(400, 'BAD_TEXT', 'body needs {text}');
+  if (text.length > CLIPBOARD_MAX_CHARS) throw httpError(413, 'TEXT_TOO_LONG', `at most ${CLIPBOARD_MAX_CHARS} characters`);
+  return setClipboard(screenClipEnv(params.botId), text);
+});
+route('GET', /^\/api\/bots\/(?<botId>[^/]+)\/desktop\/clipboard$/, async (_req, _res, { params }) => getClipboard(screenClipEnv(params.botId)));
+// When the screen's clipboard cannot take it (a Wayland screen without a
+// keyboard seat, a Windows hub in a service session): type it into the bot's
+// browser, where the person's cursor is.
+route('POST', /^\/api\/bots\/(?<botId>[^/]+)\/desktop\/type$/, async (_req, _res, { params, body }) => {
+  const text = body?.text;
+  if (typeof text !== 'string' || !text) throw httpError(400, 'BAD_TEXT', 'body needs {text}');
+  if (text.length > 5000) throw httpError(413, 'TEXT_TOO_LONG', 'at most 5000 characters');
+  const { getBrowserManager } = await import('./browser.mjs');
+  return getBrowserManager(params.botId).insertAtFocus(text);
+});
 
 route('PUT', /^\/api\/settings$/, async (_req, _res, { body, state }) => {
   // The documented body is flat: {provider, baseUrl, model, apiKey?}.

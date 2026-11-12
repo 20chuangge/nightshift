@@ -1335,7 +1335,12 @@ window.DESK_I18N_EN = {
   "发送到远端": "Send to remote",
   "发送并 Ctrl+V": "Send and Ctrl+V",
   "复制到手机": "Copy to phone",
-  "密码、验证码请直接在远端屏幕里输入，不要贴进聊天。远端剪贴板走 VNC 标准通道（latin1），中文可能变成 ?；中文请用「键盘」直接输入。": "Enter passwords and codes directly on the remote screen, not in chat. The remote clipboard uses the VNC standard channel (latin1), so Chinese may turn into ?; type Chinese with the keyboard button.",
+  "密码、验证码请直接在远端屏幕里输入，不要贴进聊天。中文由那台机器自己写进它的剪贴板（Linux 需要 xclip 或 wl-clipboard，安装脚本会装）；没有时中文会变成 ?，请用「键盘」输入。": "Enter passwords and codes directly on the remote screen, not in chat. Chinese text is written into that machine's own clipboard (Linux needs xclip or wl-clipboard; the setup script installs them); without them Chinese turns into ?, so type it with the keyboard button.",
+  "粘贴手机剪贴板": "Paste phone clipboard",
+  "这台机器的剪贴板和浏览器都放不进中文，会变成 ?，请用「键盘」输入": "Neither this machine's clipboard nor its browser can take Chinese, so it turns into ?; type it with the keyboard button",
+  "中文放不进这台机器的剪贴板（会变成 ?）：点「发送并 Ctrl+V」直接输入到机器人的浏览器": "Chinese does not fit this machine's clipboard (it turns into ?): use \"Send and Ctrl+V\" to type it straight into the bot's browser",
+  "已输入到机器人的浏览器": "Typed into the bot's browser",
+  "手机剪贴板是空的，或读不到：请长按文本框粘贴": "The phone clipboard is empty or unreadable: long-press the text box to paste",
   "把手机上的文字粘贴到这里，再送进远端；远端复制的文字也会出现在这里。": "Paste text from your phone here and send it to the remote; text copied on the remote also appears here.",
   // --- permissions overview ----------------------------------------------
   "成本": "Cost",

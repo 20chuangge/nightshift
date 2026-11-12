@@ -137,6 +137,7 @@ async function main() {
     );
     await stage('machines and policy', () => scenarioMachinesAndPolicy({ approvals, toolsMod }));
     await stage('coding CLIs on the subscription', () => scenarioCliAgents({ toolsMod, home }));
+    await stage('screen clipboard', () => scenarioClipboard({ home }));
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
   } finally {
@@ -3304,6 +3305,76 @@ async function scenarioCliAgents({ toolsMod, home }) {
   }
 }
 
+async function scenarioClipboard({ home }) {
+  const clip = await import('../src/clipboard.mjs');
+  const yes = () => true;
+  const no = () => false;
+  {
+    const x = clip.clipboardTool({ DISPLAY: ':120' }, { platform: 'linux', exists: yes });
+    const w = clip.clipboardTool({ WAYLAND_DISPLAY: 'wayland-1' }, { platform: 'linux', exists: yes });
+    check('M clip: X11 screens use xclip on the clipboard selection, Wayland screens wl-copy / wl-paste',
+      x.via === 'xclip' && x.set[1].join(' ') === '-selection clipboard -i' && x.get[1].join(' ') === '-selection clipboard -o'
+      && w.via === 'wl-clipboard' && w.set[0] === 'wl-copy' && w.get[0] === 'wl-paste');
+    const xsel = clip.clipboardTool({ DISPLAY: ':120' }, { platform: 'linux', exists: (b) => b === 'xsel' });
+    const missX = clip.clipboardTool({ DISPLAY: ':120' }, { platform: 'linux', exists: no });
+    const missW = clip.clipboardTool({ WAYLAND_DISPLAY: 'wayland-1' }, { platform: 'linux', exists: no });
+    check('M clip: xsel when there is no xclip; a missing tool names the package to install',
+      xsel.via === 'xsel' && missX.error === 'CLIP_TOOL_MISSING' && missX.install === 'xclip' && missW.install === 'wl-clipboard');
+    const none = clip.clipboardTool({}, { platform: 'linux', exists: yes });
+    const svc = clip.clipboardTool({}, { platform: 'win32', exists: yes, sessionName: '' });
+    const desk = clip.clipboardTool({}, { platform: 'win32', exists: yes, sessionName: 'Console' });
+    check('M clip: no screen -> says so; a Windows hub without a desktop session refuses instead of writing an invisible clipboard',
+      none.error === 'CLIP_NO_DESKTOP' && svc.error === 'CLIP_NO_SESSION' && desk.via === 'powershell' && /Set-Clipboard/.test(desk.set[1].at(-1)) && /UTF8/.test(desk.set[1].at(-1)));
+    const failed = await clip.setClipboard({ DISPLAY: ':120' }, 'x', { platform: 'linux', exists: no });
+    check('M clip: a refusal is an answer {ok:false, code}, not a crash', failed.ok === false && failed.code === 'CLIP_TOOL_MISSING');
+  }
+  {
+    const fake = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-clip.mjs');
+    const saved = { fake: process.env.DESK_CLIP_FAKE, file: process.env.DESK_CLIP_FILE };
+    process.env.DESK_CLIP_FAKE = fake;
+    process.env.DESK_CLIP_FILE = path.join(home, 'clip.txt');
+    try {
+      const text = '中文剪贴板 "引号" & | $HOME 😀\n第二行';
+      const put = await clip.setClipboard({ DISPLAY: ':120' }, text);
+      const got = await clip.getClipboard({ DISPLAY: ':120' });
+      check('M clip: Chinese, quotes, shell characters and emoji go through stdin and come back exactly', put.ok && got.ok && got.text === text, JSON.stringify(got));
+    } finally {
+      if (saved.fake === undefined) delete process.env.DESK_CLIP_FAKE; else process.env.DESK_CLIP_FAKE = saved.fake;
+      if (saved.file === undefined) delete process.env.DESK_CLIP_FILE; else process.env.DESK_CLIP_FILE = saved.file;
+    }
+  }
+  {
+    const bad = await api('/api/bots/chief/desktop/clipboard', { method: 'POST', body: { text: 5 } });
+    const big = await api('/api/bots/chief/desktop/clipboard', { method: 'POST', body: { text: 'a'.repeat(clip.CLIPBOARD_MAX_CHARS + 1) } });
+    check('M clip api: text must be a string and at most 100 000 characters', bad.status === 400 && big.status === 413);
+    const typeEmpty = await api('/api/bots/chief/desktop/type', { method: 'POST', body: { text: '' } });
+    const typeNoBrowser = await api('/api/bots/chief/desktop/type', { method: 'POST', body: { text: '你好' } });
+    check('M clip type: typing into the bot browser needs text and never starts a browser', typeEmpty.status === 400 && typeNoBrowser.status === 200 && typeNoBrowser.json?.ok === false && typeNoBrowser.json?.code === 'NO_BROWSER');
+    const clipSrc = await readText('../src/clipboard.mjs');
+    check('M clip install: a missing tool is installed once with sudo -n; apt refreshes its list and retries after a 404, then tries the setup mirror in a list of its own (system sources untouched)',
+      clipSrc.includes('{ sudo -n apt-get update -q && ${apt()}; } || { ${mirror}; }') && clipSrc.includes('installTried.has(pkg)')
+      && clipSrc.includes('https://mirrors.aliyun.com/ubuntu') && clipSrc.includes('Dir::Etc::SourceParts=/nonexistent') && !/>\s*\/etc\/apt/.test(clipSrc));
+  }
+  {
+    const page = await readText('../public/index.html');
+    const fits = new Function(`${page.match(/function clipFitsVnc\(text\) \{[\s\S]*?\n\}/)[0]}; return clipFitsVnc;`)();
+    check('M clip page: Latin-1 text still goes through the viewer, Chinese goes to the hub',
+      fits('hello é') && !fits('你好') && page.includes("api(screenClipPath(), { method: 'POST', body: { text: value } })") && page.includes('rfb.clipboardPasteFrom(value);'));
+    check('M clip page: remote "?" text is replaced by the hub\'s real text; copy-outs use the app\'s clipboard first',
+      page.includes("if (!text.includes('?') || !screenClipPath()) return text;") && page.includes('const text = await pullRemoteClip(got);') && page.includes("api(screenClipPath().replace(/clipboard$/, 'type')") && page.includes('if (sent.typed) {')
+      && /async function copyText[\s\S]{0,200}await phoneClipWrite\(value\)/.test(page) && !page.includes('const clip = win.navigator.clipboard'));
+    const activity = await readText('../mobile/android/app/src/main/java/com/desk/assistant/MainActivity.java');
+    const bridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+    const preload = await readText('../desktop/shell-preload.cjs');
+    const main = await readText('../desktop/main.mjs');
+    check('M clip shells: Android ClipboardManager and the desktop app\'s clipboard are offered as window.desk.clipboardRead/Write',
+      bridge.includes('public String clipboardRead()') && bridge.includes('cm.setPrimaryClip(ClipData.newPlainText(') && activity.includes('d.clipboardRead=async function()')
+      && preload.includes("clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read')") && main.includes("ipcMain.handle('desk:clipboard-write'"));
+    const setup = await readText('../hub/setup-linux.sh');
+    check('M clip setup: Linux setup installs xclip (X11) and wl-clipboard (Wayland)', (setup.match(/has xclip \|\| pm_install xclip/g) || []).length === 2 && setup.includes('has wl-copy || pm_install wl-clipboard'));
+  }
+}
+
 async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
   // Approval levels and the human's own blocked words.
   {
@@ -4787,7 +4858,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       page.includes('pc-shield-hint') && page.includes('if (isMobile() && !desktopTakeover()) togglePanelMax(true)'));
     check('takeover: the clipboard drawer works without navigator.clipboard',
       page.includes('id="clip-drawer"') && page.includes('clipboardPasteFrom(') &&
-      page.includes("document.execCommand('copy')") && page.includes('latin1'));
+      page.includes("document.execCommand('copy')") && page.includes('Linux 需要 xclip 或 wl-clipboard'));
     // Fullscreen controls never follow the theme: the surface behind them is black.
     check('takeover: fullscreen buttons are fixed white-on-dark with safe-area offsets',
       /\.pc-exit\s*\{[^}]*safe-r[^}]*background: rgba\(0, 0, 0, 0\.55\);[^}]*color: #fff;/.test(page) &&

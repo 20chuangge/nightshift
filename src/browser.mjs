@@ -1088,6 +1088,21 @@ class BrowserManager {
     }
   }
 
+  /**
+   * Type text where the cursor is in this bot's browser: a person taking over
+   * pastes Chinese, which the VNC clipboard cannot carry. Never starts a browser.
+   */
+  async insertAtFocus(text) {
+    if (!this.session?.page || this.session.page.closed) return { ok: false, code: 'NO_BROWSER', reason: 'this bot has no browser open' };
+    try {
+      const page = await this.ensurePage();
+      await page.send('Input.insertText', { text: String(text ?? '') });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, code: 'TYPE_FAILED', reason: err.message };
+    }
+  }
+
   async type(args) {
     const text = String(args?.text ?? '');
     if (!text) return errorResult('BAD_ARGS', 'browser_type needs a non-empty "text"');

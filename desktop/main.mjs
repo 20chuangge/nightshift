@@ -11,7 +11,7 @@
  *   resources/server/config/*   <- seed config, copied to userData on first run
  *   %APPDATA%/Desk/             <- ASSIST_HOME: config, skills, public, workspace, data
  */
-import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification } from 'electron';
+import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification, clipboard } from 'electron';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -877,6 +877,9 @@ ipcMain.handle('desk:machines-attention', async () => {
 // System notification from the page (a bot needs the human); clicking it
 // brings the window back and tells the page what it was about.
 const liveNotes = new Set();
+ipcMain.handle('desk:clipboard-read', () => clipboard.readText());
+ipcMain.handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
+
 ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
   // The taskbar button flashes until the window is used: this works even when
   // Windows notifications are turned off (they often are).

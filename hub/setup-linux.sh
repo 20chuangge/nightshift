@@ -468,6 +468,8 @@ pick_mirror
 if [ "$PM" = apt ]; then
   status running "安装屏幕组件（浏览器同时在下载）"
   pm_install xvfb x11vnc websockify novnc dbus-x11
+  # The screen's clipboard, so Chinese text can be pasted in (VNC carries Latin-1 only).
+  has xclip || pm_install xclip
   # Light bot desktops: a window manager only (~150 MB per bot instead of ~240 MB with XFCE).
   has openbox || pm_install openbox x11-xserver-utils
   if [ -n "$SNAP_PID" ]; then
@@ -483,6 +485,7 @@ elif [ "${EL_MAJOR:-0}" -ge 10 ]; then
   # cage (one window, the bot's browser) + wayvnc.
   status running "安装屏幕组件（cage、wayvnc，浏览器同时在下载）"
   pm_install cage wayvnc python3-websockify novnc
+  has wl-copy || pm_install wl-clipboard
   # EPEL's libavcodec-free (pulled in by wayvnc) needs the newer liblc3 from
   # AppStream; with the old one wayvnc fails with "undefined symbol".
   "$PM" -y -q upgrade liblc3 >/dev/null 2>&1 || true
@@ -497,6 +500,7 @@ elif [ "${EL_MAJOR:-0}" -ge 10 ]; then
   exit 0
 else
   pm_install xorg-x11-server-Xvfb x11vnc python3-websockify novnc dbus-x11
+  has xclip || pm_install xclip
   has openbox || pm_install openbox xsetroot
   status running "安装浏览器 Chromium"
   pm_install chromium

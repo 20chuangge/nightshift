@@ -3872,8 +3872,9 @@
     <button class="btn primary" id="clip-send" type="button">发送到远端</button>
     <button class="btn" id="clip-paste" type="button">发送并 Ctrl+V</button>
     <button class="btn" id="clip-copy" type="button">复制到手机</button>
+    <button class="btn" id="clip-mine" type="button" hidden>粘贴手机剪贴板</button>
   </div>
-  <div class="row-note">密码、验证码请直接在远端屏幕里输入，不要贴进聊天。远端剪贴板走 VNC 标准通道（latin1），中文可能变成 ?；中文请用「键盘」直接输入。</div>
+  <div class="row-note">密码、验证码请直接在远端屏幕里输入，不要贴进聊天。中文由那台机器自己写进它的剪贴板（Linux 需要 xclip 或 wl-clipboard，安装脚本会装）；没有时中文会变成 ?，请用「键盘」输入。</div>
 </div>
 <div class="scrim" id="vnc-scrim" aria-hidden="true"></div>
 <div class="modal" id="vnc-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-modal-title" aria-hidden="true">
@@ -5401,8 +5402,8 @@ async function copyText(text, okMessage = '已复制') {
   const value = String(text ?? '');
   if (!value) return;
   try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(value);
+    if (await phoneClipWrite(value)) {
+      /* done by the shell or the clipboard API */
     } else {
       const ta = document.createElement('textarea');
       ta.value = value;
@@ -5420,6 +5421,73 @@ async function copyText(text, okMessage = '已复制') {
   } catch {
     toast('复制失败，请长按选择文字', true);
   }
+}
+
+/*
+ * This device's clipboard. The app shells (Android, the desktop app) offer the
+ * system clipboard as window.desk.clipboardRead/Write: a machine's page is
+ * plain http, where navigator.clipboard does not exist. null / false = no way.
+ */
+async function phoneClipRead() {
+  if (typeof window.desk?.clipboardRead === 'function') {
+    try { return String((await window.desk.clipboardRead()) ?? ''); } catch { /* fall through */ }
+  }
+  if (navigator.clipboard?.readText && window.isSecureContext) {
+    try { return await navigator.clipboard.readText(); } catch { /* no permission */ }
+  }
+  return null;
+}
+
+async function phoneClipWrite(text) {
+  if (typeof window.desk?.clipboardWrite === 'function') {
+    try { if (await window.desk.clipboardWrite(String(text ?? ''))) return true; } catch { /* fall through */ }
+  }
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(String(text ?? '')); return true; } catch { /* no permission */ }
+  }
+  return false;
+}
+
+/** The VNC clipboard message is Latin-1: anything else needs the hub's way. */
+function clipFitsVnc(text) {
+  return /^[\x00-\xff]*$/.test(String(text));
+}
+
+function screenClipPath() {
+  const botId = state.computer?.desktop?.botId || state.computer?.botId || state.botId;
+  return botId ? `/api/bots/${encodeURIComponent(botId)}/desktop/clipboard` : '';
+}
+
+/**
+ * Put text on the remote screen's clipboard. Latin-1 text goes through the
+ * viewer; other text (Chinese) is written there by that machine's hub. With
+ * {paste}, text that clipboard cannot take is typed into the bot's browser.
+ * -> {ok, lossy, typed}: lossy = it went through the viewer and lost
+ *    characters; typed = it is already in (do not press Ctrl+V).
+ */
+async function pushRemoteClip(rfb, text, { paste = false } = {}) {
+  const value = String(text ?? '');
+  if (!value) return { ok: false };
+  if (!clipFitsVnc(value) && screenClipPath()) {
+    const res = await api(screenClipPath(), { method: 'POST', body: { text: value } }).catch(() => null);
+    if (res?.ok) return { ok: true, lossy: false };
+    if (paste) {
+      const typed = await api(screenClipPath().replace(/clipboard$/, 'type'), { method: 'POST', body: { text: value } }).catch(() => null);
+      if (typed?.ok) return { ok: true, lossy: false, typed: true };
+    }
+  }
+  if (!rfb) return { ok: false };
+  rfb.clipboardPasteFrom(value);
+  return { ok: true, lossy: !clipFitsVnc(value) };
+}
+
+/** What the remote copied: the viewer's text, or the hub's when it has more. */
+async function pullRemoteClip(viewerText) {
+  const text = String(viewerText ?? '');
+  // Characters outside Latin-1 arrive as "?": ask the hub for the real text.
+  if (!text.includes('?') || !screenClipPath()) return text;
+  const res = await api(screenClipPath()).catch(() => null);
+  return res?.ok && res.text ? res.text : text;
 }
 
 /* ---------------------------------------------------------------------
@@ -7550,6 +7618,7 @@ function takeoverCard(item) {
 function openClipDrawer() {
   const remote = document.querySelector('#pc-vnc-wrap iframe')?.contentDocument?.getElementById('noVNC_clipboard_text');
   if (remote?.value) $('clip-text').value = remote.value;
+  if ($('clip-mine')) $('clip-mine').hidden = typeof window.desk?.clipboardRead !== 'function' && !(navigator.clipboard?.readText && window.isSecureContext);
   $('clip-scrim').classList.add('show');
   $('clip-drawer').hidden = false;
   setTimeout(() => $('clip-text').focus(), 60);
@@ -7564,19 +7633,19 @@ function bridgeClipboard(frame) {
   const win = frame.contentWindow;
   if (!win || win.__nsClipboard) return;
   win.__nsClipboard = true;
-  const clip = win.navigator.clipboard || navigator.clipboard;
   const tick = setInterval(() => {
     if (!frame.isConnected) { clearInterval(tick); return; }
     const rfb = win.UI && win.UI.rfb;
     if (!rfb || rfb.__nsBridged) return; // noVNC makes a new one on reconnect
     rfb.__nsBridged = true;
-    rfb.addEventListener('clipboard', (event) => {
-      const text = event.detail && event.detail.text;
-      if (!text) return;
-      // The drawer is the clipboard on plain http, where the API is absent.
+    rfb.addEventListener('clipboard', async (event) => {
+      const got = event.detail && event.detail.text;
+      if (!got) return;
+      const text = await pullRemoteClip(got);
+      // The drawer shows it too, for when this device's clipboard is out of reach.
       const box = document.getElementById('clip-text');
       if (box) box.value = text;
-      if (clip) clip.writeText(text).catch(() => {});
+      phoneClipWrite(text);
     });
   }, 1000);
   win.document.addEventListener('keydown', async (event) => {
@@ -7585,9 +7654,10 @@ function bridgeClipboard(frame) {
     if (!rfb || rfb.viewOnly) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    let text = '';
-    try { text = clip ? await clip.readText() : (document.getElementById('clip-text')?.value || ''); } catch { /* no permission: paste what is already there */ }
-    if (text) rfb.clipboardPasteFrom(text);
+    const mine = await phoneClipRead();
+    const text = mine || document.getElementById('clip-text')?.value || '';
+    const res = text ? await pushRemoteClip(rfb, text, { paste: true }) : null;
+    if (res?.typed) return;
     // Ctrl is already down over there; send the V once the clipboard arrived.
     setTimeout(() => { rfb.sendKey(0x76, 'KeyV', true); rfb.sendKey(0x76, 'KeyV', false); }, 80);
   }, true);
@@ -12353,26 +12423,35 @@ function wireChrome() {
   $('pcm-view').addEventListener('click', () => { exitLandscape(); closeDesktopViewer(); });
   $('clip-close').addEventListener('click', closeClipDrawer);
   $('clip-scrim').addEventListener('click', closeClipDrawer);
-  $('clip-send').addEventListener('click', () => {
+  const sendClip = async (paste) => {
     const ui = vncUI();
-    if (!ui?.rfb) { toast('画面还没连上', true); return; }
-    ui.rfb.clipboardPasteFrom($('clip-text').value);
-    toast('已放入远端剪贴板：在远端按 Ctrl+V 粘贴');
+    if (!ui?.rfb) { toast('画面还没连上', true); return null; }
+    const res = await pushRemoteClip(ui.rfb, $('clip-text').value, { paste });
+    if (res.lossy) toast(paste ? '这台机器的剪贴板和浏览器都放不进中文，会变成 ?，请用「键盘」输入' : '中文放不进这台机器的剪贴板（会变成 ?）：点「发送并 Ctrl+V」直接输入到机器人的浏览器', true);
+    return res.ok ? { ui, typed: res.typed } : null;
+  };
+  $('clip-send').addEventListener('click', async () => {
+    if (await sendClip(false)) toast('已放入远端剪贴板：在远端按 Ctrl+V 粘贴');
   });
-  $('clip-paste').addEventListener('click', () => {
-    const ui = vncUI();
-    if (!ui?.rfb) { toast('画面还没连上', true); return; }
-    ui.rfb.clipboardPasteFrom($('clip-text').value);
+  $('clip-paste').addEventListener('click', async () => {
+    const sent = await sendClip(true);
+    if (!sent) return;
+    closeClipDrawer();
+    if (sent.typed) { toast('已输入到机器人的浏览器'); return; }
+    const { ui } = sent;
     ui.sendKey(0xffe3, 'ControlLeft', true);
     ui.sendKey(0x76, 'KeyV');
     ui.sendKey(0xffe3, 'ControlLeft', false);
-    closeClipDrawer();
+  });
+  $('clip-mine')?.addEventListener('click', async () => {
+    const text = await phoneClipRead();
+    if (text) $('clip-text').value = text;
+    else toast('手机剪贴板是空的，或读不到：请长按文本框粘贴', true);
   });
   $('clip-copy').addEventListener('click', async () => {
     const box = $('clip-text');
     try {
-      if (navigator.clipboard) await navigator.clipboard.writeText(box.value);
-      else { box.focus(); box.select(); document.execCommand('copy'); }
+      if (!(await phoneClipWrite(box.value))) { box.focus(); box.select(); document.execCommand('copy'); }
       toast('已复制到手机剪贴板');
     } catch { toast('复制失败：请长按文本框手动复制', true); }
   });
@@ -12758,8 +12837,7 @@ function wireChrome() {
   $('funnel-copy')?.addEventListener('click', async () => {
     const text = $('funnel-url')?.textContent || '';
     try {
-      if (navigator.clipboard) await navigator.clipboard.writeText(text);
-      else {
+      if (!(await phoneClipWrite(text))) {
         const area = document.createElement('textarea');
         area.value = text;
         document.body.appendChild(area);
