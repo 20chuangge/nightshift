@@ -275,9 +275,14 @@
     if (JSON.stringify(list) !== JSON.stringify(rows)) await store.set(KEYS.hubs, JSON.stringify(list.slice(0, 12)));
   }
 
-  /** A machine's public https address (Funnel) is not in the hub's list: keep it. */
+  /**
+   * A machine's public https address (Funnel) is not in the hub's list: keep it.
+   * A hub older than 1.2.94 lists itself without its Tailscale address: when
+   * the list has none, keep the one the row had.
+   */
   function withPublic(urls, old, self) {
-    const pub = (old || []).filter((u) => /^https:/i.test(u));
+    const tailnet = (u) => /^https?:\/\/100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(u);
+    const pub = (old || []).filter((u) => /^https:/i.test(u) || (tailnet(u) && !urls.some(tailnet)));
     return [...new Set([...urls, ...pub])].filter((u) => u !== self);
   }
 

@@ -3385,7 +3385,15 @@ async function scenarioClipboard({ home }) {
     const again = foldRows(folded.list, folded.list.map(() => true));
     check('M2 phone list: folding is stable (a second pass changes nothing)', JSON.stringify(again.list) === JSON.stringify(folded.list));
     check('M2 phone list: folded on every render; a hub refreshes its own addresses and keeps the public one',
-      /await foldDuplicateRows\(\);\s+const hubs = await readHubs\(\);/.test(launcherM) && launcherM.includes('if (urls.length) h.alt = withPublic(urls, h.alt, h.url);') && launcherM.includes("const pub = (old || []).filter((u) => /^https:/i.test(u));"));
+      /await foldDuplicateRows\(\);\s+const hubs = await readHubs\(\);/.test(launcherM) && launcherM.includes('if (urls.length) h.alt = withPublic(urls, h.alt, h.url);') && launcherM.includes("const pub = (old || []).filter((u) => /^https:/i.test(u) || (tailnet(u) && !urls.some(tailnet)));"));
+    const withPublic = new Function(`${launcherM.match(/  function withPublic\(urls, old, self\) \{[\s\S]*?\n  \}\n/)[0]}; return withPublic;`)();
+    const oldRow = ['https://u.example.ts.net', 'http://100.64.0.5:4390', 'http://10.1.0.36:4390', 'http://10.1.0.99:4390'];
+    const fromOldHub = withPublic(['http://10.1.0.36:4390'], oldRow, 'https://u.example.ts.net');
+    const fromNewHub = withPublic(['http://100.64.0.9:4390', 'http://10.1.0.36:4390'], oldRow, 'https://u.example.ts.net');
+    check('M2 phone list: a hub listing itself without Tailscale keeps the row\'s Tailscale address; a listed one replaces it; old LAN addresses go',
+      fromOldHub.join(' ') === 'http://10.1.0.36:4390 http://100.64.0.5:4390' && fromNewHub.join(' ') === 'http://100.64.0.9:4390 http://10.1.0.36:4390', JSON.stringify([fromOldHub, fromNewHub]));
+    const serverSrc = await readText('../src/server.mjs');
+    check('M2 hub: /api/machines lists this hub with its own Tailscale address', serverSrc.includes('const selfTailnet = tailnetUrl(state);') && serverSrc.includes('{ tailnetUrl: selfTailnet }'));
     const page = await readText('../public/index.html');
     const fits = new Function(`${page.match(/function clipFitsVnc\(text\) \{[\s\S]*?\n\}/)[0]}; return clipFitsVnc;`)();
     check('M clip page: Latin-1 text still goes through the viewer, Chinese goes to the hub',

@@ -1684,7 +1684,9 @@ function setSelfMachineName(name) {
 
 route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const peers = state.peers.list();
-  const self = { name: selfMachineName(), url: state.pairingUrl || null, online: true, self: true };
+  // Its Tailscale address too: a phone that refreshes this row from here must not lose it.
+  const selfTailnet = tailnetUrl(state);
+  const self = { name: selfMachineName(), url: state.pairingUrl || null, ...(selfTailnet && selfTailnet !== state.pairingUrl ? { tailnetUrl: selfTailnet } : {}), online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it
