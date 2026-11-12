@@ -360,6 +360,16 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
 // --------------------------------------------------------------------------
 // the manager: config, connections, tools
 
+/** What makes two connections the same app: the web address, or the package npx / uvx runs. */
+export function catalogKey(c) {
+  if (!c) return '';
+  if (c.transport === 'http') return String(c.url || '').trim().replace(/\/+$/, '').toLowerCase();
+  const cmd = path.basename(String(c.command || '')).replace(/\.(cmd|exe)$/i, '').toLowerCase();
+  if (!['npx', 'uvx', 'bunx', 'pnpx'].includes(cmd)) return '';
+  const pkg = (c.args || []).map(String).find((a) => !a.startsWith('-'));
+  return pkg ? `${cmd}:${pkg.toLowerCase().replace(/@(latest|\d[\w.-]*)$/, '')}` : '';
+}
+
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/i;
 
 /**
@@ -633,6 +643,15 @@ export function createMcpManager({
         const ids = new Set((await listVault().catch(() => [])).map((e) => e.id));
         for (const c of configs) if (c.secretRef && !ids.has(c.secretRef)) delete c.secretRef;
       }
+      // Added by hand before the catalog had it (the same package or address):
+      // it becomes that catalog app, so the list shows it once, as 「已连接」.
+      let adopted = false;
+      for (const c of configs) {
+        if (c.catalogId) continue;
+        const e = catalog.find((x) => catalogKey(x) && catalogKey(x) === catalogKey(c) && !configs.some((o) => o.catalogId === x.id));
+        if (e) { c.catalogId = e.id; adopted = true; }
+      }
+      if (adopted) await save();
       return configs;
     },
     async startAll() {

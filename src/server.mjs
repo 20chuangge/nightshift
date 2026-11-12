@@ -1402,9 +1402,25 @@ route('PATCH', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { state
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
   return { server };
 });
-route('DELETE', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { state, params }) => {
+//   DELETE /api/mcp/:id?everywhere=1   a catalog app: disconnect it on the other machines too
+route('DELETE', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { state, params, query }) => {
+  const catalogId = state.mcp.list().find((s) => s.id === params.id)?.catalogId || '';
   const out = await state.mcp.remove(params.id);
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  if (catalogId && query.get('everywhere') === '1') {
+    out.peers = await Promise.all(state.peers.list().map(async (p) => {
+      const peer = state.peers.find(p.name);
+      try {
+        const cat = await state.peers.json(peer, 'GET', '/api/mcp/catalog', { timeoutMs: 8000 });
+        const there = (cat.apps || []).find((a) => a.id === catalogId)?.server;
+        if (!there) return { machine: p.name, ok: true, already: true };
+        await state.peers.json(peer, 'DELETE', `/api/mcp/${encodeURIComponent(there.id)}`, { timeoutMs: 20000 });
+        return { machine: p.name, ok: true };
+      } catch (err) {
+        return { machine: p.name, ok: false, message: err.message };
+      }
+    }));
+  }
   return out;
 });
 route('POST', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)\/test$/, async (_req, _res, { state, params }) => ({ server: await state.mcp.test(params.id) }));

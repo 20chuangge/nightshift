@@ -3685,6 +3685,43 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     m.stopAll();
     srv.close();
   }
+  // A connection added by hand before the catalog had it becomes that catalog app.
+  {
+    const file = path.join(process.env.ASSIST_DATA_DIR, 'mcp.json');
+    const before = await fsp.readFile(file, 'utf8');
+    const list = JSON.parse(before);
+    list.push({ id: 'mold1', name: '我的文件', transport: 'stdio', command: 'npx', args: ['-y', '@x/fake-fs@latest', 'D:/somewhere'], env: {}, enabled: false, trust: 'always', bots: 'all' });
+    await fsp.writeFile(file, JSON.stringify(list));
+    const m2 = mcp.createMcpManager({ registry: toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} }), workspaceDir: path.join(home, 'workspace'),
+      catalog: [...catalog, { id: 'fake-fs', name: '假文件', category: '本机', auth: 'none', transport: 'stdio', command: 'npx', args: ['-y', '@x/fake-fs', '{workspace}'] }] });
+    await m2.load();
+    const old = m2.list().find((x) => x.id === 'mold1');
+    check('M8 catalog: a connection added by hand earlier (same package) shows up as that catalog app, keeping its settings',
+      old?.catalogId === 'fake-fs' && old.trust === 'always' && m2.catalog().find((a) => a.id === 'fake-fs')?.server?.id === 'mold1'
+      && JSON.parse(await fsp.readFile(file, 'utf8')).find((x) => x.id === 'mold1')?.catalogId === 'fake-fs'
+      && mcp.catalogKey({ transport: 'stdio', command: 'C:/x/npx.cmd', args: ['-y', '@A/b@1.2.3'] }) === 'npx:@a/b' && mcp.catalogKey({ transport: 'stdio', command: 'node', args: ['x.js'] }) === '');
+    m2.stopAll();
+    await fsp.writeFile(file, before);
+  }
+  // mcp_find_tools: an app named in the query narrows the search to that app.
+  {
+    const reg = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
+    reg.mcpGate = () => true;
+    const addT = (srv, app, tool, desc, readOnly) => reg.tools.set(`mcp__${srv}__${tool}`, { name: `mcp__${srv}__${tool}`, description: `［${app}］${desc}`, risk: () => ({ risk: 'LOW' }), parameters: { type: 'object', properties: {} }, mcp: { serverId: srv, tool, readOnly } });
+    addT('mn', 'Notion', 'notion-search', 'Search pages and messages in Notion.', true);
+    addT('mn', 'Notion', 'notion-create-comment', 'Create a comment message.', false);
+    addT('mf', '飞书', 'im_v1_message_create', 'Send a message (消息) to a chat.', false);
+    addT('mf', '飞书', 'im_v1_chat_list', 'List chats.', true);
+    const bot = { id: 'b1', tools: [] };
+    const find = async (q) => (await reg.get('mcp_find_tools').run({ query: q }, { bot })).tools.map((t) => t.name);
+    const a = await find('飞书 消息');
+    const b = await find('飞书消息');
+    const c = await find('飞书');
+    const d = await find('message');
+    check('M8 find tools: 「飞书 消息」 / 「飞书消息」 give only Feishu tools; 「飞书」 alone lists them (read-only first); no app named searches all',
+      a.length === 1 && a[0] === 'mcp__mf__im_v1_message_create' && b.join() === a.join() && c[0] === 'mcp__mf__im_v1_chat_list' && c.length === 2
+      && d.includes('mcp__mn__notion-search') && d.includes('mcp__mf__im_v1_message_create'), JSON.stringify([a, b, c, d]));
+  }
   {
     const srvSrc = await readText('../src/server.mjs');
     const pageSrc = await readText('../public/index.html');
@@ -3696,6 +3733,9 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       srvSrc.includes('if (body?.everywhere) out.peers = await syncMcpToPeers(') && srvSrc.includes("['ready', 'connecting'].includes(there.server.state)")
       && pageSrc.includes('everywhere: !here') && pageSrc.includes("'同步到其他机器'") && pageSrc.includes('function mcpRelay()')
       && /localUrl: serverPort \? localUrl\(\)/.test(mainSrc));
+    check('M8 disconnect: a catalog app can be disconnected here only or on every machine',
+      srvSrc.includes("if (catalogId && query.get('everywhere') === '1')") && pageSrc.includes("'在所有机器上断开'") && pageSrc.includes('?everywhere=1'));
+    check('M9 bot settings: name and role at the top, abilities and approval as switch rows, a fixed save bar', pageSrc.includes('<div class="be-group" id="botedit-abilities"></div>') && pageSrc.includes("input.className = 'be-switch';") && pageSrc.includes('<textarea class="be-role" id="botedit-role-input"') && pageSrc.includes('<div class="be-foot">') && pageSrc.includes('.be-switch:checked::after { transform: translateX(14px); background: var(--on-accent, #fff); }'));
   }
   // An app with very many tools (Notion has 77): requests stay under the APIs' 128-tool limit.
   {

@@ -1965,10 +1965,23 @@ export function createRegistry(deps) {
       additionalProperties: false,
     },
     async run(args, ctx) {
-      const words = String(args?.query || '').toLowerCase().split(/[\s,，、]+/).filter(Boolean);
-      const mine = api.grantedFor(ctx?.bot).filter((t) => t.mcp);
+      let words = String(args?.query || '').toLowerCase().split(/[\s,，、]+/).filter(Boolean);
+      let mine = api.grantedFor(ctx?.bot).filter((t) => t.mcp);
+      // An app named in the query (「飞书 发消息」, "notion search", 「飞书消息」):
+      // only that app's tools, ranked by the other words.
+      const appOf = (t) => (String(t.description).match(/^［([^］]+)］/)?.[1] || '').toLowerCase();
+      const apps = [...new Set(mine.map(appOf).filter(Boolean))].sort((a, b) => b.length - a.length);
+      const named = new Set();
+      words = words.map((w) => {
+        const app = apps.find((a) => w.includes(a));
+        if (!app) return w;
+        named.add(app);
+        return w.replace(app, '');
+      }).filter(Boolean);
+      if (named.size) mine = mine.filter((t) => named.has(appOf(t)));
       const score = (t) => words.reduce((n, w) => n + (t.name.toLowerCase().includes(w) ? 2 : 0) + (String(t.description).toLowerCase().includes(w) ? 1 : 0), 0);
-      const hits = mine.map((t) => [score(t), t]).filter(([n]) => n > 0).sort((a, b) => b[0] - a[0]).slice(0, 12).map(([, t]) => t);
+      const hits = mine.map((t) => [score(t), t]).filter(([n]) => n > 0 || (named.size && !words.length))
+        .sort((a, b) => b[0] - a[0] || Number(Boolean(b[1].mcp.readOnly)) - Number(Boolean(a[1].mcp.readOnly))).slice(0, 12).map(([, t]) => t);
       return {
         count: hits.length,
         tools: hits.map((t) => ({ name: t.name, description: String(t.description).slice(0, 400), readOnly: Boolean(t.mcp.readOnly), parameters: t.parameters })),

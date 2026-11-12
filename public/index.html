@@ -2751,6 +2751,59 @@
   .audit-row.bad .audit-tag { color: #f07060; }
 
   /* bot abilities ------------------------------------------------------- */
+  /* bot settings: a calm list - who it is, its model, what it may do, approvals */
+  #botedit-sheet { display: flex; flex-direction: column; }
+  .be-body { padding: var(--s5); }
+  .be-hero { display: flex; align-items: center; gap: 16px; padding-bottom: var(--s5); border-bottom: 1px solid var(--border-soft); }
+  .be-avatar { position: relative; flex: none; padding: 0; border: 0; background: none; border-radius: 20px; cursor: pointer; }
+  .be-avatar:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .be-avatar-edit {
+    position: absolute; right: -4px; bottom: -4px; width: 22px; height: 22px; border-radius: 50%;
+    display: grid; place-items: center; color: var(--text);
+    background: var(--panel-3); border: 2px solid var(--panel-2); box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    transition: background 150ms var(--ease), color 150ms var(--ease);
+  }
+  .be-avatar:hover .be-avatar-edit { background: var(--accent); color: var(--on-accent, #fff); }
+  .be-hero-fields { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .be-name, .be-role {
+    width: 100%; margin-left: -8px; padding: 4px 8px; border-radius: 8px;
+    border: 1px solid transparent; background: transparent; color: var(--text); font: inherit;
+    transition: border-color 150ms var(--ease), background 150ms var(--ease);
+  }
+  .be-name { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+  .be-role { font-size: 13px; color: var(--muted); line-height: 1.45; resize: none; overflow: hidden; }
+  .be-name:hover, .be-role:hover { border-color: var(--border-soft); }
+  .be-name:focus, .be-role:focus { outline: none; border-color: var(--accent); background: var(--panel); color: var(--text); }
+  .be-section { margin-top: var(--s5); }
+  .be-section-title { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--dim); margin: 0 0 8px 2px; }
+  .be-hint { font-size: 11.5px; color: var(--dim); margin: 6px 2px 0; line-height: 1.5; }
+  .be-group { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .be-row { display: flex; align-items: center; gap: 14px; padding: 11px 14px; cursor: pointer; transition: background 120ms var(--ease); }
+  .be-row + .be-row { border-top: 1px solid var(--border-soft); }
+  .be-row:hover { background: var(--panel-2); }
+  .be-row-text { flex: 1; min-width: 0; }
+  .be-row-text b { display: block; font-size: 13.5px; font-weight: 550; color: var(--text); }
+  .be-row-text small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+  .be-switch {
+    appearance: none; -webkit-appearance: none; flex: none; position: relative; margin: 0;
+    width: 34px; height: 20px; border-radius: 999px; cursor: pointer;
+    background: var(--panel-3); border: 1px solid var(--border);
+    transition: background 160ms var(--ease), border-color 160ms var(--ease);
+  }
+  .be-switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--muted); transition: transform 160ms var(--ease), background 160ms var(--ease);
+  }
+  .be-switch:checked { background: var(--accent); border-color: var(--accent); }
+  .be-switch:checked::after { transform: translateX(14px); background: var(--on-accent, #fff); }
+  .be-switch:indeterminate { border-color: var(--accent); }
+  .be-switch:indeterminate::after { transform: translateX(7px); background: var(--accent); }
+  .be-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .be-danger { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--border-soft); }
+  .be-delete { padding: 0; border: 0; background: none; color: var(--red); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; }
+  .be-delete:hover { text-decoration: underline; }
+  .be-delete:disabled { color: var(--dim); cursor: default; text-decoration: none; }
+  .be-foot { flex: none; padding: 12px var(--s5) calc(12px + var(--safe-b)); border-top: 1px solid var(--border-soft); background: var(--panel-2); }
   .ability-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 10px; }
   .ability { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer; font-size: 13px; }
   .ability:has(input:checked) { border-color: var(--accent, #8b7cf6); }
@@ -4004,32 +4057,43 @@
     <span class="drawer-title" id="botedit-title">管理助手</span>
     <button class="icon-btn" id="botedit-close" type="button" aria-label="关闭">✕</button>
   </div>
-  <div class="sheet-body">
-    <div class="avatar-preview" style="padding:16px 0">
-      <div class="av" id="botedit-preview" style="--av-size:72px"></div>
+  <div class="sheet-body be-body">
+    <div class="be-hero">
+      <button class="be-avatar" id="botedit-avatar" type="button" title="改头像" aria-label="改头像">
+        <div class="av" id="botedit-preview" style="--av-size:60px"></div>
+        <span class="be-avatar-edit" aria-hidden="true"><svg viewBox="0 0 16 16" width="11" height="11"><path d="M11.3 2.3a1.5 1.5 0 0 1 2.1 2.1L5.6 12.2 2.8 13l.8-2.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
+      </button>
+      <div class="be-hero-fields">
+        <input class="be-name" id="botedit-name-input" autocomplete="off" maxlength="40" aria-label="名字" placeholder="名字" />
+        <textarea class="be-role" id="botedit-role-input" rows="2" maxlength="160" aria-label="职责" placeholder="这个 Bot 负责什么"></textarea>
+      </div>
     </div>
-    <label class="form-label" for="botedit-name-input">名字</label>
-    <input class="field" id="botedit-name-input" autocomplete="off" maxlength="40" />
-    <label class="form-label" for="botedit-role-input" style="margin-top:12px">职责</label>
-    <input class="field" id="botedit-role-input" autocomplete="off" maxlength="160" placeholder="这个 Bot 负责什么" />
-    <label class="form-label" for="botedit-model" style="margin-top:12px">模型</label>
-    <select class="field" id="botedit-model"></select>
-    <div class="row-note" id="botedit-model-note">想要更多选择：设置 → 模型 → 其他模型。</div>
-    <label class="lbl">它能做什么</label>
-    <div class="ability-list" id="botedit-abilities"></div>
-    <label class="switch-row ability-trust" for="botedit-trust">
-      <input type="checkbox" id="botedit-trust" />
-      <span>常规操作直接做，不用每次问我（「标准」级别下）</span>
-    </label>
+    <section class="be-section">
+      <div class="be-section-title">模型</div>
+      <select class="field" id="botedit-model" aria-label="模型"></select>
+      <div class="be-hint" id="botedit-model-note">想要更多选择：设置 → 模型 → 其他模型。</div>
+    </section>
+    <section class="be-section">
+      <div class="be-section-title">它能做什么</div>
+      <div class="be-group" id="botedit-abilities"></div>
+    </section>
+    <section class="be-section">
+      <div class="be-section-title">审批</div>
+      <div class="be-group">
+        <label class="be-row" for="botedit-trust">
+          <span class="be-row-text"><b>常规操作直接做</b><small>「标准」级别下不用每次问你；有风险的操作仍会先问</small></span>
+          <input type="checkbox" class="be-switch" id="botedit-trust" />
+        </label>
+      </div>
+    </section>
     <div class="modal-note" id="botedit-note" hidden></div>
-    <div class="btn-row">
-      <button class="btn primary" id="botedit-save" type="button">保存</button>
-      <button class="btn" id="botedit-avatar" type="button">改头像</button>
+    <div class="be-danger">
+      <button class="be-delete" id="botedit-delete" type="button">删除这个助手</button>
+      <div class="be-hint" id="botedit-delete-note">删除会一并删掉它的记忆和对话记录，无法恢复。</div>
     </div>
-    <div class="danger-zone">
-      <button class="btn danger block" id="botedit-delete" type="button">删除这个助手</button>
-      <div class="row-note" id="botedit-delete-note">删除会一并删掉它的记忆和对话记录，无法恢复。</div>
-    </div>
+  </div>
+  <div class="be-foot">
+    <button class="btn primary block" id="botedit-save" type="button">保存</button>
   </div>
 </aside>
 
@@ -5225,17 +5289,18 @@ function renderAbilities(bot) {
   box.innerHTML = '';
   for (const ab of ABILITIES) {
     const count = ab.tools.filter((t) => have.has(t)).length;
-    const row = el('label', 'ability');
+    const row = el('label', 'be-row');
+    const text = el('span', 'be-row-text');
+    text.appendChild(el('b', '', ab.label));
+    if (ab.note) text.appendChild(el('small', '', ab.note));
+    row.appendChild(text);
     const input = document.createElement('input');
     input.type = 'checkbox';
+    input.className = 'be-switch';
     input.dataset.ability = ab.id;
     input.checked = count > 0;
     input.indeterminate = count > 0 && count < ab.tools.length;
     row.appendChild(input);
-    const text = el('span', '');
-    text.appendChild(el('b', '', ab.label));
-    if (ab.note) text.appendChild(el('small', '', ab.note));
-    row.appendChild(text);
     box.appendChild(row);
   }
   $('botedit-trust').checked = Boolean(bot.policy?.autoApproveMedium);
@@ -10418,7 +10483,7 @@ function mcpServerPanel(s) {
   const row = el('div', 'btn-row');
   const test = el('button', 'btn tiny', s.oauth && s.state === 'needs_auth' ? '重新授权' : '重新连接');
   test.type = 'button';
-  const del = el('button', 'btn tiny danger', '断开并删除');
+  const del = el('button', 'btn tiny danger', s.catalogId ? '只在这台断开' : '断开并删除');
   del.type = 'button';
   row.append(test);
   if (s.catalogId && s.state === 'ready') {
@@ -10429,6 +10494,13 @@ function mcpServerPanel(s) {
     row.append(sync);
   }
   row.append(del);
+  // A catalog app is connected on every machine by default: disconnecting can be everywhere too.
+  let delAll = null;
+  if (s.catalogId) {
+    delAll = el('button', 'btn tiny danger', '在所有机器上断开');
+    delAll.type = 'button';
+    row.append(delAll);
+  }
   box.appendChild(row);
   test.addEventListener('click', async () => {
     if (s.oauth && s.state === 'needs_auth' && s.catalogId) { connectMcpApp({ id: s.catalogId, name: s.name, auth: 'oauth' }, {}, null, { here: true }); return; }
@@ -10444,6 +10516,16 @@ function mcpServerPanel(s) {
   del.addEventListener('click', async () => {
     if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次断开'; return; }
     try { await api(`/api/mcp/${encodeURIComponent(s.id)}`, { method: 'DELETE' }); toast(`已断开「${s.name}」`); loadMcp(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+  });
+  delAll?.addEventListener('click', async () => {
+    if (!delAll.dataset.armed) { delAll.dataset.armed = '1'; delAll.textContent = '再点一次，所有机器都断开'; return; }
+    delAll.disabled = true;
+    try {
+      const out = await api(`/api/mcp/${encodeURIComponent(s.id)}?everywhere=1`, { method: 'DELETE' });
+      const failed = (out.peers || []).filter((p) => !p.ok);
+      toast(failed.length ? `已在这台断开「${s.name}」；${failed.map((p) => `${p.machine}：${p.message}`).join('；')}` : `已在所有机器上断开「${s.name}」`, Boolean(failed.length));
+    } catch (err) { toast(`删除失败：${err.message}`, true); }
+    loadMcp();
   });
   return box;
 }
