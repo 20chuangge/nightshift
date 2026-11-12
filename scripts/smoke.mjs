@@ -3185,7 +3185,7 @@ function shanghaiWeekday(ts) {
     check('the sidebar is set apart from the chat (darker grey in light, a divider line)', html.includes('--bg: #FFFFFF; --bg-2: #F0F0F0;') && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
     check('feishu apps of their own: the settings list, the add form and its button are wired', ['feishu-apps', 'feishu-app-bot', 'feishu-app-id', 'feishu-app-secret', 'feishu-app-save'].every((id) => html.includes(`id="${id}"`)) && html.includes("$('feishu-app-save')?.addEventListener('click', addFeishuApp)"));
     const launcher = await readText('../mobile/shell/launcher.js');
-    check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkKind(entry.best || entry.url);'));
+    check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkLabel(entry.best || entry.url, entry);'));
     const shellHtml = await readText('../mobile/shell/index.html');
     {
       const srvSrc = await readText('../src/server.mjs');
@@ -3394,7 +3394,17 @@ async function scenarioClipboard({ home }) {
       fromOldHub.join(' ') === 'http://10.1.0.36:4390 http://100.64.0.5:4390' && fromNewHub.join(' ') === 'http://100.64.0.9:4390 http://10.1.0.36:4390', JSON.stringify([fromOldHub, fromNewHub]));
     const serverSrc = await readText('../src/server.mjs');
     check('M2 hub: /api/machines lists this hub with its own Tailscale address', serverSrc.includes('const selfTailnet = tailnetUrl(state);') && serverSrc.includes('{ tailnetUrl: selfTailnet }'));
+    const linkLabel = new Function(`${launcherM.match(/  function linkKind\(raw\) \{[\s\S]*?\n  \}\n/)[0]}${launcherM.match(/  function linkLabel\(best, entry\) \{[\s\S]*?\n  \}\n/)[0]}; return linkLabel;`)();
+    check('M3 phone list: a machine reached over the public address says Tailscale is faster when it has a Tailscale address',
+      linkLabel('https://u.example.ts.net', { url: 'https://u.example.ts.net', alt: ['http://100.64.0.5:4390'] }).includes('开 Tailscale 更快')
+      && linkLabel('https://u.example.ts.net', { url: 'https://u.example.ts.net', alt: [] }) === '外网'
+      && linkLabel('http://100.64.0.5:4390', { url: 'https://u.example.ts.net', alt: ['http://100.64.0.5:4390'] }) === 'Tailscale');
     const page = await readText('../public/index.html');
+    check('M3 preview: no machine screenshot before the bot\'s screen is known, and a late one never covers the live view',
+      /if \(!state\.computer\) \{\s+img\.style\.display = 'none';\s+note\.textContent = '正在打开屏幕…';/.test(page)
+      && /const res = await fetch\(`\/api\/computer\/screenshot\?ts=\$\{Date\.now\(\)\}`, \{ credentials: 'same-origin' \}\);\s+\/\/ The bot's live view may have arrived while this was on its way\.\s+if \(state\.computer\?\.desktop\?\.perBot\) return;/.test(page)
+      && page.includes('这台机器本身没有桌面（服务器版）')
+      && /if \(!refreshScreen\.loading\) \{\s+refreshScreen\.loading = loadComputer\(\)/.test(page) && page.includes('if (state.computer) refreshScreen();\n        else {'));
     const fits = new Function(`${page.match(/function clipFitsVnc\(text\) \{[\s\S]*?\n\}/)[0]}; return clipFitsVnc;`)();
     check('M clip page: Latin-1 text still goes through the viewer, Chinese goes to the hub',
       fits('hello é') && !fits('你好') && page.includes("api(screenClipPath(), { method: 'POST', body: { text: value } })") && page.includes('rfb.clipboardPasteFrom(value);'));
@@ -4574,8 +4584,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N2 scan: a pairing code the hub draws is read back by the in-app scanner (jsQR, no Google module)', read?.data === link);
         check('N2 scan: the back key and 取消 both close the camera', launcherS.includes("history.pushState({ scan: true }, '');") && launcherS.includes("window.addEventListener('popstate', onBack);") && launcherS.includes('stream.getTracks().forEach((t) => t.stop());'));
         check('auto address: the phone probes every address at once and keeps the closest that answers (LAN, then Tailscale, then public), for scanning and for opening a machine', launcherS.includes('async function bestAddress(urls)') && launcherS.includes("url.searchParams.getAll('alt')") && launcherS.includes('let hub = (await bestAddress([entry.url, ...(entry.alt || [])])) || entry.url;'));
-        check('auto address: each row is labelled by the address that answers now (局域网 / Tailscale)', launcherS.includes('if (best) { url.textContent = linkKind(best); url.title = best; }'));
-        check('auto address: the row shows how it was reached last time while checking, and remembers the new one', launcherS.includes('url.textContent = linkKind(entry.best || entry.url);') && launcherS.includes('row.best = best;'));
+        check('auto address: each row is labelled by the address that answers now (局域网 / Tailscale)', launcherS.includes('if (best) { url.textContent = linkLabel(best, entry); url.title = best; }'));
+        check('auto address: the row shows how it was reached last time while checking, and remembers the new one', launcherS.includes('url.textContent = linkLabel(entry.best || entry.url, entry);') && launcherS.includes('row.best = best;'));
         check('phone list: the 15 s redraw keeps the last state (no 检测中 flashing), and a relayed Tailscale address gets a second, longer try before 离线', launcherS.includes('const known = renderMachines.lastUp?.get(entry.url);') && launcherS.includes('const again = await Promise.all(slow.map((u) => probe(u, 10000)));') && launcherS.includes('async function probe(hub, timeoutMs = PROBE_TIMEOUT_MS) {'));
         check('N2 list: a VM only the computer can reach says 仅电脑可达 and explains, instead of 离线', launcherS.includes('async function behindVia(entry)') && launcherS.includes("tag.textContent = '仅电脑可达';") && launcherS.includes('手机直接连不到'));
         check('N2 scan: Google scanner when the phone has it, otherwise the camera inside the app', launcherS.includes('useGoogle = await ensureBarcodeModule().catch(() => false);') && launcherS.includes('const text = await cameraScan();') && shellS.includes('id="scan-view"') && launcherS.includes("tag.src = 'jsqr.js';"));

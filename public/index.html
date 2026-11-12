@@ -10977,12 +10977,34 @@ async function refreshScreen() {
   }
   if (state.computer?.desktop?.perBot) return;   // live view is already embedded
   if (!img) return;
+  // Not known yet whether this bot has its own screen (a slow link, the first
+  // load): asking for the machine's screen now would put its "no screen"
+  // answer over the bot's live view when that arrives.
+  if (!state.computer) {
+    img.style.display = 'none';
+    note.textContent = '正在打开屏幕…';
+    note.style.display = 'block';
+    // Opening the panel on a tab that was already 电脑 never asked: ask now,
+    // once at a time. A failure says so instead of asking again and again.
+    if (!refreshScreen.loading) {
+      refreshScreen.loading = loadComputer().catch(() => {}).finally(() => {
+        refreshScreen.loading = null;
+        if (state.computer) refreshScreen();
+        else { note.textContent = '打不开这台机器的屏幕信息，点「刷新」再试。'; note.style.display = 'block'; }
+      });
+    }
+    return;
+  }
   try {
     const res = await fetch(`/api/computer/screenshot?ts=${Date.now()}`, { credentials: 'same-origin' });
+    // The bot's live view may have arrived while this was on its way.
+    if (state.computer?.desktop?.perBot) return;
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       img.style.display = 'none';
-      note.textContent = body?.error?.message || '这台机器没有可截的屏幕（无桌面会话）';
+      note.textContent = body?.error?.code === 'SCREENSHOT_UNAVAILABLE' && /no DISPLAY/.test(body?.error?.message || '')
+        ? '这台机器本身没有桌面（服务器版），机器人的屏幕在它用浏览器或程序时才会打开。'
+        : (body?.error?.message || '这台机器没有可截的屏幕（无桌面会话）');
       note.style.display = 'block';
       return;
     }

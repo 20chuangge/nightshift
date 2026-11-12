@@ -387,6 +387,19 @@
     return '外网';
   }
 
+  /**
+   * The row's label. The public address goes through Tailscale's relay
+   * (measured from a phone: ~0.6 s a request, 12 s for the first one, against
+   * ~40 ms over Tailscale), so when the machine also has a Tailscale address,
+   * say that turning Tailscale on is faster.
+   */
+  function linkLabel(best, entry) {
+    const kind = linkKind(best);
+    if (kind !== '外网') return kind;
+    const hasTailnet = [entry.url, ...(entry.alt || [])].some((u) => linkKind(u) === 'Tailscale');
+    return hasTailnet ? '外网 · 开 Tailscale 更快' : kind;
+  }
+
   /** Tap a machine to go in; long press offers to forget. */
   async function renderMachines() {
     if (!dom.machines || !dom.machineList) return;
@@ -410,7 +423,7 @@
       const url = document.createElement('div');
       url.className = 'u';
       // How it was reached last time, until this check says otherwise.
-      url.textContent = linkKind(entry.best || entry.url);
+      url.textContent = linkLabel(entry.best || entry.url, entry);
       url.title = entry.best || entry.url;
       who.append(name, url);
 
@@ -462,7 +475,7 @@
       // Tailscale elsewhere), not which address happened to be saved first.
       const anyUp = async () => {
         const best = await bestAddress([entry.url, ...(entry.alt || [])]);
-        if (best) { url.textContent = linkKind(best); url.title = best; }
+        if (best) { url.textContent = linkLabel(best, entry); url.title = best; }
         if (best && best !== entry.best) {
           // Remember it for the next time this list opens.
           const all = await readHubs();
