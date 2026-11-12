@@ -40,12 +40,19 @@
       const ua = navigator.userAgent || '';
       const isIphone = /iPhone|iPod/.test(ua);
       const isChromeIos = /CriOS/.test(ua);
-      const standalone = window.navigator.standalone === true
+      const flagged = window.navigator.standalone === true
         || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      // Switching machines in the home-screen app opens the other machine's
+      // address in iOS's in-app browser, with its own bars above and below:
+      // the flags still say "installed app", but the page is far shorter than
+      // the screen and the bars already keep it clear of the clock. Only a page
+      // within a status bar of the screen's height is the app's own window.
+      const gap = (window.screen?.height || 0) - window.innerHeight;
+      const standalone = flagged && gap < 100;
       if (isIphone) document.documentElement.classList.add('ios');
       if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');
       // The page ends above the bottom of the screen (iOS 26+): the home bar is outside it.
-      if (isIphone && standalone && (window.screen?.height || 0) - window.innerHeight >= 40) document.documentElement.classList.add('ios-short-vp');
+      if (isIphone && standalone && gap >= 40) document.documentElement.classList.add('ios-short-vp');
       const probe = document.createElement('div');
       probe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none';
       document.documentElement.appendChild(probe);
