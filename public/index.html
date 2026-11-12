@@ -3256,6 +3256,7 @@
       <button class="setnav" type="button" data-set-target="sec-run">权限</button>
       <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
       <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
+      <button class="setnav" type="button" data-set-target="sec-mcp">连接应用</button>
       <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
       <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
       <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
@@ -3593,6 +3594,43 @@
           <label class="lbl" for="feishu-app-secret">App Secret</label>
           <input class="field" id="feishu-app-secret" type="password" autocomplete="new-password" spellcheck="false" />
           <div class="btn-row"><button class="btn primary" id="feishu-app-save" type="button">添加并连接</button></div>
+        </details>
+      </section>
+
+      <section class="dsec" id="sec-mcp">
+        <div class="dsec-head">连接应用</div>
+        <div class="row-note">把别的应用（MCP 服务器）接进来，它提供的工具就成了机器人能用的工具，比如飞书、GitHub、Notion。连接跑在这台机器上。</div>
+        <div class="row-note">默认每次调用前先问你；应用自己声明「只读」的工具不问。信得过的应用可以设成「始终允许」。</div>
+        <div class="vault-list" id="mcp-list"></div>
+        <details class="vault-add" id="mcp-add">
+          <summary>添加一个应用</summary>
+          <label class="lbl" for="mcp-preset">从常用的开始</label>
+          <select class="field" id="mcp-preset"></select>
+          <div class="row-note" id="mcp-preset-note"></div>
+          <label class="lbl" for="mcp-name">名字</label>
+          <input class="field" id="mcp-name" maxlength="40" autocomplete="off" />
+          <label class="lbl" for="mcp-transport">连接方式</label>
+          <select class="field" id="mcp-transport">
+            <option value="stdio">本地命令（在这台机器上运行一个程序）</option>
+            <option value="http">网址（远程服务）</option>
+          </select>
+          <div id="mcp-stdio-box">
+            <label class="lbl" for="mcp-command">命令</label>
+            <input class="field mono" id="mcp-command" placeholder="npx" autocomplete="off" spellcheck="false" />
+            <label class="lbl" for="mcp-args">参数（每行一个）</label>
+            <textarea class="field mono" id="mcp-args" rows="3" spellcheck="false"></textarea>
+            <label class="lbl" for="mcp-env">环境变量（每行一个：名字=值）</label>
+            <textarea class="field mono" id="mcp-env" rows="2" spellcheck="false"></textarea>
+          </div>
+          <div id="mcp-http-box" hidden>
+            <label class="lbl" for="mcp-url">网址</label>
+            <input class="field mono" id="mcp-url" placeholder="https://example.com/mcp" autocomplete="off" spellcheck="false" inputmode="url" />
+            <label class="lbl" for="mcp-headers">请求头（每行一个：名字: 值）</label>
+            <textarea class="field mono" id="mcp-headers" rows="2" spellcheck="false"></textarea>
+          </div>
+          <div class="row-note">密钥不要直接写在上面：写成 ${名字}（比如 Bearer ${TOKEN}），下面会出现对应的密钥框，填的值加密存进这台机器的保险箱，聊天和机器人都看不到。</div>
+          <div id="mcp-secrets"></div>
+          <div class="btn-row"><button class="btn primary" id="mcp-save" type="button">添加并连接</button></div>
         </details>
       </section>
 
@@ -7916,7 +7954,7 @@ function handleEvent(ev) {
     const active = document.querySelector('.setnav.active')?.dataset.setTarget || 'sec-model';
     const where = {
       model: 'sec-model', voice: 'sec-model', vision: 'sec-model', media: 'sec-model',
-      policy: 'sec-run', usage: 'sec-usage', feishu: 'sec-feishu',
+      policy: 'sec-run', usage: 'sec-usage', feishu: 'sec-feishu', mcp: 'sec-mcp',
       machines: 'sec-machines', network: 'sec-pair',
     }[section];
     if (where && active !== where) return;
@@ -7927,6 +7965,7 @@ function handleEvent(ev) {
     if (section === 'policy') loadPolicy().catch(() => {});
     if (section === 'usage') loadUsage().catch(() => {});
     if (section === 'feishu') loadFeishu().catch(() => {});
+    if (section === 'mcp') loadMcp().catch(() => {});
     if (section === 'machines') renderMachinesList();
     if (section === 'network') loadSettings().then(renderSettingsForm).catch(() => {});
     if (section === 'routines') loadRoutines().catch(() => {});
@@ -9479,6 +9518,7 @@ const SETNAV_ICONS = {
   'sec-run': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
   'sec-usage': '<circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a3 3 0 0 0-2.5-1.2c-1.7 0-2.8.9-2.8 2s1 1.6 2.8 1.9 2.8.9 2.8 2-1.2 2-2.8 2a3 3 0 0 1-2.6-1.3M12 6.5v1.8M12 15.8v1.7"/>',
   'sec-feishu': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  'sec-mcp': '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/>',
   'sec-pages': '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
   'sec-vault': '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   'sec-audit': '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
@@ -9546,6 +9586,7 @@ function openSettings(section) {
   loadUsage().catch(() => {});
   loadFunnel().catch(() => {});
   loadVault().catch(() => {});
+  loadMcp().catch(() => {});
   loadPages().catch(() => {});
   loadFeishu().catch(() => {});
   loadModels().catch(() => {});
@@ -10146,6 +10187,235 @@ function renderVault() {
     });
     list.appendChild(row);
   }
+}
+
+/* ---------------------------------------------------------------------
+   连接应用 (MCP): servers whose tools the bots can use
+   --------------------------------------------------------------------- */
+const mcpUi = { servers: [], presets: [] };
+const MCP_SECRET_RE = /\$\{([^}]{1,40})\}/g;
+const MCP_STATE_TEXT = { ready: '已连接', connecting: '连接中…', failed: '连接失败', off: '已停用', idle: '还没连接' };
+
+async function loadMcp() {
+  let data;
+  try { data = await api('/api/mcp'); } catch { if ($('mcp-list')) $('mcp-list').textContent = '这台机器的夜班版本太旧，还不支持连接应用。'; return; }
+  mcpUi.servers = data.servers || [];
+  mcpUi.presets = data.presets || [];
+  renderMcp();
+  fillMcpPresets();
+}
+
+function mcpLines(text) {
+  return String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+function mcpPairs(text, sep) {
+  const out = {};
+  for (const line of mcpLines(text)) {
+    const i = line.indexOf(sep);
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function mcpSecretNamesInForm() {
+  const all = [$('mcp-args').value, $('mcp-env').value, $('mcp-url').value, $('mcp-headers').value].join('\n');
+  return [...new Set([...all.matchAll(MCP_SECRET_RE)].map((m) => m[1].trim()))];
+}
+
+function renderMcpSecretInputs() {
+  const box = $('mcp-secrets');
+  if (!box) return;
+  const want = mcpSecretNamesInForm();
+  const keep = {};
+  box.querySelectorAll('input[data-secret]').forEach((i) => { keep[i.dataset.secret] = i.value; });
+  box.innerHTML = '';
+  for (const name of want) {
+    const label = el('label', 'lbl', `密钥：${name}`);
+    const input = document.createElement('input');
+    input.className = 'field';
+    input.type = 'password';
+    input.autocomplete = 'new-password';
+    input.dataset.secret = name;
+    input.value = keep[name] || '';
+    box.append(label, input);
+  }
+}
+
+function fillMcpPresets() {
+  const sel = $('mcp-preset');
+  if (!sel || sel.options.length) return;
+  sel.appendChild(new Option('自己填', ''));
+  for (const p of mcpUi.presets) sel.appendChild(new Option(p.name, p.id));
+}
+
+function applyMcpPreset(id) {
+  const p = mcpUi.presets.find((x) => x.id === id);
+  $('mcp-preset-note').textContent = p?.note || '';
+  if (!p) return;
+  $('mcp-name').value = p.name;
+  $('mcp-transport').value = p.transport;
+  $('mcp-command').value = p.command || '';
+  $('mcp-args').value = (p.args || []).join('\n');
+  $('mcp-env').value = Object.entries(p.env || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+  $('mcp-url').value = p.url || '';
+  $('mcp-headers').value = Object.entries(p.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+  syncMcpTransport();
+  renderMcpSecretInputs();
+}
+
+function syncMcpTransport() {
+  const http = $('mcp-transport').value === 'http';
+  $('mcp-stdio-box').hidden = http;
+  $('mcp-http-box').hidden = !http;
+}
+
+async function saveMcp() {
+  const transport = $('mcp-transport').value;
+  const secrets = {};
+  $('mcp-secrets').querySelectorAll('input[data-secret]').forEach((i) => { if (i.value) secrets[i.dataset.secret] = i.value; });
+  const missing = mcpSecretNamesInForm().filter((n) => !secrets[n]);
+  if (missing.length) { toast(`还没填密钥：${missing.join('、')}`, true); return; }
+  const body = {
+    name: $('mcp-name').value.trim(),
+    transport,
+    command: $('mcp-command').value.trim(),
+    args: mcpLines($('mcp-args').value),
+    env: mcpPairs($('mcp-env').value, '='),
+    url: $('mcp-url').value.trim(),
+    headers: mcpPairs($('mcp-headers').value, ':'),
+    secrets,
+  };
+  const btn = $('mcp-save');
+  btn.disabled = true;
+  try {
+    await api('/api/mcp', { method: 'POST', body });
+    toast(`已添加「${body.name || 'MCP'}」，正在连接（第一次可能要下载，稍等）`);
+    ['mcp-name', 'mcp-command', 'mcp-args', 'mcp-env', 'mcp-url', 'mcp-headers'].forEach((x) => { $(x).value = ''; });
+    $('mcp-preset').value = '';
+    $('mcp-preset-note').textContent = '';
+    $('mcp-secrets').innerHTML = '';
+    $('mcp-add').open = false;
+    await loadMcp();
+  } catch (err) {
+    toast(`添加失败：${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function patchMcp(id, body, okText) {
+  try {
+    await api(`/api/mcp/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+    if (okText) toast(okText);
+    await loadMcp();
+  } catch (err) { toast(`保存失败：${err.message}`, true); }
+}
+
+function renderMcp() {
+  const list = $('mcp-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!mcpUi.servers.length) { list.appendChild(el('div', 'row-note', '还没有接任何应用。在下面添加一个。')); return; }
+  for (const s of mcpUi.servers) {
+    const row = el('div', 'vault-row');
+    const head = el('div', 'vault-head');
+    const title = el('div', 'vault-title');
+    title.appendChild(el('b', '', s.name));
+    const stateText = s.state === 'ready' ? `已连接 · ${s.tools.length} 个工具` : (MCP_STATE_TEXT[s.state] || s.state);
+    title.appendChild(el('small', '', [s.transport === 'http' ? hostOfUrl(s.url) : s.command, stateText].filter(Boolean).join(' · ')));
+    head.appendChild(title);
+    const test = el('button', 'btn tiny', '重新连接');
+    test.type = 'button';
+    const del = el('button', 'btn tiny danger', '删除');
+    del.type = 'button';
+    head.append(test, del);
+    row.appendChild(head);
+    if (s.state === 'failed' && s.error) row.appendChild(el('div', 'row-note', `原因：${s.error}`));
+
+    const opts = el('div', 'vault-edit');
+    // On / off
+    const onLbl = el('label', 'row-note');
+    const on = document.createElement('input');
+    on.type = 'checkbox';
+    on.checked = s.enabled;
+    onLbl.append(on, document.createTextNode(' 启用'));
+    on.addEventListener('change', () => patchMcp(s.id, { enabled: on.checked }, on.checked ? `已启用「${s.name}」` : `已停用「${s.name}」`));
+    // Ask or always
+    const trust = document.createElement('select');
+    trust.className = 'field';
+    trust.append(new Option('每次调用前先问我（只读的不问）', 'ask'), new Option('始终允许，不用问', 'always'));
+    trust.value = s.trust;
+    trust.addEventListener('change', () => patchMcp(s.id, { trust: trust.value }, trust.value === 'always' ? `「${s.name}」的工具以后不再问你` : `「${s.name}」的工具每次先问你`));
+    // Which bots
+    const who = document.createElement('select');
+    who.className = 'field';
+    who.appendChild(new Option('所有机器人都能用', 'all'));
+    for (const b of state.bots || []) who.appendChild(new Option(`只给「${b.name}」`, b.id));
+    who.value = s.bots === 'all' ? 'all' : (Array.isArray(s.bots) && s.bots[0]) || 'all';
+    who.addEventListener('change', () => patchMcp(s.id, { bots: who.value === 'all' ? 'all' : [who.value] }, '已保存'));
+    opts.append(onLbl, el('label', 'lbl', '要不要先问你'), trust, el('label', 'lbl', '哪些机器人能用'), who);
+    // Secrets: names only; new values replace the saved ones.
+    if (s.secrets.length) {
+      const sec = el('details', 'vault-add');
+      sec.appendChild(el('summary', '', '更新密钥'));
+      const inputs = s.secrets.map((name) => {
+        const i = document.createElement('input');
+        i.className = 'field';
+        i.type = 'password';
+        i.autocomplete = 'new-password';
+        i.placeholder = `${name}（留空不改）`;
+        i.dataset.secret = name;
+        sec.appendChild(i);
+        return i;
+      });
+      const save = el('button', 'btn primary tiny', '保存并重新连接');
+      save.type = 'button';
+      save.addEventListener('click', () => {
+        const secrets = {};
+        for (const i of inputs) if (i.value) secrets[i.dataset.secret] = i.value;
+        if (!Object.keys(secrets).length) { toast('没有要改的内容'); return; }
+        patchMcp(s.id, { secrets }, '已更新密钥，正在重新连接');
+      });
+      sec.appendChild(save);
+      opts.appendChild(sec);
+    }
+    if (s.tools.length) {
+      const tools = el('details', 'vault-add');
+      tools.appendChild(el('summary', '', `它提供的工具（${s.tools.length} 个）`));
+      for (const t of s.tools) {
+        const line = el('div', 'row-note');
+        line.appendChild(el('b', '', t.name));
+        line.appendChild(document.createTextNode(`${t.readOnly ? '（只读）' : ''}：${t.description}`));
+        tools.appendChild(line);
+      }
+      opts.appendChild(tools);
+    }
+    row.appendChild(opts);
+    test.addEventListener('click', async () => {
+      test.disabled = true;
+      test.textContent = '连接中…';
+      try {
+        const r = await api(`/api/mcp/${encodeURIComponent(s.id)}/test`, { method: 'POST' });
+        const srv = r.server || {};
+        toast(srv.state === 'ready' ? `「${s.name}」连上了，${srv.tools.length} 个工具` : `「${s.name}」没连上：${srv.error || srv.state}`, srv.state !== 'ready');
+      } catch (err) { toast(`连接失败：${err.message}`, true); }
+      await loadMcp();
+    });
+    del.addEventListener('click', async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '再点一次删除'; return; }
+      try { await api(`/api/mcp/${encodeURIComponent(s.id)}`, { method: 'DELETE' }); toast(`已删除「${s.name}」`); loadMcp(); } catch (err) { toast(`删除失败：${err.message}`, true); }
+    });
+    list.appendChild(row);
+  }
+}
+
+function setupMcpForm() {
+  if (!$('mcp-preset')) return;
+  $('mcp-preset').addEventListener('change', (e) => applyMcpPreset(e.target.value));
+  $('mcp-transport').addEventListener('change', syncMcpTransport);
+  for (const id of ['mcp-args', 'mcp-env', 'mcp-url', 'mcp-headers']) $(id).addEventListener('input', renderMcpSecretInputs);
+  $('mcp-save').addEventListener('click', saveMcp);
 }
 
 function hostOfUrl(u) {
@@ -12526,6 +12796,7 @@ function wireChrome() {
     btn.addEventListener('click', () => loadUsage(Number(btn.dataset.days)));
   });
   $('vault-new-save')?.addEventListener('click', saveNewVaultEntry);
+  setupMcpForm();
   $('folder-add-btn')?.addEventListener('click', async () => {
     const p = $('folder-input').value.trim();
     if (!p) return;

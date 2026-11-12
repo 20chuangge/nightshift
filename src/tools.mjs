@@ -1969,6 +1969,8 @@ export function createRegistry(deps) {
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
       if (name === 'task_finish' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      // Tools of connected MCP servers: Settings → 连接应用 says which bots get them.
+      if (name.startsWith('mcp__')) return Boolean(api.mcpGate?.(bot, name));
       const grants = new Set(bot?.tools || []);
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
@@ -1989,6 +1991,9 @@ export function createRegistry(deps) {
         .grantedFor(bot)
         .map((t) => {
           const risk = typeof t.risk === 'string' ? t.risk : 'LOW/HIGH depending on arguments';
+          // A connected app can bring dozens of tools: one line each here; the
+          // full description is in the tool schema.
+          if (t.mcp) return `- ${t.name}: ${String(t.description).split(/(?<=[.。!！?？])\s/)[0].slice(0, 140)}`;
           return `- ${t.name} (${risk}): ${t.description}`;
         })
         .join('\n');

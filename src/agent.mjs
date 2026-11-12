@@ -942,6 +942,16 @@ export class AgentRuntime {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
     }
 
+    // A connected app (MCP) the human has not marked "always allow": every
+    // call that may change something asks, whatever the level. A read-only
+    // tool (the server says so) is let through like other look-only tools.
+    if (tool.mcp && verdict.decision === DECISION.AUTO) {
+      const t = this.registry.mcpTrust?.(name);
+      if (t && t.trust !== 'always' && !t.readOnly) {
+        verdict = { ...verdict, decision: DECISION.ASK, reason: `用「${t.server}」的 ${t.tool}（连接应用，设成「始终允许」后就不再问）` };
+      }
+    }
+
     this.bus.emit({
       type: 'tool.call',
       ...baseEvent,

@@ -138,6 +138,7 @@ async function main() {
     await stage('machines and policy', () => scenarioMachinesAndPolicy({ approvals, toolsMod }));
     await stage('coding CLIs on the subscription', () => scenarioCliAgents({ toolsMod, home }));
     await stage('screen clipboard', () => scenarioClipboard({ home }));
+    await stage('connected apps (MCP)', () => scenarioMcp({ home, toolsMod }));
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
   } finally {
@@ -3420,6 +3421,137 @@ async function scenarioClipboard({ home }) {
       && preload.includes("clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read')") && main.includes("ipcMain.handle('desk:clipboard-write'"));
     const setup = await readText('../hub/setup-linux.sh');
     check('M clip setup: Linux setup installs xclip (X11) and wl-clipboard (Wayland)', (setup.match(/has xclip \|\| pm_install xclip/g) || []).length === 2 && setup.includes('has wl-copy || pm_install wl-clipboard'));
+  }
+}
+
+async function scenarioMcp({ home, toolsMod }) {
+  const mcp = await import('../src/mcp.mjs');
+  const fake = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-mcp.mjs');
+  const wait = async (fn, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
+  {
+    const long = mcp.mcpToolName('server', 'x'.repeat(80));
+    check('M4 mcp names: mcp__<server>__<tool>, only safe characters, at most 64 long', mcp.mcpToolName('m1', 'get.issue/v2') === 'mcp__m1__get_issue_v2' && long.length <= 64 && long !== mcp.mcpToolName('server', 'x'.repeat(81)));
+    const sch = mcp.cleanSchema({ $schema: 'x', type: 'object', properties: { a: { $id: 'y', type: 'string' } } });
+    check('M4 mcp schemas: $schema / $id are dropped; a non-object schema becomes an empty object', !JSON.stringify(sch).includes('$schema') && !JSON.stringify(sch).includes('$id') && mcp.cleanSchema({ type: 'string' }).type === 'object');
+    check('M4 mcp secrets: ${NAME} is found in args, env and headers and filled only from the secret values',
+      mcp.secretNames({ args: ['-a', '${A}'], env: { T: '${B}' }, headers: { Authorization: 'Bearer ${C}' } }).join(',') === 'A,B,C'
+      && mcp.fillSecrets('Bearer ${C} ${D}', { C: 'x' }) === 'Bearer x ');
+    check('M4 mcp presets: Feishu (official lark-mcp), GitHub (official remote), Notion and files; keys only as ${...}',
+      ['filesystem', 'feishu', 'github', 'notion'].every((id) => mcp.MCP_PRESETS.some((p) => p.id === id))
+      && mcp.MCP_PRESETS.find((p) => p.id === 'feishu').args.includes('@larksuiteoapi/lark-mcp')
+      && mcp.MCP_PRESETS.find((p) => p.id === 'github').url === 'https://api.githubcopilot.com/mcp/'
+      && mcp.MCP_PRESETS.every((p) => p.secrets.every((k) => JSON.stringify(p).includes(`\${${k}}`))));
+  }
+  // stdio, through the manager, against a stand-in server.
+  {
+    const registry = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
+    const m = mcp.createMcpManager({ registry, workspaceDir: path.join(home, 'workspace') });
+    registry.mcpGate = (bot, name) => m.allowed(bot, name);
+    registry.mcpTrust = (name) => m.trustFor(name);
+    await m.load();
+    const added = await m.add({ name: '假的', transport: 'stdio', command: process.execPath, args: [fake, '--key=${KEY}'], env: { FAKE_TOKEN: '${FAKE_TOKEN}' }, secrets: { FAKE_TOKEN: 'tok-12345', KEY: 'k9' } });
+    const ready = await wait(() => m.list()[0]?.state === 'ready');
+    const pub = m.list()[0];
+    const n = (t) => mcp.mcpToolName(added.id, t);
+    check('M4 mcp stdio: handshake, two pages of tools (7), registered under mcp__ names', ready && pub.tools.length === 7 && registry.get(n('echo')) && registry.get(n('env')), JSON.stringify(pub).slice(0, 300));
+    const saved = await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8');
+    check('M4 mcp secrets: the values are in the vault only, never in mcp.json or the public list', !saved.includes('tok-12345') && !JSON.stringify(m.list()).includes('tok-12345') && pub.secrets.join(',') === 'KEY,FAKE_TOKEN' && pub.hasSecrets);
+    const env = await registry.get(n('env')).run({}, {});
+    check('M4 mcp secrets: filled in when the server starts (env and arguments)', env.text === 'token length 9; args --key=k9', env.text);
+    check('M4 mcp call: arguments go through, the text comes back', (await registry.get(n('echo')).run({ text: '你好' }, {})).text === 'echo: 你好');
+    let err = null;
+    try { await registry.get(n('fail')).run({}, {}); } catch (e) { err = e; }
+    check('M4 mcp call: isError comes back as a tool failure with the server\'s text', err?.code === 'MCP_TOOL_ERROR' && /broke on purpose/.test(err.message));
+    const pic = await registry.get(n('picture')).run({}, { workspaceDir: path.join(home, 'workspace') });
+    check('M4 mcp call: an image is saved into the workspace (mcp/<date>/) and the path returned', pic.files?.length === 1 && /^mcp\/\d{4}-\d\d-\d\d\//.test(pic.files[0]) && await fsp.stat(path.join(home, 'workspace', pic.files[0])).then(() => true, () => false));
+    const bot = { id: 'b1', tools: [] };
+    const other = { id: 'b2', tools: [] };
+    check('M4 mcp grants: every bot by default; schemas strip $schema', registry.isGranted(bot, n('echo')) && registry.schemasFor(bot).some((x) => x.function.name === n('echo') && !JSON.stringify(x.function.parameters).includes('$schema')));
+    await m.update(added.id, { bots: ['b1'] });
+    check('M4 mcp grants: limited to the chosen bots (no reconnect needed)', registry.isGranted(bot, n('echo')) && !registry.isGranted(other, n('echo')) && m.list()[0].state === 'ready');
+    check('M4 mcp approvals: ask by default (MEDIUM), read-only tools LOW',
+      registry.get(n('echo')).risk().risk === 'MEDIUM' && registry.get(n('peek')).risk().risk === 'LOW' && registry.mcpTrust(n('echo')).trust === 'ask' && registry.mcpTrust(n('peek')).readOnly);
+    await m.update(added.id, { trust: 'always' });
+    check('M4 mcp approvals: "always allow" makes every tool LOW', registry.get(n('echo')).risk().risk === 'LOW' && registry.mcpTrust(n('echo')).trust === 'always');
+    check('M4 mcp digest: one short line per MCP tool in the system prompt', /- mcp__\w+__echo: ［假的］Echo the text back\./.test(registry.renderToolDigest(bot)));
+    // Timeout, then the server going away: tools leave, it reconnects by itself.
+    const client = m._live.get(added.id).client;
+    let late = null;
+    try { await client.callTool('slow', {}, { timeoutMs: 300 }); } catch (e) { late = e; }
+    check('M4 mcp call: a call with no answer in time fails with a timeout', late?.code === 'MCP_TIMEOUT');
+    client.child.kill();
+    const dropped = await wait(() => m.list()[0].state !== 'ready', 5000);
+    const back = await wait(() => m.list()[0].state === 'ready', 15000);
+    check('M4 mcp reconnect: the tools leave when the server dies, and it reconnects by itself', dropped && back && registry.get(n('echo')));
+    await m.update(added.id, { enabled: false });
+    check('M4 mcp off: turning it off removes its tools', !registry.get(n('echo')) && m.list()[0].state === 'off');
+    const vaultBefore = (await (await import('../src/vault.mjs')).listVault()).length;
+    await m.remove(added.id);
+    const vaultAfter = (await (await import('../src/vault.mjs')).listVault()).length;
+    check('M4 mcp remove: the config and its vault entry go', m.list().length === 0 && vaultAfter === vaultBefore - 1);
+    m.stopAll();
+  }
+  // Streamable HTTP: one answer as JSON, one as SSE; the session id and the header secret go back.
+  {
+    const seen = [];
+    const srv = http.createServer(async (req, res) => {
+      let body = '';
+      for await (const c of req) body += c;
+      if (req.method === 'DELETE') { res.writeHead(200); res.end(); return; }
+      const msg = JSON.parse(body);
+      seen.push({ method: msg.method, auth: req.headers.authorization, session: req.headers['mcp-session-id'] || '' });
+      if (msg.method === 'initialize') {
+        res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'sess-1' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: {}, serverInfo: { name: 'fake-http' } } }));
+      } else if (msg.id === undefined) {
+        res.writeHead(202); res.end();
+      } else if (msg.method === 'tools/list') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'hi', description: 'Say hi.', inputSchema: { type: 'object', properties: {} } }] } })}\n\n`);
+      } else {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(`data: ${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: {} })}\n\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'hi there' }] } })}\n\n`);
+      }
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}/mcp`;
+    const c = new mcp.McpClient({ transport: 'http', url, headers: { Authorization: 'Bearer ${TOKEN}' } }, { secrets: { TOKEN: 'gh-x' } });
+    await c.connect();
+    const tools = await c.listTools();
+    const r = await c.callTool('hi', {});
+    c.close();
+    srv.close();
+    check('M4 mcp http: JSON and SSE answers both work; the session id and the filled-in header go with every later request',
+      tools[0]?.name === 'hi' && r.content[0].text === 'hi there' && seen.every((x) => x.auth === 'Bearer gh-x') && seen.slice(1).every((x) => x.session === 'sess-1'), JSON.stringify(seen));
+  }
+  // The API on the running hub: add, list without values, bad input, delete.
+  {
+    const bad = await api('/api/mcp', { method: 'POST', body: { name: 'x', transport: 'stdio' } });
+    const badUrl = await api('/api/mcp', { method: 'POST', body: { name: 'x', transport: 'http', url: 'ftp://a' } });
+    check('M4 mcp api: a command or an http(s) URL is required', bad.status === 400 && badUrl.status === 400);
+    const add = await api('/api/mcp', { method: 'POST', body: { name: '接口测试', transport: 'stdio', command: process.execPath, args: [fake], env: { FAKE_TOKEN: '${T}' }, secrets: { T: 'secret-in-api' } } });
+    const id = add.json?.server?.id;
+    let listed = null;
+    for (let i = 0; i < 100; i += 1) {
+      listed = await api('/api/mcp');
+      if (listed.json?.servers?.find((x) => x.id === id)?.state === 'ready') break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    const row = listed.json?.servers?.find((x) => x.id === id);
+    check('M4 mcp api: added servers connect; GET lists names, state and tools, never a secret value',
+      add.status === 200 && row?.state === 'ready' && row.tools.length === 7 && !JSON.stringify(listed.json).includes('secret-in-api') && Array.isArray(listed.json.presets), JSON.stringify(row || listed.json).slice(0, 300));
+    const patched = await api(`/api/mcp/${id}`, { method: 'PATCH', body: { trust: 'always' } });
+    const del = await api(`/api/mcp/${id}`, { method: 'DELETE' });
+    const gone = await api('/api/mcp');
+    check('M4 mcp api: PATCH and DELETE work', patched.json?.server?.trust === 'always' && del.status === 200 && !gone.json.servers.some((x) => x.id === id));
+  }
+  {
+    const agentSrc = await readText('../src/agent.mjs');
+    const page = await readText('../public/index.html');
+    check('M4 mcp approvals: an MCP tool that is not "always allow" and not read-only asks, at any level',
+      /if \(tool\.mcp && verdict\.decision === DECISION\.AUTO\) \{[\s\S]{0,200}t\.trust !== 'always' && !t\.readOnly/.test(agentSrc));
+    check('M4 mcp settings: 连接应用 page with presets, ${name} key boxes, trust and bots per server',
+      page.includes('id="sec-mcp"') && page.includes('data-set-target="sec-mcp"') && page.includes('function renderMcpSecretInputs()') && page.includes("new Option('始终允许，不用问', 'always')") && page.includes("if (section === 'mcp') loadMcp()"));
   }
 }
 

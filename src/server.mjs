@@ -70,6 +70,7 @@ import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
 import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv } from './desktops.mjs';
 import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS } from './clipboard.mjs';
+import { createMcpManager } from './mcp.mjs';
 import { createProvisioner } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
@@ -440,6 +441,14 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   });
   await refs.videoJobs.load();
   state.videoJobs = refs.videoJobs;
+
+  // Connected apps (MCP): their tools join the registry while connected.
+  state.mcp = createMcpManager({ registry, workspaceDir, version: VERSION, emit: () => bus.emit({ type: 'settings.changed', section: 'mcp' }) });
+  registry.mcpGate = (bot, name) => state.mcp.allowed(bot, name);
+  registry.mcpTrust = (name) => state.mcp.trustFor(name);
+  await state.mcp.load().catch((err) => console.error('[assistant] mcp.json:', err.message));
+  // In the background: an npx server may take a while to download.
+  state.mcp.startAll().catch(() => {});
 
   // Feishu: the assistant in the phone's chat app, over a connection this
   // machine opens (no public address needed). Off until set up in Settings.
@@ -1374,6 +1383,31 @@ route('GET', /^\/api\/cliagents$/, async (_req, _res, { query }) => {
   }
   return { agents: cliAgentsCache.agents };
 });
+
+// Connected apps (MCP). Secret values go in as {secrets:{名字: 值}} and land in
+// the vault; nothing here ever answers with one.
+//   GET    /api/mcp            -> {servers, presets}
+//   POST   /api/mcp            {name, transport, command, args, env, url, headers, secrets, trust, bots}
+//   PATCH  /api/mcp/:id        same fields, any subset
+//   DELETE /api/mcp/:id
+//   POST   /api/mcp/:id/test   connect again now, answer with the state and tools
+route('GET', /^\/api\/mcp$/, async (_req, _res, { state }) => ({ servers: state.mcp.list(), presets: state.mcp.presets() }));
+route('POST', /^\/api\/mcp$/, async (_req, _res, { state, body }) => {
+  const server = await state.mcp.add(body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  return { server };
+});
+route('PATCH', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { state, body, params }) => {
+  const server = await state.mcp.update(params.id, body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  return { server };
+});
+route('DELETE', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)$/, async (_req, _res, { state, params }) => {
+  const out = await state.mcp.remove(params.id);
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  return out;
+});
+route('POST', /^\/api\/mcp\/(?<id>[A-Za-z0-9_-]+)\/test$/, async (_req, _res, { state, params }) => ({ server: await state.mcp.test(params.id) }));
 
 route('GET', /^\/api\/vision$/, async (_req, _res, { state }) => visionModule.publicVision(state.vision, visionCtx(state)));
 
@@ -3447,6 +3481,7 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
       state.routines.stop();
       state.runtime.cancelAll('server shutting down');
       state.approvals.shutdown('server shutting down');
+      state.mcp?.stopAll();
     } catch (err) {
       console.error('[assistant] shutdown cleanup failed:', err.message);
     }
