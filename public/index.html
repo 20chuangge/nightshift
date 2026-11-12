@@ -2711,9 +2711,19 @@
   .pc-who .av { --av-size: 22px; }
 
   /* generated videos in chat */
-  .att-video { display: flex; flex-direction: column; gap: 4px; max-width: min(520px, 100%); }
-  .att-video video { width: 100%; border-radius: 10px; background: #000; }
-  .att-video-dl { font-size: 11.5px; color: var(--dim); align-self: flex-end; }
+  .att-video { display: flex; flex-direction: column; gap: 8px; max-width: min(520px, 100%); }
+  .att-video video { width: 100%; border-radius: 12px; background: #000; display: block; }
+  .att-video-bar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .att-video-name { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .att-act {
+    display: inline-flex; align-items: center; gap: 5px; flex: none;
+    height: 28px; padding: 0 10px; border-radius: 999px;
+    border: 1px solid var(--border-soft); background: var(--panel-2); color: var(--muted);
+    font: inherit; font-size: 12px; text-decoration: none; cursor: pointer;
+    transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+  }
+  .att-act:hover { background: var(--panel-3); color: var(--text); border-color: var(--border); }
+  .att-act svg { flex: none; }
 
   .folder-write { white-space: nowrap; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; align-self: center; margin: 0; }
 
@@ -6117,8 +6127,12 @@ async function pollHealth() {
 /** Re-read the roster after an out-of-band change (tool call or another
  *  device). Falls back to the primary bot when the open one disappeared. */
 async function refreshRoster() {
-  if (state.rosterBusy) return;
+  // A change that arrives while the list is loading must not be lost (bots
+  // created and deleted in quick succession left a deleted bot on screen):
+  // load once more right after.
+  if (state.rosterBusy) { state.rosterAgain = true; return; }
   state.rosterBusy = true;
+  state.rosterAgain = false;
   try {
     const bots = await api('/api/bots');
     const before = state.bots.map((b) => b.id).join(',');
@@ -6137,6 +6151,7 @@ async function refreshRoster() {
     /* a stale roster is not worth a toast */
   } finally {
     state.rosterBusy = false;
+    if (state.rosterAgain) refreshRoster();
   }
 }
 
@@ -6802,16 +6817,24 @@ function attachmentNode(file) {
       });
     });
     box.appendChild(v);
-    const dl = el('a', 'att-video-dl', '下载');
+    // Under the video: its name, then small icon buttons (download, show in folder).
+    const bar = el('div', 'att-video-bar');
+    bar.appendChild(el('span', 'att-video-name', file.name));
+    const icon = (d) => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+    const dl = el('a', 'att-act');
     dl.href = url;
     dl.setAttribute('download', file.name);
-    box.appendChild(dl);
+    dl.innerHTML = `${icon('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>')}<span>下载</span>`;
+    bar.appendChild(dl);
     if (canOpenLocally()) {
-      const show = el('a', 'att-video-dl', '在文件夹中显示');
-      show.href = '#';
-      show.addEventListener('click', (event) => { event.preventDefault(); openLocalFile(file.path, true); });
-      box.appendChild(show);
+      const show = el('button', 'att-act');
+      show.type = 'button';
+      show.title = '在文件夹中显示';
+      show.innerHTML = `${icon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>')}<span>打开位置</span>`;
+      show.addEventListener('click', () => openLocalFile(file.path, true));
+      bar.appendChild(show);
     }
+    box.appendChild(bar);
     return box;
   }
   if (file.image) {
@@ -8266,7 +8289,14 @@ function handleEvent(ev) {
   if (ev.aside) {
     if (ev.type === 'message' && ev.text) {
       if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
-      const row = assistantRow(ev.text);
+      let row;
+      if (isGroupMode()) {
+        const bubble = el('div', 'bubble');
+        fillBubble(bubble, ev.text, false, ev.botId);
+        row = groupSenderRow(sender, bubble);
+      } else {
+        row = assistantRow(ev.text);
+      }
       row.classList.add('aside');
       messagesEl.appendChild(row);
       if (state.readAloudTurn && voice.status?.tts?.available) queueSpeech(ev.text, ev.botId);

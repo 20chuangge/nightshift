@@ -3768,7 +3768,20 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         busy?.turnId === 'turn_main' && r.text.includes('XFCE') && /帮我安装 XFCE/.test(sys) && /shell/.test(sys) && /sudo apt-get install -y xfce4/.test(sys) && /已经 1\d\d 秒/.test(sys)
         && Array.isArray(seenPrompt.opts.tools) && seenPrompt.opts.tools.length === 0 && rt.active.get('turn_main').inbox[0] === '为什么这么慢呀'
         && events.some((e) => e.type === 'message' && e.aside && e.turnId === r.turnId) && events.some((e) => e.type === 'turn.end' && e.aside), sys.slice(0, 300));
+      // In a group: whoever is working answers in the group, and the message reaches that turn.
+      const groupLog = [];
+      rt.groups = { appendGroupMessage: async (gid, rec) => { groupLog.push({ gid, ...rec }); return rec; }, publicGroupMessage: (m) => m, loadGroupHistory: async () => [] };
+      rt.active.set('turn_g', { controller: new AbortController(), botId: 'm12bot', task: '整理周报', startedAt: Date.now() - 60000, steps: 1, step: { name: 'fs_read', args: { path: 'notes.md' }, startedAt: Date.now() - 5000 }, last: '', inbox: [], depth: 0, group: true, groupId: 'g1', unattended: false });
+      const gBusy = rt.busyGroupTurn('g1');
+      const g = await rt.aside({ botId: gBusy.botId, text: '进度怎么样？', busy: gBusy, group: { id: 'g1', name: '周报群', members: [] }, source: 'group' });
+      check('M12 busy group: whoever is working answers in the group (user and answer in the group transcript, not the 1:1 chat) and the message reaches that turn',
+        gBusy?.turnId === 'turn_g' && rt.busyGroupTurn('nope') === null && rt.active.get('turn_g').inbox[0] === '进度怎么样？'
+        && groupLog.some((x) => x.gid === 'g1' && x.kind === 'user' && x.text === '进度怎么样？') && groupLog.some((x) => x.gid === 'g1' && x.kind === 'assistant' && x.from === 'm12bot' && x.text === g.text)
+        && events.some((e) => e.type === 'message' && e.aside && e.groupId === 'g1') && /周报群/.test(seenPrompt?.msgs?.[0]?.content || '') && /fs_read/.test(seenPrompt?.msgs?.[0]?.content || '')
+        && srvSrc.includes('const busy = state.runtime.busyGroupTurn?.(group.id);'));
       const agentSrc2 = await readText('../src/agent.mjs');
+      check('M12 roster: a change that arrives while the bot list is loading is loaded right after (a quickly deleted bot no longer stays on screen); remote group members count as busy too', pageSrc.includes('if (state.rosterBusy) { state.rosterAgain = true; return; }') && pageSrc.includes('if (state.rosterAgain) refreshRoster();') && agentSrc2.includes('remoteKey = `remote_') && agentSrc2.includes('for (const said of waiting) {') && agentSrc2.includes('!info.kickoff'));
+      check('M12 group talk stays in the group: a turn speaking in a group writes nothing to the bot\'s own chat', agentSrc2.includes('if (record?.turnId && this.groupTurns.has(record.turnId)) return;') && agentSrc2.includes('if (coordinatorTurn) this.groupTurns.add(turnId);') && agentSrc2.includes('this.groupTurns.delete(turnId);'));
       check('M12 busy bot: the running turn reads the human\'s new words before its next step; the chat route and Feishu answer instead of starting a second turn; the page shows it without disturbing the running one',
         agentSrc2.includes('while (live.inbox.length) {') && agentSrc2.indexOf('while (live.inbox.length) {') < agentSrc2.indexOf('response = await turnModel.complete(messages, {')
         && srvSrc.includes('if (!h && state.runtime.busyTurn?.(bot.id)) {') && (await readText('../src/feishu.mjs')).includes('if (o.runtime.busyTurn?.(id) && typeof o.runtime.aside === \'function\') {')

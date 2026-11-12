@@ -2426,6 +2426,14 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   // Answer immediately with the turn id; the turn streams over SSE and its
   // transcript lands in data/groups/<id>.jsonl.
   const turnId = uid('turn');
+  // Someone in the group is still working on the last message: they answer
+  // now, and the message reaches their running turn (as in a 1:1 chat).
+  const busy = state.runtime.busyGroupTurn?.(group.id);
+  if (busy) {
+    state.runtime.aside({ botId: busy.botId, text, turnId, source: 'group', busy, group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members } })
+      .catch((err) => state.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message }));
+    return { turnId, aside: true };
+  }
   state.runtime
     .runGroupMessage({
       group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members },

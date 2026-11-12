@@ -169,6 +169,8 @@ export class AgentRuntime {
     this.bus = bus;
     /** @type {Map<string, {controller: AbortController, botId: string}>} */
     this.active = new Map();
+    /** Turns speaking in a group: their talk lives in the group transcript only, not the bot's own chat. */
+    this.groupTurns = new Set();
   }
 
   /** Swap the model client after settings change (provider / key / endpoint). */
@@ -200,9 +202,18 @@ export class AgentRuntime {
    * latest output), and handed to the running turn, which reads it before its
    * next step - "停", "换个办法" take effect there. -> {turnId, text}
    */
-  async aside({ botId, text, turnId: providedTurnId = null, source = 'chat' }) {
-    const busy = this.busyTurn(botId);
-    const bot = await this.bots.getBot(botId);
+  /** A turn of this group in progress on this machine (whoever is speaking), or null. */
+  busyGroupTurn(groupId) {
+    for (const [turnId, info] of this.active) {
+      // A group's self-introductions right after it is made are not work the human waits on.
+      if (groupId && info.groupId === groupId && !info.kickoff) return { turnId, ...info };
+    }
+    return null;
+  }
+
+  async aside({ botId, text, turnId: providedTurnId = null, source = 'chat', group = null, busy: givenBusy = null }) {
+    const busy = givenBusy || this.busyTurn(botId);
+    const bot = await this.bots.getBot(busy?.remote && group?.coordinatorId ? group.coordinatorId : botId);
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
     const turnId = providedTurnId || uid('turn');
     const said = String(text);
@@ -210,22 +221,35 @@ export class AgentRuntime {
     const now = Date.now();
     const secs = (ms) => `${Math.max(1, Math.round(ms / 1000))} 秒`;
     const step = busy?.step;
-    const status = busy ? [
+    const status = busy?.remote ? [
+      `群里的「${busy.memberName}」正在另一台机器「${busy.machine}」上回答：「${String(busy.task || '').slice(0, 200)}」，已经 ${secs(now - busy.startedAt)}，还没回来。`,
+      '你是这个群的协调者，替它说一下进度；用户这条消息会在它答完后交给群里接着处理。',
+    ].join('\n') : busy ? [
       `用户交给你的事（他的原话，不代表你已经在照做）：「${String(busy.task || '').slice(0, 300)}」。从开始到现在 ${secs(now - busy.startedAt)}，已经做完 ${busy.steps || 0} 步。`,
       step ? `你此刻实际在做的（唯一可信）：调用工具 ${step.name}，参数 ${JSON.stringify(step.args || {}).slice(0, 300)}，这一步已经 ${secs(now - step.startedAt)}，还没结束。` : '你此刻实际在做的（唯一可信）：没有在跑工具，在想下一步怎么做（模型在思考）。',
       busy.last ? `上一步的结果（节选）：${busy.last}` : '',
     ].filter(Boolean).join('\n') : '你手上没有正在做的事。';
     const model = (await this.modelFor(bot).catch(() => null)) || this.model;
-    const baseEvent = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true };
-    await this.record(bot.id, { kind: 'user', text: said, turnId, source });
+    const baseEvent = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true, ...(group?.id ? { groupId: group.id } : {}) };
+    // In a group the exchange belongs to the group's transcript, not the bot's own chat.
+    if (group?.id) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: said, turnId });
+    else await this.record(bot.id, { kind: 'user', text: said, turnId, source });
     this.bus.emit({ type: 'turn.start', ...baseEvent, text: said });
     let answer = '';
+    // Said from the status alone, when the model gives nothing back.
+    const plain = () => busy?.remote
+      ? `收到。「${busy.memberName}」正在「${busy.machine}」上处理，已经 ${secs(now - busy.startedAt)}；它答完后，群里接着处理你这条。`
+      : busy
+        ? `收到。我正在做「${String(busy.task || '').slice(0, 40)}」${step ? `，这一步（${step.name}）已经 ${secs(now - step.startedAt)}` : ''}，这条消息我会在这一步结束后接着看。`
+        : '收到。';
     try {
-      const history = await this.loadHistory(bot.id, 8);
+      const history = group?.id && this.groups
+        ? (await this.groups.loadGroupHistory(group.id, { names: new Map((group.members || []).map((m) => [m.id, m.name])) }).catch(() => [])).slice(-8)
+        : await this.loadHistory(bot.id, 8);
       const response = await model.complete([
         { role: 'system', content: [
           `你是「${bot.name}」。${bot.role || ''}`,
-          '你正在做一件事，用户在你干活时发来一条消息。现在不能用任何工具，只用一两句话直接回答他。',
+          group?.id ? `这是群「${group.name || ''}」：你在群里替大家做一件事时，用户在群里又发来一条消息。现在不能用任何工具，只用一两句话直接在群里回答他。` : '你正在做一件事，用户在你干活时发来一条消息。现在不能用任何工具，只用一两句话直接回答他。',
           '他问进度、为什么慢：只按「你此刻实际在做的」那一行说在做什么、做了多久；可以按那个工具和参数解释为什么要这么久（例如在下载、在编译、在等网页）。用户交给你的事只是他的原话，没写在那一行里的就是还没做，不能说成正在做。不要编造状态里没有的信息。',
           '他让你停下、改做法或补充要求：说你会在当前这一步结束后照办（这条消息已经转给手上的那件事）；要立刻停，告诉他点输入框旁边的停止按钮。',
           '他问的和手上的事无关：简短回答；需要动手的，说做完手上的事再来。',
@@ -236,12 +260,13 @@ export class AgentRuntime {
         { role: 'user', content: said },
       ], { tools: [] });
       noteUsage({ botId: bot.id, provider: model.provider || '', model: model.model || '', usage: response.usage, source }, { audit, bus: this.bus }).catch(() => {});
-      answer = String(response.content || '').trim() || '收到，我手上的事做完这一步就看你这条。';
+      answer = String(response.content || '').trim() || plain();
     } catch (err) {
-      answer = busy ? `收到。我正在做「${String(busy.task || '').slice(0, 40)}」${step ? `，这一步（${step.name}）已经 ${secs(now - step.startedAt)}` : ''}，这条消息我会在这一步结束后接着看。` : `没能回答：${err.message}`;
+      answer = busy ? plain() : `没能回答：${err.message}`;
     }
     this.bus.emit({ type: 'message', ...baseEvent, text: answer, final: true });
-    await this.record(bot.id, { kind: 'assistant', text: answer, turnId, source, final: true });
+    if (group?.id) await this.recordGroupMessage(group.id, { kind: 'assistant', from: bot.id, text: answer, turnId });
+    else await this.record(bot.id, { kind: 'assistant', text: answer, turnId, source, final: true });
     this.bus.emit({ type: 'turn.end', ...baseEvent, status: 'success', summary: answer.slice(0, 200), steps: 0 });
     return { turnId, text: answer };
   }
@@ -351,6 +376,7 @@ export class AgentRuntime {
   }
 
   async record(botId, record) {
+    if (record?.turnId && this.groupTurns.has(record.turnId)) return;
     try {
       await appendJsonl(sessionFile(botId), { ts: nowIso(), ...record });
     } catch (err) {
@@ -403,6 +429,8 @@ export class AgentRuntime {
     recordUser = true,
     // Said to the model with the text but not shown in the chat (a routine's "last result").
     hiddenNote = '',
+    // A new group's round of introductions (not a request from the human).
+    kickoff = false,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -422,7 +450,8 @@ export class AgentRuntime {
     }
     // What it is doing, for a message the human sends meanwhile (aside()): the
     // task, the step in progress, the latest result, and the human's new words.
-    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), unattended });
+    if (coordinatorTurn) this.groupTurns.add(turnId);
+    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended });
     const live = this.active.get(turnId);
 
     // Work until done, like comparable agents: a step is one tool call, and
@@ -794,6 +823,7 @@ export class AgentRuntime {
         endedAt,
         ...(waitingFor ? { waitingFor } : {}),
       });
+      this.groupTurns.delete(turnId);
     }
   }
 
@@ -825,6 +855,7 @@ export class AgentRuntime {
         group,
         groupRole: role,
         recordUser: record,
+        kickoff,
       }).catch((err) => {
         this.bus.emit({ type: 'error', groupId: group.id, turnId: id, message: err.message });
         return null;
@@ -860,6 +891,7 @@ export class AgentRuntime {
     this.bus.emit({ type: 'turn.start', ...base, text });
     let status = 'success';
     let summary = '';
+    let remoteKey = null;
     try {
       const peers = this.getPeers();
       const peer = peers?.find(member.remote.machine);
@@ -871,6 +903,9 @@ export class AgentRuntime {
         .join('\n');
       const who = (group.members || []).map((m) => `${m.name}（${m.role || '成员'}）`).join('、');
       const prompt = `（你是群聊「${group.name}」的成员，这个群在另一台机器上；成员：${who}。${role === 'speaker' ? '现在点名请你回答。' : ''}你的回答会以你的名字发到群里：只回答你负责的部分，简短；做出的文件写出路径，会自动取到群所在的机器。）\n\n最近的群聊：\n${recent || '（还没有消息）'}\n\n现在要你回答的话：${text}`;
+      // While it answers there, a new group message gets a quick status reply here and waits (see below).
+      remoteKey = `remote_${id || uid('turn')}`;
+      this.active?.set(remoteKey, { controller: new AbortController(), botId: member.id, remote: true, machine: member.remote.machine, memberName: member.name, task: String(text).slice(0, 300), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth: 0, group: true, groupId: group.id, kickoff: role === 'kickoff' });
       const r = await askPeerBot(peers, peer, {
         botId: member.remote.botId,
         text: prompt,
@@ -886,6 +921,12 @@ export class AgentRuntime {
       await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: `（没能联系上「${member.remote.machine}」上的${member.name}：${err.message}）`, turnId: id });
     }
     this.bus.emit({ type: 'turn.end', ...base, status, summary, steps: 0, startedAt, endedAt: nowIso() });
+    // Messages sent while it was away: the group takes them up now, in order.
+    const waiting = remoteKey ? (this.active?.get(remoteKey)?.inbox || []) : [];
+    if (remoteKey) this.active?.delete(remoteKey);
+    for (const said of waiting) {
+      this.runGroupMessage({ group, text: said, recordUser: false }).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    }
     return { turnId: id, status, summary };
   }
 
