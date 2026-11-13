@@ -380,8 +380,8 @@ export function reachesSecrets(name, args = {}) {
       : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')
         : '';
   if (!text) return '';
-  if (SECRET_FILES.test(text)) return '要碰夜班保险箱里的密钥或授权码（vault），每次都先问你';
-  if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用夜班自己的模块（会绕过「连接应用」的审批），每次都先问你';
+  if (SECRET_FILES.test(text)) return '要碰长明保险箱里的密钥或授权码（vault），每次都先问你';
+  if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用长明自己的模块（会绕过「连接应用」的审批），每次都先问你';
   return '';
 }
 
@@ -553,6 +553,23 @@ export class AgentRuntime {
   // system prompt
   // -------------------------------------------------------------------------
 
+  /**
+   * Coding assistants on the human's own subscription that are installed and
+   * logged in here (set by the server: [{id, label, model}]). Big programming
+   * work is cheaper there than on the chat model's API.
+   */
+  subscriptionCodingLines(bot) {
+    const ready = this.cliReady || [];
+    if (!ready.length || !this.registry.isGranted?.(bot, 'cli_agent_run')) return [];
+    const list = ready.map((a) => `${a.label} (agent "${a.id}"${a.model ? `, model ${a.model}` : ''})`).join(', ');
+    return [
+      '## Big programming work: the human\'s subscription',
+      `Logged in on this machine: ${list}. They run on the human's own subscription, not on your paid API.`,
+      'When the human asks for real programming (a new program, page or script of more than a few dozen lines, a feature across several files, debugging a project), do not write it all yourself: say in one line that you will hand it to one of these (name it) and do so with cli_agent_run - it asks the human first. Small edits, one-line fixes and quick scripts: do them yourself. If they say to do it yourself, do.',
+      '',
+    ];
+  }
+
   async buildSystemPrompt(bot, { unattended, group = null, groupRole = 'coordinator', depth = 0, task = null }) {
     // Talking with the human directly (not a group, not a routine, not a teammate's request).
     const direct = !unattended && !group && !depth;
@@ -599,6 +616,7 @@ export class AgentRuntime {
         'For work of several steps (about 3 or more, or anything that may take more than a few minutes), call task_plan with the steps first. The human sees a checklist, your progress is kept, and you are kept going until every step is done - nobody has to say 继续. Quick things need no task.',
         '',
       ]),
+      ...this.subscriptionCodingLines(bot),
       '## One shared computer',
       `Every bot sees the same workspace directory: ${this.config.workspaceDir || 'workspace/'}.`,
       'A file you write is immediately visible to every other bot and to the human. Anything outside that directory is somebody else\'s data and needs a human approval.',
@@ -1641,7 +1659,7 @@ export class AgentRuntime {
     try {
       const peers = this.getPeers();
       const peer = peers?.find(member.remote.machine);
-      if (!peer) throw new Error(`这台机器不认识「${member.remote.machine}」（在夜班客户端里添加那台机器后再试）`);
+      if (!peer) throw new Error(`这台机器不认识「${member.remote.machine}」（在长明客户端里添加那台机器后再试）`);
       const names = new Map((group.members || []).map((m) => [m.id, m.name]));
       const recent = (await this.groups.readGroupMessages(group.id, { limit: 14 }).catch(() => []))
         .filter((m) => (m.kind === 'user' || m.kind === 'assistant') && m.text)

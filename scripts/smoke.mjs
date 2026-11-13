@@ -3698,6 +3698,34 @@ async function scenarioMcp({ home, toolsMod }) {
   // A phone over a slow link: the chat arrives compact, the home page does not wait for it.
   {
     const srvMod = await import('../src/server.mjs');
+    // M38: the workspace can live where the human likes.
+    {
+      const srcSrvW = await readText('../src/server.mjs');
+      const cw = (p, platform = 'win32') => srvMod.checkWorkspacePath(p, { dataDir: platform === 'win32' ? 'C:\\Users\\a\\AppData\\Roaming\\Desk\\data' : '/opt/desk/data', platform });
+      const okWin = cw('D:\\长明工作区');
+      const okQuoted = cw('"E:/工作/ai"');
+      check('M38 workspace path: a full path on another drive is fine (quotes and / allowed); a relative path, a whole drive, Windows\' own folders and the app\'s data folder are refused',
+        okWin.ok && okWin.path === 'D:\\长明工作区' && okQuoted.ok && okQuoted.path === 'E:\\工作\\ai'
+        && !cw('工作区').ok && !cw('D:\\').ok && !cw('C:').ok && !cw('C:\\Windows\\Temp\\x').ok && !cw('c:\\program files\\x').ok
+        && !cw('C:\\Users\\a\\AppData\\Roaming\\Desk\\data\\ws').ok && !cw('C:\\Users\\a\\AppData\\Roaming\\Desk').ok, JSON.stringify([okWin, okQuoted]));
+      check('M38 workspace path on Linux: /home/me/ws is fine; /, /etc, /usr/x and relative paths are refused',
+        cw('/home/me/ws', 'linux').ok && !cw('/', 'linux').ok && !cw('/etc/x', 'linux').ok && !cw('/usr', 'linux').ok && !cw('ws', 'linux').ok);
+      const got = await api('/api/workspace');
+      const bad = await api('/api/workspace', { method: 'PUT', body: { path: 'relative/folder' } });
+      check('M38 api: GET /api/workspace says where it is and where the default is; a bad path is refused before anything changes',
+        got.status === 200 && typeof got.json?.path === 'string' && typeof got.json?.defaultPath === 'string' && got.json.custom === false && bad.status === 400);
+      const storeSrc = await readText('../src/store.mjs');
+      const swSrc = await readText('../public/sw.js');
+      const pgD = await readText('../public/index.html');
+      check('M40 dialogs: no window.prompt in the page (it does nothing in the desktop app); changing the workspace and renaming a machine use the page own dialog',
+        !pgD.includes('window.prompt(') && pgD.includes('async function askText(') && pgD.includes("const answer = await askText({") && pgD.includes("const name = await askText({ title: '给这台机器改名'"));
+      check('M39 offline cache: pictures and other files come from the network first (cache only offline), and the renamed cache drops the old one - an update shows the new icon on the first load',
+        swSrc.includes("const VERSION = 'evenlight-v2';") && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
+      const pg2 = await readText('../public/index.html');
+      check('M38 start: the chosen folder (data/workspace.json) is used at start, the test env still wins; settings has 更改位置 on the workspace row and the hub restarts after a change',
+        storeSrc.includes("export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');") && storeSrc.includes('(chosenWorkspace() || DEFAULT_WORKSPACE_DIR)')
+        && pg2.includes("const move = el('button', 'btn tiny', '更改位置');") && srcSrvW.includes("if (!same && process.env.ASSIST_UPDATE_NO_EXIT !== '1') setTimeout(() => process.exit(0), 800).unref?.();"));
+    }
     const c = srvMod.compactToolItem({ role: 'tool', name: 'fs_write', args: { path: 'a.md', content: 'x'.repeat(5000) }, output: { stdout: 'y'.repeat(9000) } });
     const small = srvMod.compactToolItem({ role: 'tool', name: 'request_takeover', args: { reason: 'r' }, output: { waiting: true, reason: 'r' } });
     const user = srvMod.compactToolItem({ role: 'user', text: 'z'.repeat(5000) });
@@ -4099,7 +4127,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const relayed = await m.connectCatalog('fake-oauth', { origin: 'http://10.0.0.9:14390', relay: 'http://127.0.0.1:14390' });
     const ru = new URL(relayed.authorizeUrl);
     check('M7 sign-in on another machine: a LAN address is refused with a way out; through the computer\'s own hub it comes back on loopback',
-      lan?.code === 'MCP_NEEDS_HTTPS' && /在电脑上的夜班里连接/.test(lan.message) && ru.searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/mcp/oauth/callback'
+      lan?.code === 'MCP_NEEDS_HTTPS' && /在电脑上的长明里连接/.test(lan.message) && ru.searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/mcp/oauth/callback'
       && m.hasPending(ru.searchParams.get('state')) && !m.hasPending('nope'), lan?.message);
     check('M7 callback address: https or loopback page as is; else the relay; else the Funnel address; else none',
       mcp.callbackBase('https://a.ts.net', '', '') === 'https://a.ts.net' && mcp.callbackBase('http://127.0.0.1:5', '', '') === 'http://127.0.0.1:5'
@@ -4622,9 +4650,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const hubStart = sh.indexOf('say "6/7');
       const bg = sh.indexOf('systemd-run --unit=desk-desktop-setup');
       check('install: desktop and browser install after the Hub is up, in their own unit', hubStart > 0 && bg > hubStart && /DESKTOP_OK=pending/.test(sh) && !/^\s*pm_install xfce4 xfce4-terminal\s*$/m.test(sh.slice(0, hubStart)));
-      check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用夜班带过来的 Node/.test(sh));
+      check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用长明带过来的 Node/.test(sh));
       const ps1 = await readText('../hub/setup-windows.ps1');
-      check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用夜班带过来的 Node/.test(ps1));
+      check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用长明带过来的 Node/.test(ps1));
       const fsx = await import('node:fs');
       const setupFile = path.join(home, 'data', 'desktop-setup.json');
       fsx.writeFileSync(setupFile, JSON.stringify({ state: 'running', startedAt: new Date().toISOString(), detail: '安装 XFCE 桌面' }));
@@ -5250,7 +5278,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // Adding a Windows machine: wait for the hub, then the code; say which check failed.
     const ps1 = await readText('../hub/setup-windows.ps1');
     const rm = await readText('../src/remote.mjs');
-    check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'夜班服务没能启动起来或没有应答'"));
+    check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'长明服务没能启动起来或没有应答'"));
   }
   // Step 18: cloud hosts, Tailscale on Windows and on machines already added, Rocky 10, busy machines.
   {
@@ -5886,6 +5914,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       for (let i = 0; i < 20 && !c5.length; i += 1) await new Promise((r) => setTimeout(r, 10));
       check('M34 a reply to the human that did no work parks the task (no turn of its own); when the human answers and the bot works again it goes on by itself',
         parked === 'waiting' && c5.length === 1 && c5[0].source === 'task' && rt5.tasks.get('tb5').status === 'running', JSON.stringify({ parked, n: c5.length }));
+      // Leave nothing open on disk for the restart test below.
+      { const t5 = rt5.tasks.get('tb5'); t5.status = 'stopped'; await rt5.taskChanged(t5); }
       // While it works: "停下" ends the turn and the task at once, without asking the model.
       const rt6 = mk();
       rt6.tasks = new Map([['tb6', PL.makeTask({ botId: 'tb6', request: 'y', goal: '两屏切换', steps: ['a', 'b'] }).plan]]);
@@ -5898,6 +5928,19 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const srcA = await readText('../src/agent.mjs');
       check('M34 a new message that says stop closes the open task before the bot answers, and the bot is told not to go on',
         srcA.includes("if (task && source !== 'task' && isStopWords(text)) {") && srcA.includes('你手上的任务已经按用户的话停止了'));
+
+      // M37: big programming work is offered to the human's subscription helpers.
+      const rt7 = mk();
+      rt7.registry = { isGranted: (b, t) => t === 'cli_agent_run' && (b.tools || []).includes('cli_agent_run') };
+      const withTool = { id: 'c', tools: ['cli_agent_run'] };
+      const none = rt7.subscriptionCodingLines(withTool);
+      rt7.cliReady = [{ id: 'qoder', label: 'Qoder', model: 'Qwen3.8-Max' }, { id: 'claude', label: 'Claude Code', model: '' }];
+      const some = rt7.subscriptionCodingLines(withTool).join('\n');
+      const notGranted = rt7.subscriptionCodingLines({ id: 'd', tools: [] });
+      const srvS = await readText('../src/server.mjs');
+      check('M37 bots: with a coding helper logged in here and the tool granted, big programming is handed to it (named, with its model), small edits stay with the bot; nothing said when none is ready or the tool is not granted',
+        none.length === 0 && notGranted.length === 0 && /Qoder \(agent "qoder", model Qwen3\.8-Max\), Claude Code \(agent "claude"\)/.test(some) && /cli_agent_run/.test(some) && /Small edits/.test(some)
+        && srvS.includes('runtime.cliReady = (cliAgentsCache.agents || []).filter((a) => a.installed && a.loggedIn)') && srcA.includes('...this.subscriptionCodingLines(bot),'));
     }
 
     // After a restart: an open task from the last day goes on; an old one stays put.

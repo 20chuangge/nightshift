@@ -349,6 +349,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.runtime = runtime;
   // Tasks a bot was working through before the app stopped go on by themselves.
   runtime.resumeTasks().then((n) => { if (n) console.log(`[tasks] picking up ${n} open task(s) in a moment`); }).catch((err) => console.error('[tasks] resume:', err.message));
+  // Which coding assistants on the human's subscription are ready here: bots
+  // offer big programming work to them. Checked shortly after start, then hourly.
+  if (process.env.DESK_CLI_WATCH !== '0') {
+    const checkCli = () => refreshCliAgents(runtime).catch(() => {});
+    setTimeout(checkCli, 20000).unref?.();
+    setInterval(checkCli, 60 * 60 * 1000).unref?.();
+  }
 
   // --- crash recovery ------------------------------------------------------
   // Restore cards a human had not answered yet, and explain every turn the
@@ -1454,17 +1461,25 @@ const visionCtx = (state) => ({ settings: state.settings, chatKey: state.apiKey,
 //   GET /api/cliagents -> {agents:[{id, label, plan, installed, loggedIn, install, login, model, models}]}
 //   PUT /api/cliagents {agent, model} -> the human's default model for that tool ('' = the tool's own)
 let cliAgentsCache = { at: 0, agents: null };
-route('GET', /^\/api\/cliagents$/, async (_req, _res, { query }) => {
-  if (!cliAgentsCache.agents || query.get('refresh') || Date.now() - cliAgentsCache.at > 60000) {
-    const { detectCliAgents } = await import('./cliagents.mjs');
-    cliAgentsCache = { at: Date.now(), agents: await detectCliAgents() };
-  }
+/** The ready ones, for the bots' instructions: [{id, label, model}]. */
+function shareCliReady(runtime) {
+  if (runtime) runtime.cliReady = (cliAgentsCache.agents || []).filter((a) => a.installed && a.loggedIn).map((a) => ({ id: a.id, label: a.label, model: a.model || '' }));
+}
+async function refreshCliAgents(runtime) {
+  const { detectCliAgents } = await import('./cliagents.mjs');
+  cliAgentsCache = { at: Date.now(), agents: await detectCliAgents() };
+  shareCliReady(runtime);
+  return cliAgentsCache.agents;
+}
+route('GET', /^\/api\/cliagents$/, async (_req, _res, { query, state }) => {
+  if (!cliAgentsCache.agents || query.get('refresh') || Date.now() - cliAgentsCache.at > 60000) await refreshCliAgents(state.runtime);
   return { agents: cliAgentsCache.agents };
 });
-route('PUT', /^\/api\/cliagents$/, async (_req, _res, { body }) => {
+route('PUT', /^\/api\/cliagents$/, async (_req, _res, { body, state }) => {
   const { saveCliModel } = await import('./cliagents.mjs');
   const config = await saveCliModel(String(body?.agent || ''), body?.model);
   if (cliAgentsCache.agents) cliAgentsCache.agents = cliAgentsCache.agents.map((a) => ({ ...a, model: config.models[a.id] || '' }));
+  shareCliReady(state.runtime);
   return { ok: true, models: config.models };
 });
 
@@ -1533,7 +1548,7 @@ async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
     try {
       const cat = await state.peers.json(peer, 'GET', '/api/mcp/catalog', { timeoutMs: 8000 });
       const there = (cat.apps || []).find((a) => a.id === catalogId);
-      if (!there) return { machine: p.name, ok: false, message: '那台机器的夜班版本较旧，更新后再同步' };
+      if (!there) return { machine: p.name, ok: false, message: '那台机器的长明版本较旧，更新后再同步' };
       // 邮箱 always gets the whole list: a mailbox added here must reach a machine that is already connected.
       if (catalogId !== 'email' && there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
       const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret, ...(payload.fields ? { fields: payload.fields } : {}) };
@@ -1596,7 +1611,7 @@ route('GET', /^\/api\/mcp\/oauth\/callback$/, async (req, res, { state, query })
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
   const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const title = out.ok ? `已连接「${esc(out.name)}」${out.machine ? `（${esc(out.machine)}）` : ''}` : '没有连上';
-  const text = out.ok ? '可以关掉这个页面，回到夜班。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
+  const text = out.ok ? '可以关掉这个页面，回到长明。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
   res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);
 });
@@ -2683,6 +2698,39 @@ route('GET', /^\/api\/computer\/screenshot$/, async (_req, res) => {
   res.end(buf);
 });
 
+// --- workspace location ----------------------------------------------------
+// The bots' shared folder can live anywhere the human likes (another drive,
+// a synced folder). Read once at start (store.mjs), so a change restarts the
+// hub the way an update does; files already there are not moved.
+//   GET /api/workspace -> {path, defaultPath, custom}
+//   PUT /api/workspace {path} ('' = back to the default) -> {ok, path, restarting}
+
+route('GET', /^\/api\/workspace$/, async (_req, _res, { state }) => {
+  const { DEFAULT_WORKSPACE_DIR } = await import('./store.mjs');
+  return { path: state.workspaceDir, defaultPath: DEFAULT_WORKSPACE_DIR, custom: path.resolve(state.workspaceDir) !== path.resolve(DEFAULT_WORKSPACE_DIR) };
+});
+route('PUT', /^\/api\/workspace$/, async (_req, _res, { body, state }) => {
+  const { DEFAULT_WORKSPACE_DIR, WORKSPACE_FILE } = await import('./store.mjs');
+  const raw = String(body?.path ?? '').trim();
+  const target = raw ? checkWorkspacePath(raw, { dataDir: P.dataDir }) : { ok: true, path: DEFAULT_WORKSPACE_DIR };
+  if (!target.ok) throw httpError(400, 'BAD_WORKSPACE', target.error);
+  if (state.runtime.activeTurns().length) throw httpError(409, 'WORKSPACE_BUSY', '有机器人正在干活，等它做完再换工作区');
+  // It must exist (or be made) and take a file.
+  try {
+    fs.mkdirSync(target.path, { recursive: true });
+    const probe = path.join(target.path, `.evenlight-write-test-${process.pid}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+  } catch (err) {
+    throw httpError(400, 'WORKSPACE_NOT_WRITABLE', `这个文件夹建不了或写不进去：${err.message}`);
+  }
+  if (raw) writeJsonSyncAtomic(WORKSPACE_FILE, { path: target.path, updatedAt: nowIso() });
+  else { try { fs.unlinkSync(WORKSPACE_FILE); } catch { /* already default */ } }
+  const same = path.resolve(target.path) === path.resolve(state.workspaceDir);
+  if (!same && process.env.ASSIST_UPDATE_NO_EXIT !== '1') setTimeout(() => process.exit(0), 800).unref?.();
+  return { ok: true, path: target.path, restarting: !same };
+});
+
 // --- policy ----------------------------------------------------------------
 
 //   GET /api/policy -> {mode, level, autoApproveAll, builtinDeny:n, extraDeny:[{id,text}]}
@@ -3351,6 +3399,31 @@ function errorResponse(res, status, code, message) {
     return;
   }
   jsonResponse(res, status, { error: { code, message } });
+}
+
+/**
+ * A folder the human may make the workspace: a full path, not a drive root
+ * or the whole system, not Windows' or the OS's own folders, not Nightshift's
+ * data folder. -> {ok, path} | {ok:false, error}
+ */
+export function checkWorkspacePath(raw, { dataDir, platform = process.platform } = {}) {
+  const text = String(raw || '').trim().replace(/^"(.*)"$/, '$1');
+  const win = platform === 'win32';
+  const abs = win ? /^[a-zA-Z]:[\\/]/.test(text) : text.startsWith('/');
+  if (!abs) return { ok: false, error: win ? '要填完整路径，比如 D:\\长明工作区' : '要填完整路径，比如 /home/me/workspace' };
+  const p = win ? path.win32.resolve(text) : path.posix.resolve(text);
+  const norm = (s) => (win ? s.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() : s.replace(/\/+$/, ''));
+  const n = norm(p);
+  if (win ? /^[a-z]:$/.test(n) : n === '') return { ok: false, error: '不能把整个磁盘当工作区，选磁盘里的一个文件夹' };
+  const system = win
+    ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)', 'c:\\programdata']
+    : ['/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/proc', '/root', '/sbin', '/sys', '/usr', '/var'];
+  if (system.some((s) => n === s || n.startsWith(`${s}${win ? '\\' : '/'}`))) return { ok: false, error: '不能放在系统文件夹里' };
+  if (dataDir) {
+    const d = norm(win ? path.win32.resolve(dataDir) : path.posix.resolve(dataDir));
+    if (n === d || n.startsWith(`${d}${win ? '\\' : '/'}`) || d.startsWith(`${n}${win ? '\\' : '/'}`)) return { ok: false, error: '不能和长明自己的数据文件夹放在一起' };
+  }
+  return { ok: true, path: p };
 }
 
 function httpError(status, code, message) {

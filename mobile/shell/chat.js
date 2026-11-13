@@ -1,4 +1,4 @@
-/* chat.js — the native chat screen of the Nightshift app (Android).
+/* chat.js — the native chat screen of the 长明 (Evenlight) app (Android).
  *
  * Why this exists: the WebView loading the hub's own UI works but is a website
  * in a box. This screen talks to the same HTTP API with the device token the app
@@ -226,7 +226,7 @@
 
   function setWho() {
     const bot = state.bots.find((b) => b.id === state.botId);
-    $('who-name').textContent = bot ? bot.name : 'Nightshift';
+    $('who-name').textContent = bot ? bot.name : '长明';
     const machine = $('who-machine');
     const label = state.machineName || state.hub.replace(/^https?:\/\//, '');
     machine.innerHTML = `<span class="dot" id="who-dot"></span>${esc(label)}`;

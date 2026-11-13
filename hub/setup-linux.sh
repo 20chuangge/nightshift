@@ -169,7 +169,7 @@ elif has node && node_ok "$(command -v node)"; then
   NODE_BIN="$(command -v node)"
 elif [ -n "$NODE_TAR" ] && [ -f "$NODE_TAR" ] && tar tzf "$NODE_TAR" >/dev/null 2>&1; then
   # Brought over by the client: nothing to download here.
-  say "用夜班带过来的 Node（不用下载）"
+  say "用长明带过来的 Node（不用下载）"
   rm -rf "$RUNTIME" && mkdir -p "$RUNTIME"
   tar xzf "$NODE_TAR" -C "$RUNTIME" --strip-components=1
   NODE_BIN="$RUNTIME/bin/node"

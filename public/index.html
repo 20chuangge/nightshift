@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="夜班" />
+<meta name="apple-mobile-web-app-title" content="长明" />
 <meta name="format-detection" content="telephone=no" />
-<title>夜班 · 个人助理</title>
+<title>长明 · 个人助理</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <link rel="icon" href="icons/icon-32.png" sizes="32x32" />
@@ -3501,7 +3501,7 @@
 
       <section class="dsec" id="sec-model">
         <div class="dsec-head">模型</div>
-        <p class="dsec-sub">接入一个真实模型，夜班才能听懂你的话。不接入时用内置演示，回答是脚本写好的。</p>
+        <p class="dsec-sub">接入一个真实模型，长明才能听懂你的话。不接入时用内置演示，回答是脚本写好的。</p>
 
         <form id="settings-form" novalidate>
           <label class="lbl" for="set-provider">服务商</label>
@@ -3609,7 +3609,7 @@
         </div>
         <div class="voice-set" id="cliagents-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">用订阅额度的编程助手</div>
-          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；夜班不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
+          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；长明不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
           <div id="cliagents-list" class="row-note">正在检查…</div>
           <div class="btn-row"><button class="btn tiny" id="cliagents-refresh" type="button">重新检查</button></div>
         </div>
@@ -3789,7 +3789,7 @@
         <details class="vault-add" id="feishu-guide">
           <summary>第一次用：怎么创建飞书应用（约 5 分钟）</summary>
           <ol class="feishu-steps">
-            <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台</a>，点「创建企业自建应用」，起个名字（比如「夜班」）。</li>
+            <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台</a>，点「创建企业自建应用」，起个名字（比如「长明」）。</li>
             <li>左边「添加应用能力」→ 添加「机器人」。</li>
             <li>「权限管理」里开通：获取与发送单聊、群组消息（im:message）、以应用的身份发消息（im:message:send_as_bot）、读取用户发给机器人的单聊消息、接收群聊中@机器人消息、获取与上传图片或文件资源（im:resource）。</li>
             <li>「凭证与基础信息」里复制 App ID 和 App Secret，填到下面，打开「启用」并保存，等状态变成「已连接」。</li>
@@ -3985,7 +3985,7 @@
               <input type="checkbox" id="allow-remote" />
               <span>允许手机连接</span>
             </label>
-            <div class="row-note" id="allow-remote-note">打开后，这台电脑的夜班会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
+            <div class="row-note" id="allow-remote-note">打开后，这台电脑的长明会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
           </div>
           <div class="pair-row" style="align-items:center;margin-top:14px">
             <div>
@@ -4030,7 +4030,7 @@
           <div class="pair-hint">没有摄像头或不想扫码时，手机浏览器打开上面的地址，输入这个配对码。</div>
           <div class="pair-empty" id="pair-empty" hidden></div>
         </div>
-        <div class="row-note">配对码只用于把手机接进这台电脑上的夜班，不会上传到任何地方。</div>
+        <div class="row-note">配对码只用于把手机接进这台电脑上的长明，不会上传到任何地方。</div>
 
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
         <div class="device-list" id="device-list"></div>
@@ -4051,7 +4051,7 @@
           <ol class="feishu-steps">
             <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
             <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
-            <li>电脑上：什么都不用改。局域网连不上时，夜班会自动改走 Tailscale 地址，不用重新配对。</li>
+            <li>电脑上：什么都不用改。局域网连不上时，长明会自动改走 Tailscale 地址，不用重新配对。</li>
             <li>手机上：打开 Tailscale，再用手机浏览器打开上面的 Tailscale 地址，输入配对码。</li>
           </ol>
         </details>
@@ -4080,14 +4080,14 @@
           </div>
           <div class="row-note" id="qr-iphone">iPhone 扫码后在 Safari 里打开，点「分享」→「添加到主屏幕」，以后从主屏幕一按就进来。</div>
           <div class="row-note" id="qr-tailnet-note" hidden>在外面用的时候，手机上也要装 Tailscale 并登录同一个账号，然后扫「在外面」那个码。</div>
-          <div class="row-note" id="qr-auto-note" hidden>这个码里带着这台机器的所有地址。用夜班 App 扫：和电脑在同一个局域网就走局域网，不在就自动走 Tailscale（手机上要装 Tailscale 并登录同一个账号）。</div>
+          <div class="row-note" id="qr-auto-note" hidden>这个码里带着这台机器的所有地址。用长明 App 扫：和电脑在同一个局域网就走局域网，不在就自动走 Tailscale（手机上要装 Tailscale 并登录同一个账号）。</div>
           <div class="row-note" id="qr-error" hidden></div>
         </div>
       </div>
 
       <section class="dsec" id="sec-about">
         <div class="dsec-head">关于</div>
-        <div class="kv"><span class="k">应用</span><span class="v" id="about-app">夜班</span></div>
+        <div class="kv"><span class="k">应用</span><span class="v" id="about-app">长明</span></div>
         <div class="kv"><span class="k">版本</span><span class="v" id="about-version">—</span></div>
         <div class="kv"><span class="k">服务</span><span class="v" id="about-server">—</span></div>
         <div class="kv"><span class="k">机器地址</span><span class="v" id="about-origin">—</span></div>
@@ -4157,7 +4157,7 @@
     <label class="form-label" for="vnc-addr" style="margin-top:8px">IP 地址</label>
     <input class="field" id="vnc-addr" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" inputmode="url" />
 
-    <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：夜班的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
+    <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：长明的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
 
     <label class="form-label" for="vnc-ssh-user" style="margin-top:8px">SSH 用户名</label>
     <input class="field" id="vnc-ssh-user" placeholder="ubuntu" autocomplete="off" spellcheck="false" />
@@ -4184,7 +4184,7 @@
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：
-      装依赖 → 部署夜班 → 配好每个 Bot 的桌面 → 自动配对并加进机器列表。
+      装依赖 → 部署长明 → 配好每个 Bot 的桌面 → 自动配对并加进机器列表。
       密码只用于这一次配置，不会保存。
     </div>
     <div class="row-note">支持 Linux（Ubuntu、Debian、Rocky 等）和 Windows 10/11。Windows 要先在「设置 → 系统 → 可选功能」里装好 OpenSSH 服务器，并用管理员账号。</div>
@@ -4211,6 +4211,7 @@
   </div>
   <div class="modal-body">
     <div class="confirm-text" id="confirm-text">删除后无法恢复。</div>
+    <input class="field" id="confirm-input" autocomplete="off" spellcheck="false" style="margin-top:12px" hidden />
   </div>
   <div class="modal-foot">
     <button class="btn" id="confirm-cancel" type="button">取消</button>
@@ -4318,12 +4319,12 @@
   <div class="auth-card">
     <div class="auth-top">
       <div class="brand-mark" aria-hidden="true"></div>
-      <span class="name" id="auth-app-name">夜班</span>
+      <span class="name" id="auth-app-name">长明</span>
     </div>
-    <h1>连接你的夜班</h1>
-    <p class="auth-sub">夜班正在这台机器上运行。这台设备还没有获得授权——输入地址和配对码，连接一次就好。</p>
+    <h1>连接你的长明</h1>
+    <p class="auth-sub">长明正在这台机器上运行。这台设备还没有获得授权——输入地址和配对码，连接一次就好。</p>
 
-    <label class="lbl" for="auth-url">夜班地址</label>
+    <label class="lbl" for="auth-url">长明地址</label>
     <input class="field" id="auth-url" autocomplete="off" spellcheck="false" inputmode="url" />
 
     <label class="lbl" for="auth-code">配对码</label>
@@ -4332,7 +4333,7 @@
     <button class="btn primary block" id="auth-connect" type="button">连接</button>
     <div class="auth-msg" id="auth-msg" role="alert"></div>
 
-    <p class="auth-foot">配对码是电脑上夜班的「设置 → 配对」里的 8 位数字，只在这台设备上生效。</p>
+    <p class="auth-foot">配对码是电脑上长明的「设置 → 配对」里的 8 位数字，只在这台设备上生效。</p>
   </div>
 </div>
 
@@ -5095,10 +5096,36 @@ function askConfirm({ title = '确认删除', text = '', confirmLabel = '删除'
   $('confirm-title').textContent = title;
   $('confirm-text').textContent = text;
   $('confirm-ok').textContent = confirmLabel;
+  $('confirm-ok').classList.add('danger');
+  $('confirm-input').hidden = true;
   $('confirm-modal').classList.add('open');
   $('confirm-modal').setAttribute('aria-hidden', 'false');
   $('confirm-scrim').classList.add('show');
   return new Promise((resolve) => { confirmResolve = resolve; });
+}
+
+/**
+ * Ask for one line of text in the same small dialog. The browser prompt does
+ * nothing in the desktop app (Electron has no prompt), so this is the one to
+ * use. -> the text, or null when cancelled.
+ */
+async function askText({ title = '', text = '', value = '', placeholder = '', confirmLabel = '确定' } = {}) {
+  if (confirmResolve) confirmResolve(false);
+  $('confirm-title').textContent = title;
+  $('confirm-text').textContent = text;
+  $('confirm-ok').textContent = confirmLabel;
+  $('confirm-ok').classList.remove('danger');
+  const input = $('confirm-input');
+  input.hidden = false;
+  input.value = value;
+  input.placeholder = placeholder;
+  $('confirm-modal').classList.add('open');
+  $('confirm-modal').setAttribute('aria-hidden', 'false');
+  $('confirm-scrim').classList.add('show');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+  const ok = await new Promise((resolve) => { confirmResolve = resolve; });
+  input.hidden = true;
+  return ok ? input.value : null;
 }
 
 function settleConfirm(value) {
@@ -5779,7 +5806,7 @@ async function api(path, options = {}) {
   try {
     res = await fetch(path, opts);
   } catch (cause) {
-    const err = new Error('无法连接夜班服务，网络可能断了。');
+    const err = new Error('无法连接长明服务，网络可能断了。');
     err.status = 0;
     err.cause = cause;
     throw err;
@@ -6030,7 +6057,7 @@ async function connectDevice() {
     button.disabled = false;
     button.textContent = '连接';
     if (err.code === 'PAIR_INVALID_CODE' || err.status === 401) {
-      setAuthMsg('配对码不对，检查一下电脑上夜班的「设置 → 配对」。');
+      setAuthMsg('配对码不对，检查一下电脑上长明的「设置 → 配对」。');
     } else if (err.code === 'PAIR_RATE_LIMITED' || err.status === 429) {
       setAuthMsg('试得太多次了，等一分钟再试。');
     } else if (err.status === 404) {
@@ -6149,7 +6176,7 @@ function showFatal(err) {
   $('app').classList.remove('is-hidden');
   messagesEl.innerHTML = '';
   const wrap = el('div', 'empty');
-  wrap.appendChild(el('h2', null, '连不上夜班'));
+  wrap.appendChild(el('h2', null, '连不上长明'));
   wrap.appendChild(el('p', null, err && err.message ? err.message : '服务没有响应。'));
   const retry = el('button', 'btn primary', '重试');
   retry.addEventListener('click', () => location.reload());
@@ -6196,7 +6223,7 @@ function updateModelUi() {
   // about block
   const st = state.settings || {};
   const app = st.app || {};
-  $('about-app').textContent = '夜班 Nightshift';
+  $('about-app').textContent = '长明 Evenlight';
   $('about-version').textContent = app.version || (state.config && state.config.version) || '—';
   const server = st.server || {};
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
@@ -7252,7 +7279,7 @@ async function loadCliAgents(refresh = false) {
   const box = $('cliagents-list');
   if (!box) return;
   let data;
-  try { data = await api(`/api/cliagents${refresh ? '?refresh=1' : ''}`); } catch { box.textContent = '这台机器的夜班版本太旧，还不支持。'; return; }
+  try { data = await api(`/api/cliagents${refresh ? '?refresh=1' : ''}`); } catch { box.textContent = '这台机器的长明版本太旧，还不支持。'; return; }
   box.innerHTML = '';
   for (const a of data.agents || []) {
     const row = document.createElement('div');
@@ -7484,7 +7511,7 @@ async function toggleVoice() {
     return;
   }
   const micError = (name, message = '') => toast(
-    name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许夜班使用麦克风'
+    name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许长明使用麦克风'
       : name === 'NotFoundError' ? '没找到麦克风' : `打不开麦克风：${message || name}`, true);
   // Desktop app on a plain-http machine: the app records for the page.
   if ((!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) && window.desk?.voiceStart) {
@@ -7880,7 +7907,7 @@ const TOOL_TEXT = {
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
   machine_switch: { label: '把任务交给另一台机器', title: '想切到另一台机器，把任务交给那里的助理', impact: '窗口会切到那台机器，那里的助理接着做。' },
   machine_list: { label: '查看机器', title: '想看看有哪些机器', impact: '只读取名单。' },
-  fs_delete: { label: '删除文件', title: '想删除一个文件或文件夹', impact: '删掉之后，夜班里没有撤销按钮。' },
+  fs_delete: { label: '删除文件', title: '想删除一个文件或文件夹', impact: '删掉之后，长明里没有撤销按钮。' },
   fs_mkdir: { label: '新建文件夹', title: '想新建一个文件夹', impact: '只会在工作区里加一个目录，不改动已有文件。' },
   fs_read: { label: '读取文件', title: '想读取一个文件', impact: '只会读取内容，不会改动它。' },
   fs_list: { label: '查看目录', title: '想看看目录里有什么', impact: '只会读取文件名，不会改动任何东西。' },
@@ -9692,7 +9719,7 @@ function renderPairing() {
       ? '电脑上显示一个二维码，手机扫一下就进去了。'
       : (deskCanRebind
         ? '先打开上面的「允许手机连接」，再点这里出二维码。'
-        : '这台机器现在只监听本机，手机连不进来。在跑夜班的那台电脑上打开「允许手机连接」。');
+        : '这台机器现在只监听本机，手机连不进来。在跑长明的那台电脑上打开「允许手机连接」。');
   }
 
   $('pair-url').textContent = url || location.origin;
@@ -9705,7 +9732,7 @@ function renderPairing() {
       ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
       : (s.server && s.server.lanUrl)
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
-        : '这是本机的夜班，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
+        : '这是本机的长明，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
   }
   // A public address: say the connection is not encrypted.
   try {
@@ -9772,7 +9799,7 @@ function drawQr(url, note = '') {
     const qr = window.qrcode(0, 'M');
     qr.addData(url);
     qr.make();
-    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接夜班' });
+    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接长明' });
   } catch (err) {
     box.innerHTML = '';
     const hint = document.createElement('div');
@@ -9841,7 +9868,7 @@ function showQrError(err) {
   const code = err && err.code;
   let text = (err && err.message) || '生成二维码失败';
   if (code === 'REMOTE_DISABLED') {
-    text = '这台电脑的夜班现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
+    text = '这台电脑的长明现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
   }
   box.textContent = text;
   if (code === 'REMOTE_DISABLED' && window.desk?.setRemote) {
@@ -9881,7 +9908,7 @@ async function requestPairLink(preferredKind = '') {
       // One code with every address: the phone app picks LAN when it is on the
       // same network and Tailscale when it is not - nothing to choose here.
       if ($('pair-tabs')) $('pair-tabs').hidden = true;
-      drawQr(made.qr, '手机扫这个码连接夜班');
+      drawQr(made.qr, '手机扫这个码连接长明');
       $('qr-url').textContent = made.qr;
       $('qr-copy').disabled = false;
       $('qr-iphone').hidden = false;
@@ -10277,7 +10304,7 @@ function setConnected(ok) {
   state.conn.offline = true;
   if (banner) {
     $('conn-text').textContent = onLocalMachine()
-      ? '连不上本机的夜班服务，正在重连…'
+      ? '连不上本机的长明服务，正在重连…'
       : `连不上「${machineDisplayName()}」，正在重连…（那台机器可能关机、断网或在重启）`;
     $('conn-local').hidden = onLocalMachine() || !window.desk?.useLocal;
     banner.hidden = false;
@@ -10734,7 +10761,7 @@ async function loadMcp() {
   try {
     [data, cat] = await Promise.all([api('/api/mcp'), api('/api/mcp/catalog')]);
   } catch {
-    if ($('mcp-catalog')) $('mcp-catalog').textContent = '这台机器的夜班版本太旧，还不支持连接应用。';
+    if ($('mcp-catalog')) $('mcp-catalog').textContent = '这台机器的长明版本太旧，还不支持连接应用。';
     return;
   }
   mcpUi.servers = data.servers || [];
@@ -11038,7 +11065,7 @@ async function connectMcpApp(app, extra = {}, btn = null, { here = false } = {})
   await loadMcp();
 }
 
-/** The 邮箱 form: address, code, and (for mailboxes Nightshift does not know) servers. `go` adds it. */
+/** The 邮箱 form: address, code, and (for mailboxes Evenlight does not know) servers. `go` adds it. */
 function mailboxFields(box, app, go) {
   const field = (ph, type = 'text') => {
     const i = document.createElement('input');
@@ -11425,6 +11452,33 @@ function renderPolicy(policy) {
   renderPermOverview();
 }
 
+/* The workspace can live anywhere the human likes. The hub reads it at
+   start, so a change restarts it (a few seconds); files already in the old
+   folder stay there. */
+async function changeWorkspace(current, platform) {
+  let info = null;
+  try { info = await api('/api/workspace'); } catch { toast('这台机器的长明版本太旧，还不能换工作区', true); return; }
+  const hint = platform === 'win32' ? '比如 D:\\长明工作区' : '比如 /home/me/workspace';
+  const answer = await askText({
+    title: '更改工作区位置',
+    text: `填一个文件夹的完整路径（${hint}）。所有机器人都能在这里读写，别选放着重要资料的文件夹；原来工作区里的文件不会自动搬过去；换完长明会重启几秒钟。留空 = 回到默认位置（${info.defaultPath}）。`,
+    value: current,
+    placeholder: hint,
+    confirmLabel: '更改并重启',
+  });
+  if (answer === null) return;
+  const next = answer.trim();
+  if (next === current) return;
+  try {
+    const r = await api('/api/workspace', { method: 'PUT', body: { path: next } });
+    if (!r.restarting) { toast('工作区没有变化'); return; }
+    toast(`工作区改到 ${r.path}，长明正在重启…`);
+    setTimeout(() => location.reload(), 6000);
+  } catch (err) {
+    toast(`换工作区失败：${err.message}`, true);
+  }
+}
+
 function renderFolders(policy) {
   const box = $('folder-list');
   if (!box) return;
@@ -11440,7 +11494,10 @@ function renderFolders(policy) {
     r.appendChild(head);
     box.appendChild(r);
   };
-  row('工作区', `${policy?.workspace || ''} · 读写`);
+  const move = el('button', 'btn tiny', '更改位置');
+  move.type = 'button';
+  move.addEventListener('click', () => changeWorkspace(policy?.workspace || '', policy?.platform).catch(() => {}));
+  row('工作区', `${policy?.workspace || ''} · 读写 · 所有机器人共用，生成的文件都放在这里`, [move]);
   for (const f of policy?.folders || []) {
     const mode = el('button', 'btn tiny', f.write ? '改成只读' : '允许写入');
     mode.type = 'button';
@@ -12330,7 +12387,7 @@ function renderMachinesList() {
     // and can hand out a one-time link into any of them.
     box.innerHTML = '<div class="machine-empty">正在读取机器列表…</div>';
     renderBrowserMachines().catch(() => {
-      box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。这台机器离线时读不到机器列表；添加机器请在夜班客户端里操作。</div>`;
+      box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。这台机器离线时读不到机器列表；添加机器请在长明客户端里操作。</div>`;
     });
     return;
   }
@@ -12384,7 +12441,7 @@ async function renderBrowserMachines() {
     </div>`;
   const rows = machines.map(row);
   if (!others.length) {
-    rows.push('<div class="machine-empty">还没有别的机器。在夜班客户端里「添加机器」，它们就会出现在这里。</div>');
+    rows.push('<div class="machine-empty">还没有别的机器。在长明客户端里「添加机器」，它们就会出现在这里。</div>');
   }
   if (mine && !mine.url) {
     rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
@@ -12504,7 +12561,7 @@ async function onMachineListClick(event) {
   }
   if (btn.dataset.rename) {
     const current = machineBridge?.machines?.find((m) => m.url === btn.dataset.rename)?.name || '';
-    const name = window.prompt('这台机器叫什么？', current);
+    const name = await askText({ title: '给这台机器改名', text: '这个名字会显示在机器列表和左上角。', value: current, confirmLabel: '改名' });
     if (!name || !name.trim()) return;
     const res = await window.desk.renameMachine(btn.dataset.rename, name.trim());
     if (!res?.ok) toast(res?.error || '改名失败', true);
@@ -12541,8 +12598,8 @@ async function checkBusy() {
   if (busyWatch.dismissed) return;
   const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
   $('busy-text').textContent = l.why === 'memory'
-    ? `这台机器内存快用完了（只剩 ${gb(l.memFreeMB)} / ${gb(l.memTotalMB)}），夜班会变慢。可以关掉不用的程序，或给它加内存。`
-    : `这台机器很忙：CPU 已经满负荷一分多钟（${l.cores} 核，${l.cpu}%），夜班会变慢。常见原因是系统更新或杀毒扫描；虚拟机建议至少 2 核、4 GB 内存。`;
+    ? `这台机器内存快用完了（只剩 ${gb(l.memFreeMB)} / ${gb(l.memTotalMB)}），长明会变慢。可以关掉不用的程序，或给它加内存。`
+    : `这台机器很忙：CPU 已经满负荷一分多钟（${l.cores} 核，${l.cpu}%），长明会变慢。常见原因是系统更新或杀毒扫描；虚拟机建议至少 2 核、4 GB 内存。`;
   banner.hidden = false;
 }
 
@@ -13055,7 +13112,7 @@ async function provisionApi(path, options = {}) {
   if (!window.desk?.localProvision || machineBridge?.local) return api(path, options);
   const res = await window.desk.localProvision({ method: options.method || 'GET', path, body: options.body });
   if (res.status >= 200 && res.status < 300) return res.json;
-  const err = new Error(res.json?.error?.message || (res.status ? `HTTP ${res.status}` : '连不上本机的夜班服务'));
+  const err = new Error(res.json?.error?.message || (res.status ? `HTTP ${res.status}` : '连不上本机的长明服务'));
   err.status = res.status;
   throw err;
 }
@@ -13504,6 +13561,7 @@ function wireChrome() {
   $('mock-banner-btn').addEventListener('click', openSettings);
   $('group-delete-btn')?.addEventListener('click', deleteCurrentGroup);
   $('confirm-ok')?.addEventListener('click', () => settleConfirm(true));
+  $('confirm-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); settleConfirm(true); } });
   $('confirm-cancel')?.addEventListener('click', () => settleConfirm(false));
   $('confirm-close')?.addEventListener('click', () => settleConfirm(false));
   $('confirm-scrim')?.addEventListener('click', () => settleConfirm(false));

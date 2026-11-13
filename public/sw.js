@@ -2,11 +2,13 @@
  *
  *  - never touch /api (SSE + polling must always hit the network)
  *  - navigations: network first, fall back to the cached shell, then offline.html
- *  - static assets: cache first, refresh in the background
+ *  - static assets: network first, the cache only when offline (cache first
+ *    showed the old icon after the rename until a second reload)
  *
  * Only registered on https or localhost: LAN http:// is not a secure context.
  */
-const VERSION = 'desk-v1';
+// A new name drops every older cache once (activate below).
+const VERSION = 'evenlight-v2';
 const SHELL = [
   '/', '/index.html', '/manifest.json', '/offline.html',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png',
@@ -54,17 +56,14 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.match(req).then((hit) => {
-      const network = fetch(req)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => undefined);
-          }
-          return res;
-        })
-        .catch(() => hit);
-      return hit || network;
-    }),
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => undefined);
+        }
+        return res;
+      })
+      .catch(async () => (await caches.match(req)) || Response.error()),
   );
 });

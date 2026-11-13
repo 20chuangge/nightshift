@@ -398,7 +398,7 @@ export function createFeishu(o) {
           ? `已连接到「${o.pinned.machine || here()}」的${o.pinned.name}。直接发消息给我就行，图片和语音也可以。`
           : `已连接到「${here()}」的助理。直接发消息给我就行，图片和语音也可以。发「切换」可以换别的机器人。`);
       } else {
-        await sendText(to, '还没配对：在电脑上的夜班里打开「设置 → 飞书」，把配对码发给我。');
+        await sendText(to, '还没配对：在电脑上的长明里打开「设置 → 飞书」，把配对码发给我。');
       }
       return;
     }
@@ -432,7 +432,7 @@ export function createFeishu(o) {
     if (message.message_type === 'audio') {
       let c = {};
       try { c = JSON.parse(message.content || '{}'); } catch { /* */ }
-      if (typeof o.transcribe !== 'function') { await sendText(to, '这台机器还没配语音服务，先发文字吧（在夜班「设置 → 模型 → 语音输入」里配）。'); return; }
+      if (typeof o.transcribe !== 'function') { await sendText(to, '这台机器还没配语音服务，先发文字吧（在长明「设置 → 模型 → 语音输入」里配）。'); return; }
       try {
         const bytes = await downloadAudio(message.message_id, c.file_key);
         const { text: heard } = await o.transcribe(bytes, 'audio/ogg');
@@ -555,8 +555,8 @@ export function createFeishu(o) {
       if (turn) {
         feishuTurns.delete(ev.turnId);
         let extra = '';
-        if (ev.waitingFor === 'takeover') extra = '\n\n（这一步要在电脑上的夜班里接管屏幕来完成。）';
-        if (ev.waitingFor === 'login') extra = '\n\n（需要在电脑上的夜班里填写登录信息，密码不要发在飞书里。）';
+        if (ev.waitingFor === 'takeover') extra = '\n\n（这一步要在电脑上的长明里接管屏幕来完成。）';
+        if (ev.waitingFor === 'login') extra = '\n\n（需要在电脑上的长明里填写登录信息，密码不要发在飞书里。）';
         const said = turn.texts.concat(extra ? [extra] : []).join('\n\n').trim() || String(ev.summary || '').trim();
         deliver(turn, [turn.label && said ? `${turn.label}\n${said}` : said], '')
           // Asked by voice: the answer comes back as a voice message as well.

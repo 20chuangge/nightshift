@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>使用文档 · 长明 Evenlight</title>
+<meta name="description" content="长明（Evenlight）使用文档：安装、接模型、和助手一起做事、添加机器、权限与保险箱、连接应用、编程助手、手机与飞书。" />
+<meta name="theme-color" content="#0B0C10" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="icon.svg" alt="" width="26" height="26" /><span>长明</span><span class="en">Evenlight</span></a>
+    <nav>
+      <a class="hide-sm" href="./">首页</a>
+      <a href="docs.html">文档</a>
+      <a class="hide-xs" href="https://github.com/20chuangge/nightshift/releases">下载</a>
+      <a class="hide-xs" href="https://github.com/20chuangge/nightshift">GitHub</a>
+      <button class="theme" id="theme" type="button" aria-label="切换深浅色"><span></span></button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap docs">
+  <nav class="toc" aria-label="目录">
+    <p>目录</p>
+    <a href="#install">安装</a>
+    <a href="#model">接一个模型</a>
+    <a href="#chat">和助手一起做事</a>
+    <a href="#tasks">长任务与停下</a>
+    <a href="#workspace">工作区</a>
+    <a href="#machines">添加机器</a>
+    <a href="#screen">看屏幕与接管</a>
+    <a href="#safety">权限与审批</a>
+    <a href="#vault">登录与保险箱</a>
+    <a href="#apps">连接应用</a>
+    <a href="#coding">编程助手</a>
+    <a href="#media">看图、画图、视频、语音</a>
+    <a href="#phone">手机与飞书</a>
+    <a href="#more">记忆、技能、定时任务</a>
+    <a href="#update">更新与数据</a>
+    <a href="#trouble">遇到问题</a>
+  </nav>
+
+  <article class="doc">
+    <h1>使用文档</h1>
+    <p class="intro">长明是一个有自己电脑的 AI 助理。这份文档从安装讲到每个功能，十分钟读完就能放心交给它做事。</p>
+
+    <h2 id="install">安装</h2>
+    <p>从<a href="https://github.com/20chuangge/nightshift/releases/latest">下载页</a>选一个：</p>
+    <div class="table"><table>
+      <tr><th>你要什么</th><th>下载</th><th>说明</th></tr>
+      <tr><td>Windows 上长期用</td><td><code>Evenlight-Setup-版本.exe</code></td><td>安装版，建桌面和开始菜单快捷方式，不需要管理员</td></tr>
+      <tr><td>不想装，放 U 盘</td><td><code>Evenlight-Portable-版本.exe</code></td><td>免安装，双击即用</td></tr>
+      <tr><td>安卓手机</td><td><code>Evenlight-Android-版本.apk</code></td><td>允许「安装未知来源应用」后安装</td></tr>
+      <tr><td>iPhone / 临时用</td><td>浏览器</td><td>打开电脑上的地址，输入配对码</td></tr>
+    </table></div>
+    <div class="tip"><p>安装包还没有做代码签名，Windows 会提示「已保护你的电脑」：点「更多信息 → 仍要运行」。代码全部公开在 GitHub。</p></div>
+    <p>数据放在 <code>%APPDATA%\Desk</code>，卸载不会删除；升级直接装新版，什么都不会丢。</p>
+
+    <h2 id="model">接一个模型</h2>
+    <p>长明自己不带模型，用的是你自己的密钥，对话直接发给你选的服务商。</p>
+    <ol>
+      <li>打开 <strong>设置 → 模型</strong>，选服务商：DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenAI、Claude 等都在列表里；其他兼容 OpenAI 接口的服务选「自定义」。</li>
+      <li>填上密钥，点「测试连接」。模型框点一下会列出服务商现在提供的全部模型。</li>
+      <li>每个助手可以单独选模型：简单的活用便宜的，难的用强的。</li>
+    </ol>
+    <div class="tip"><p>推荐先用 DeepSeek：便宜、中文好、会用工具。再填一个硅基流动的密钥，语音输入、看图、画图、做视频就都能用了。</p></div>
+
+    <h2 id="chat">和助手一起做事</h2>
+    <p>像对人说话一样说要做什么，比如「把桌面上的截图按月份归档」「查一下这台机器磁盘还剩多少」「给这张海报换个标题再出三版」。它会自己决定用哪些工具：运行命令、读写文件、打开浏览器、操作桌面程序、生成图片……</p>
+    <ul>
+      <li><strong>可以建多个助手</strong>，各有自己的角色、记忆和对话；也可以拉一个群，让它们分工。</li>
+      <li><strong>它缺工具会申请</strong>：比如需要命令行而你没给，它会弹出一张卡片问你要不要给。</li>
+      <li><strong>长回复会分几条发</strong>，结论在最前面。</li>
+      <li>它干活时你可以随时插话问进度，不会打断它。</li>
+    </ul>
+
+    <h2 id="tasks">长任务与停下</h2>
+    <p>超过几步的活，它会先列一张清单，做完一步勾一步。到了单轮的步数上限会<strong>自动接着做</strong>，不用你一直回「继续」；连续没有进展会停下来告诉你卡在哪。</p>
+    <ul>
+      <li>需要你决定的地方（选哪个方案、登录、只有你知道的信息），清单会停在那一步等你回答。</li>
+      <li>应用重启后，没做完的任务会自己接着做。</li>
+      <li>想让它停：点输入框旁边的<strong>停止</strong>，或者直接说「停下」「别做了」「取消」，正在做的和整个任务都会停，做好的文件都还在。</li>
+    </ul>
+
+    <h2 id="workspace">工作区</h2>
+    <p>工作区是助手们共用的文件夹：它写的文件、生成的图片和视频、下载的东西都放在这里，所有助手和你都能看到。默认在 <code>%APPDATA%\Desk\workspace</code>。</p>
+    <p>想放到别的盘（比如 <code>D:\长明工作区</code>）：<strong>设置 → 权限 → 工作区 → 更改位置</strong>，填一个文件夹路径，确认后长明会重启。原来工作区里的文件不会自动搬走，需要的话自己复制过去。</p>
+    <p>工作区之外，你还可以开放别的文件夹给它读（或读写），见下面的「权限与审批」。</p>
+
+    <h2 id="machines">添加机器</h2>
+    <p>家里的旧笔记本、台式机、云主机，都可以变成它干活的电脑。<strong>设置 → 机器 → 添加机器</strong>，填地址、账号和密码，长明会自动装好一切，大约半分钟。</p>
+    <ul>
+      <li><strong>Linux</strong>（Ubuntu、Debian、Rocky 等）：能 SSH 登录，账号有 sudo。</li>
+      <li><strong>Windows 10 / 11</strong>：先在「设置 → 系统 → 可选功能」装好 OpenSSH 服务器，用管理员账号。</li>
+      <li>添加之后它们会跟着这台电脑自动更新；晚开机的机器开机后也会更新上。</li>
+      <li>左上角可以随时切换在哪台机器上做事。</li>
+    </ul>
+
+    <h2 id="screen">看屏幕与接管</h2>
+    <p>右侧「电脑」面板能实时看到当前机器的屏幕。遇到扫码、验证码、付款这类必须你来的步骤，助手会停下请你<strong>接管</strong>：键盘鼠标交给你，弄好了点「我弄好了，继续」。</p>
+    <ul>
+      <li><strong>多块屏幕</strong>：「全屏」旁边可以选看哪一块，默认只看主屏，也可以「全部屏幕」并排。</li>
+      <li>装了长明的 Windows 电脑，屏幕服务随长明启动和退出；添加的 Windows 机器用的是系统服务，开机就在。</li>
+      <li>屏幕只在本机监听，只有配对过的设备经长明转发才看得到。</li>
+      <li>手机上接管时有触摸板模式、虚拟键盘和常用按键。</li>
+    </ul>
+
+    <h2 id="safety">权限与审批</h2>
+    <p>在 <strong>设置 → 权限</strong> 里，每台机器单独设置：</p>
+    <div class="table"><table>
+      <tr><th>级别</th><th>效果</th></tr>
+      <tr><td>谨慎</td><td>几乎所有会改动东西的操作都先问你</td></tr>
+      <tr><td>标准</td><td>日常操作自己做，删除、系统改动、发消息这类先问你</td></tr>
+      <tr><td>放手</td><td>都让它自己做，只有危险命令还会问——适合专门给机器人用的电脑</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>能访问的文件夹</strong>：只有工作区和你开放的文件夹；其他位置先问你，或者直接不许。</li>
+      <li><strong>禁止的命令</strong>：格式化、删系统这类内置拦下，也可以自己加词。</li>
+      <li><strong>一句话规则</strong>：比如「发邮件之前先问我」，它会照做。</li>
+      <li><strong>操作记录</strong>：做过什么、谁批准的、何时接管过屏幕都查得到。</li>
+    </ul>
+
+    <h2 id="vault">登录与保险箱</h2>
+    <p>需要登录网站时，长明会弹出一个安全表单让你填账号密码。它们加密存在那台机器的保险箱里，助手直接填进网页，自己看不到，也不会发给 AI 模型。</p>
+    <p>应用的授权码、邮箱的授权码同样放在保险箱。任何想从脚本里读取保险箱的操作，不管什么审批级别都会先问你。</p>
+
+    <h2 id="apps">连接应用</h2>
+    <p><strong>设置 → 应用</strong> 里一键连接常用服务，助手就能直接用它们的接口做事，每一步按你的审批级别来：</p>
+    <ul>
+      <li><strong>邮箱</strong>：QQ、163、126、Gmail、Outlook 等，填邮箱地址和授权码（不是登录密码）。可以连多个邮箱；整理、搬移、删除默认进「已删除」，能恢复。</li>
+      <li><strong>GitHub、GitLab、Notion</strong> 等：点「连接」，在弹出的页面里登录授权即可。</li>
+      <li>百度网盘、Runway、Suno 等也在目录里。</li>
+    </ul>
+    <div class="tip"><p>连上一次，会同步到你所有的机器。</p></div>
+
+    <h2 id="coding">编程助手（用你的订阅额度）</h2>
+    <p>写程序、改项目这类大活，长明可以交给这台电脑上已经登录的官方编程工具，用的是你自己的订阅额度，不按次花 API 费用：</p>
+    <div class="table"><table>
+      <tr><th>工具</th><th>订阅</th><th>装好后登录</th></tr>
+      <tr><td>Claude Code</td><td>Claude Pro / Max</td><td><code>claude</code></td></tr>
+      <tr><td>Codex CLI</td><td>ChatGPT</td><td><code>codex login</code></td></tr>
+      <tr><td>Cursor</td><td>Cursor</td><td><code>agent login</code></td></tr>
+      <tr><td>Qoder</td><td>Qoder</td><td><code>qodercn login</code>（国际版 <code>qoder login</code>）</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>设置 → 模型 → 用订阅额度的编程助手</strong> 里能看到哪些已装好、已登录，并给每个选默认模型（Cursor 和 Qoder 会列出你账号能用的模型）。</li>
+      <li>碰到大的写代码任务，助手会主动说「这个交给 Qoder 做」；每次交出去之前都先问你。</li>
+      <li>它们只在任务文件夹里改文件；勾了「运行命令」才会运行命令。</li>
+      <li>长明不读也不碰这些工具的登录信息。</li>
+    </ul>
+
+    <h2 id="media">看图、画图、视频、语音</h2>
+    <ul>
+      <li><strong>看图</strong>：发截图或照片，它能看懂。设置 → 模型 → 看图。</li>
+      <li><strong>画图</strong>：硅基流动（Kolors、Qwen-Image、FLUX）、豆包 Seedream、通义万相、智谱 CogView、MiniMax、OpenAI、Google Imagen。</li>
+      <li><strong>做视频</strong>：硅基流动（通义万相）、豆包 Seedance、通义万相、MiniMax 海螺、智谱 CogVideoX。视频在后台生成，好了会告诉你。</li>
+      <li><strong>语音</strong>：按住说话转成文字；回复可以朗读，每个助手能选自己的声音。</li>
+    </ul>
+
+    <h2 id="phone">手机与飞书</h2>
+    <ol>
+      <li>电脑上打开 <strong>设置 → 手机</strong> 里的「允许手机连接」。</li>
+      <li>手机装上安卓 App，扫电脑上的二维码，就连上了。</li>
+      <li>在外面：手机和电脑都装 <a href="https://tailscale.com/">Tailscale</a>，连不上家里网络时会自动改走 Tailscale，不用重新配对。</li>
+    </ol>
+    <p>不想装 App：在 <strong>设置 → 飞书</strong> 里接一个飞书机器人，出门在外用飞书给助手发消息，结果、图片、视频都发回飞书；需要批准时回一句「批准」。</p>
+
+    <h2 id="more">记忆、技能、定时任务</h2>
+    <ul>
+      <li><strong>记忆</strong>：它会记下你的习惯和偏好，每个助手各有一份，也有一份大家共享的。</li>
+      <li><strong>技能</strong>：做过的流程可以存成技能，下次一句话就能复用。</li>
+      <li><strong>定时任务</strong>：每天的简报、定期的检查，到点自己跑，你不在也照样做完。</li>
+    </ul>
+
+    <h2 id="update">更新与数据</h2>
+    <ul>
+      <li>直接安装新版即可，助手、记忆、设置都保留；已添加的机器会自动更新到同一版本。</li>
+      <li>长明在 1.2.146 之前叫 <strong>Nightshift · 夜班</strong>，数据在同一个位置，覆盖安装就行。</li>
+      <li>数据位置：电脑上 <code>%APPDATA%\Desk</code>；Linux 机器上在安装目录的 <code>data</code> 下。</li>
+    </ul>
+
+    <h2 id="trouble">遇到问题</h2>
+    <h3>它一直不回 / 回得很慢</h3>
+    <p>看顶部有没有「这台机器内存快用完了」之类的提示；再到设置 → 模型 点「测试连接」，确认密钥和余额正常。</p>
+    <h3>手机连不上</h3>
+    <p>确认电脑上打开了「允许手机连接」，手机和电脑在同一个网络；在外面就用 Tailscale。</p>
+    <h3>屏幕显示「无法连接到服务器」</h3>
+    <p>点「电脑」面板的「刷新」。刚开机或刚切换屏幕时，屏幕服务需要几秒钟准备。</p>
+    <h3>还是不行</h3>
+    <p>到 <a href="https://github.com/20chuangge/nightshift/issues">GitHub</a> 提一个问题，附上出错时的截图。</p>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="./"><img src="icon.svg" alt="" width="20" height="20" /><span>长明</span><span class="en">Evenlight</span></a>
+    <nav>
+      <a href="./">首页</a>
+      <a href="https://github.com/20chuangge/nightshift">GitHub</a>
+      <a href="https://github.com/20chuangge/nightshift/releases">更新说明</a>
+      <a href="https://github.com/20chuangge/nightshift/blob/main/LICENSE">MIT 许可证</a>
+    </nav>
+    <span class="was">原名 Nightshift · 夜班</span>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

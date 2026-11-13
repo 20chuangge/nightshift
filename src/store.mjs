@@ -34,6 +34,20 @@ function pickDir(envName, fallback) {
 
 const DATA_DIR = pickDir('ASSIST_DATA_DIR', 'data');
 
+/** Where the bots' shared workspace lives by default (no setting, no env). */
+export const DEFAULT_WORKSPACE_DIR = path.join(ROOT, 'workspace');
+/** The human's own workspace folder (data/workspace.json {path}), set in
+ *  settings and read once at start; ASSIST_WORKSPACE_DIR still wins (tests). */
+export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');
+function chosenWorkspace() {
+  try {
+    const p = String(JSON.parse(fs.readFileSync(WORKSPACE_FILE, 'utf8')).path || '').trim();
+    return p && path.isAbsolute(p) ? path.resolve(p) : '';
+  } catch {
+    return '';
+  }
+}
+
 export const P = {
   root: ROOT,
   configDir: path.join(ROOT, 'config'),
@@ -43,7 +57,7 @@ export const P = {
   settingsFile: path.join(ROOT, 'config', 'settings.json'),
   skillsDir: path.join(ROOT, 'skills'),
   publicDir: path.join(ROOT, 'public'),
-  workspaceDir: pickDir('ASSIST_WORKSPACE_DIR', 'workspace'),
+  workspaceDir: process.env.ASSIST_WORKSPACE_DIR?.trim() ? path.resolve(process.env.ASSIST_WORKSPACE_DIR.trim()) : (chosenWorkspace() || DEFAULT_WORKSPACE_DIR),
   dataDir: DATA_DIR,
   memoryDir: path.join(DATA_DIR, 'memory'),
   sessionsDir: path.join(DATA_DIR, 'sessions'),

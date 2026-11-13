@@ -1,8 +1,8 @@
 ﻿# =============================================================================
-#  setup-windows.ps1 —— 把一台 Windows 电脑变成夜班 Hub
+#  setup-windows.ps1 —— 把一台 Windows 电脑变成长明 Hub
 #  支持：Windows 10 1803+ / Windows 11 / Windows Server 2019+（x64、arm64）
 #
-#  夜班客户端「添加机器」经 SSH 自动调用它（需要那台电脑开着 OpenSSH 服务器，
+#  长明客户端「添加机器」经 SSH 自动调用它（需要那台电脑开着 OpenSSH 服务器，
 #  账号是管理员）；也可以在那台电脑上以管理员身份手动运行：
 #      powershell -ExecutionPolicy Bypass -File setup-windows.ps1 -Pkg desk-hub.tar.gz
 #
@@ -79,7 +79,7 @@ $runtime = Join-Path $AppDir 'runtime'
 $nodeExe = Join-Path $runtime 'node.exe'
 if (-not (NodeOk $nodeExe) -and $NodeZip -and (Test-Path $NodeZip)) {
   # Brought over by the client: nothing to download here.
-  Say '用夜班带过来的 Node（不用下载）'
+  Say '用长明带过来的 Node（不用下载）'
   try {
     $tmp = Join-Path $env:TEMP "desk-node-$PID"
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null

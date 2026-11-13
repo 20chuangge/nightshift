@@ -1,6 +1,6 @@
 appId: com.desk.assistant
-productName: Nightshift
-copyright: Copyright © 2026 Nightshift
+productName: Evenlight
+copyright: Copyright © 2026 Evenlight
 
 directories:
   output: dist
@@ -58,8 +58,8 @@ win:
     - target: portable
       arch: [x64]
   icon: build/icon.ico
-  publisherName: Nightshift
-  artifactName: Nightshift-${version}-${arch}.${ext}
+  publisherName: Evenlight
+  artifactName: Evenlight-${version}-${arch}.${ext}
 
 nsis:
   oneClick: false
@@ -68,16 +68,16 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Nightshift
+  shortcutName: 长明 Evenlight
   deleteAppDataOnUninstall: false
-  uninstallDisplayName: "Nightshift (夜班)"
+  uninstallDisplayName: "长明 Evenlight"
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  artifactName: Nightshift-Setup-${version}.${ext}
+  artifactName: Evenlight-Setup-${version}.${ext}
 
 portable:
-  artifactName: Nightshift-Portable-${version}.${ext}
+  artifactName: Evenlight-Portable-${version}.${ext}
 
 mac:
   target: [dmg]

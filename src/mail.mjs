@@ -242,7 +242,7 @@ export function buildMessage({ from, to = [], cc = [], subject = '', text = '', 
     `Message-ID: <${crypto.randomUUID()}@${domain}>`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${[references, inReplyTo].filter(Boolean).join(' ')}`] : []),
     'MIME-Version: 1.0',
-    'X-Mailer: Nightshift',
+    'X-Mailer: Evenlight',
   ];
   const textPart = ['Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64lines(Buffer.from(String(text).replace(/\r?\n/g, '\r\n'), 'utf8'))];
   if (!attachments.length) return [...head, ...textPart].join('\r\n');
@@ -385,7 +385,7 @@ export class Imap {
       throw mailError('MAIL_AUTH', `登录被拒绝：${err.message}。请确认用的是邮箱的「授权码」（不是登录密码），并且邮箱设置里已经开启 IMAP/SMTP。`);
     }
     // 网易邮箱 (163 / 126 / yeah) refuse SELECT ("Unsafe Login") until the client says who it is.
-    await this.cmd('ID ("name" "Nightshift" "version" "1.0" "vendor" "Nightshift")').catch(() => {});
+    await this.cmd('ID ("name" "Evenlight" "version" "1.0" "vendor" "Evenlight")').catch(() => {});
     const cap = await this.cmd('CAPABILITY').catch(() => ({ untagged: [] }));
     this.caps = new Set((cap.untagged.find((x) => /^\* CAPABILITY/i.test(x.text))?.text || '').toUpperCase().split(/\s+/));
   }

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="dark light" />
-<title>Nightshift</title>
+<title>长明</title>
 <script>
   /* Pick the theme before the first paint, using the same choice as the hub's
      设置 → 外观 (the hub reports it to /api/ui/state and the shell caches it).
@@ -102,10 +102,8 @@
 
   .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
   .brand .mark {
-    width: 34px; height: 34px; border-radius: 10px;
-    background: linear-gradient(145deg, var(--accent-2), var(--accent));
-    display: grid; place-items: center;
-    font-weight: 700; font-size: 17px; color: #fff;
+    width: 34px; height: 34px; border-radius: 9px;
+    background: url("ui/icons/icon-128.png") center / cover no-repeat;
   }
   .brand .name { font-size: 15px; font-weight: 650; letter-spacing: 0.2px; }
   .brand .sub { font-size: 11px; color: var(--dim); font-family: var(--mono); }
@@ -250,7 +248,7 @@
   #connected { display: flex; flex-direction: column; min-height: calc(100vh - 110px - var(--safe-top) - var(--safe-bottom)); }
   #connected[hidden] { display: none; }
   .brand { margin-bottom: 28px; }
-  .brand .mark { width: 28px; height: 28px; border-radius: 8px; background: var(--brand); font-size: 14px; color: #fff; }
+  .brand .mark { width: 28px; height: 28px; border-radius: 8px; background: url("ui/icons/icon-128.png") center / cover no-repeat; }
   .brand .name { font-size: 15px; font-weight: 600; }
   .brand .sub { font-family: var(--sans); font-size: 12px; }
   h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.2; margin-bottom: 6px; }
@@ -295,14 +293,14 @@
   <!-- 1. first launch / change hub -->
   <section id="connect" class="card" hidden>
     <div class="brand">
-      <div class="mark">N</div>
+      <div class="mark" aria-hidden="true"></div>
       <div>
-        <div class="name">Nightshift</div>
+        <div class="name">长明 <span style="opacity:.55;font-weight:500">Evenlight</span></div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
 
-    <h1>连接你的 Nightshift<span class="en">Connect to your Nightshift</span></h1>
+    <h1>连接你的长明<span class="en">Connect to your Evenlight</span></h1>
     <p class="lede">手机上用的是电脑端同一份界面。填上你电脑正在跑的那个 Hub 地址就行。</p>
 
     <div id="connect-error" class="err"></div>
@@ -324,7 +322,7 @@
     </form>
 
     <p class="hint">
-      在电脑上的夜班打开「设置 → 配对」，扫那里的二维码，或者照着填地址和配对码。
+      在电脑上的长明打开「设置 → 配对」，扫那里的二维码，或者照着填地址和配对码。
       只要配对一台：电脑上添加过的其他机器会自动出现在列表里。
     </p>
     <div class="row">
@@ -343,9 +341,9 @@
   <!-- 2. which machine to open: the app's home screen -->
   <section id="connected" class="card" hidden>
     <div class="brand">
-      <div class="mark">N</div>
+      <div class="mark" aria-hidden="true"></div>
       <div>
-        <div class="name">Nightshift</div>
+        <div class="name">长明 <span style="opacity:.55;font-weight:500">Evenlight</span></div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
@@ -376,7 +374,7 @@
 
   <!-- 4. hub not reachable -->
   <section id="offline" class="card" hidden>
-    <h1>连不上你的 Nightshift<span class="en">Hub not reachable</span></h1>
+    <h1>连不上你的长明<span class="en">Hub not reachable</span></h1>
     <p class="lede" id="offline-detail">Hub 没有响应。</p>
     <dl class="kv">
       <dt>Hub</dt><dd id="offline-url">—</dd>
@@ -386,12 +384,12 @@
       <button id="offline-change" class="ghost" type="button">换一个 Hub</button>
     </div>
     <p class="hint">
-      依次检查：电脑上夜班还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
+      依次检查：电脑上长明还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
       <code>HOST=0.0.0.0</code> 吗？手机和电脑在同一个 Wi-Fi 吗？系统防火墙放行端口了吗？
     </p>
   </section>
 
-  <div class="foot" id="foot">Nightshift mobile</div>
+  <div class="foot" id="foot">长明 Evenlight mobile</div>
 </div>
 
 <!-- Scanning with the camera inside the app (jsQR): no Google module needed. -->

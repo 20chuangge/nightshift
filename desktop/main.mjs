@@ -1,5 +1,5 @@
 /**
- * Nightshift (夜班) desktop shell.
+ * 长明 · Evenlight desktop shell (named Nightshift until 1.2.146).
  *
  * The renderer is just the web UI; all the value sits in the Node server that
  * this shell starts as a child process. Keeping them separate means a crashed
@@ -24,9 +24,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
 const DEV_URL = process.env.ASSIST_DEV_URL || '';
 
-// The product is Nightshift (夜班). Installs from when it was called Desk keep
+// The product is 长明 · Evenlight (Nightshift before 1.2.146). Installs from when it was called Desk keep
 // their data where it already is, %APPDATA%\Desk: set before anything reads it.
-app.setName('Nightshift');
+app.setName('Evenlight');
 app.setPath('userData', path.join(app.getPath('appData'), 'Desk'));
 
 /** Shell text follows the system language (the web UI has its own setting). */
@@ -511,8 +511,8 @@ function launchServer({ host, port }) {
       }
       if (win && !win.isDestroyed()) {
         dialog.showErrorBox(
-          L('夜班的后台进程退出了', 'The Nightshift server stopped'),
-          L(`一分钟内连续退出了好几次（退出码 ${code ?? signal}）。重新打开夜班即可恢复；详情见 ${BOOT_LOG}`, `It stopped several times in a minute (exit code ${code ?? signal}). Reopen Nightshift to recover; details in ${BOOT_LOG}`),
+          L('长明的后台进程退出了', 'The Evenlight server stopped'),
+          L(`一分钟内连续退出了好几次（退出码 ${code ?? signal}）。重新打开长明即可恢复；详情见 ${BOOT_LOG}`, `It stopped several times in a minute (exit code ${code ?? signal}). Reopen Evenlight to recover; details in ${BOOT_LOG}`),
         );
       }
       app.quit();
@@ -608,10 +608,10 @@ function createWindowFor(url, bounds = null) {
       hangDialog = true;
       const { response } = await dialog.showMessageBox(self, {
         type: 'warning',
-        title: L('夜班', 'Nightshift'),
+        title: L('长明', 'Evenlight'),
         message: L('页面没有响应', 'The page is not responding'),
         detail: L('可以再等一会儿，或者重新加载这一页（聊天记录不会丢）。', 'Wait a little longer, or reload the page (your chats are kept).'),
-        buttons: [L('等待', 'Wait'), L('重新加载', 'Reload'), L('退出夜班', 'Quit Nightshift')],
+        buttons: [L('等待', 'Wait'), L('重新加载', 'Reload'), L('退出长明', 'Quit Evenlight')],
         defaultId: 1,
         cancelId: 0,
         noLink: true,
@@ -784,12 +784,12 @@ function machinesMenu() {
 
 /** Tray and app menu both list the machines; rebuild them after any change. */
 function refreshChrome() {
-  if (win && !win.isDestroyed()) win.setTitle(remoteHub ? `${L('夜班', 'Nightshift')} — ${machineLabel(remoteHub)}` : L('夜班', 'Nightshift'));
+  if (win && !win.isDestroyed()) win.setTitle(remoteHub ? `${L('长明', 'Evenlight')} — ${machineLabel(remoteHub)}` : L('长明', 'Evenlight'));
   buildMenu();
   if (!tray) return;
-  tray.setToolTip(remoteHub ? `${L('夜班', 'Nightshift')} → ${machineLabel(remoteHub)}` : L('夜班', 'Nightshift'));
+  tray.setToolTip(remoteHub ? `${L('长明', 'Evenlight')} → ${machineLabel(remoteHub)}` : L('长明', 'Evenlight'));
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: L('打开夜班', 'Open Nightshift'), click: showWindow },
+    { label: L('打开长明', 'Open Evenlight'), click: showWindow },
     { type: 'separator' },
     ...machinesMenu(),
     { type: 'separator' },
@@ -817,7 +817,7 @@ function buildMenu() {
   if (HUB_MODE) return;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
-      label: L('夜班', 'Nightshift'),
+      label: L('长明', 'Evenlight'),
       submenu: [
         { label: L('机器', 'Machines'), submenu: machinesMenu() },
         { type: 'separator' },
@@ -1323,7 +1323,7 @@ if (!gotLock) {
         serverPort = port;
         console.log(`[desk] HUB MODE on http://${HUB_HOST}:${port}/ (home: ${HOME})`);
         createTray();
-        tray?.setToolTip(`Nightshift Hub :${port}`);
+        tray?.setToolTip(`Evenlight Hub :${port}`);
         // Keep the process alive with no windows.
         app.dock?.hide?.();
         return;
@@ -1364,7 +1364,7 @@ if (!gotLock) {
       // checked are skipped inside autoUpdateMachine.
       setInterval(() => { updateAttempts.clear(); autoUpdateMachines().catch(() => {}); }, 10 * 60 * 1000);
     } catch (err) {
-      dialog.showErrorBox(L('夜班启动失败', 'Nightshift failed to start'), String(err?.stack || err));
+      dialog.showErrorBox(L('长明启动失败', 'Evenlight failed to start'), String(err?.stack || err));
       app.quit();
     }
   });
