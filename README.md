@@ -41,7 +41,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 1030 assertions, boots the real server on a free port
+npm run smoke                  # 1036 assertions, boots the real server on a free port
 
 # 2) 桌面应用（Electron 壳）
 npm run desktop                # 开发模式，等同 npm start 但带窗口/托盘
