@@ -1,27 +1,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Nightshift · 夜班: a crescent moon with the bots' two eyes, on a night-indigo tile.
+  <!-- 长明 · Evenlight: a lamp that stays lit through the night. One amber
+       flame with a soft glow over a fine horizon, on a deep ink tile.
        Source of every app icon; render with: npm run desktop:icons -->
   <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2f2a5c"/>
-      <stop offset="1" stop-color="#1b1838"/>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A1C24"/>
+      <stop offset="1" stop-color="#0B0C10"/>
     </linearGradient>
-    <linearGradient id="moonLight" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#dcd6ff"/>
+    <radialGradient id="glow" cx="512" cy="560" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E2B36A" stop-opacity=".34"/>
+      <stop offset=".45" stop-color="#E2B36A" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#E2B36A" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F6D9A3"/>
+      <stop offset=".55" stop-color="#E2B36A"/>
+      <stop offset="1" stop-color="#B9823A"/>
     </linearGradient>
-    <mask id="crescent">
-      <rect width="1024" height="1024" fill="black"/>
-      <circle cx="478" cy="540" r="300" fill="white"/>
-      <circle cx="650" cy="400" r="262" fill="black"/>
-    </mask>
+    <linearGradient id="core" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF6E6"/>
+      <stop offset="1" stop-color="#F3D6A0"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E2B36A" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#E2B36A" stop-opacity=".75"/>
+      <stop offset="1" stop-color="#E2B36A" stop-opacity="0"/>
+    </linearGradient>
   </defs>
-  <rect x="40" y="40" width="944" height="944" rx="228" fill="url(#sky)"/>
-  <rect x="40" y="40" width="944" height="944" rx="228" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="6"/>
-  <rect width="1024" height="1024" fill="url(#moonLight)" mask="url(#crescent)"/>
-  <rect x="270" y="584" width="56" height="96" rx="28" fill="#221e46"/>
-  <rect x="364" y="584" width="56" height="96" rx="28" fill="#221e46"/>
-  <circle cx="724" cy="326" r="26" fill="#ffffff" fill-opacity=".9"/>
-  <circle cx="822" cy="452" r="15" fill="#ffffff" fill-opacity=".6"/>
-  <circle cx="636" cy="222" r="12" fill="#ffffff" fill-opacity=".5"/>
+  <rect x="40" y="40" width="944" height="944" rx="228" fill="url(#ink)"/>
+  <rect x="40" y="40" width="944" height="944" rx="228" fill="none" stroke="#ffffff" stroke-opacity=".07" stroke-width="5"/>
+  <circle cx="512" cy="560" r="330" fill="url(#glow)"/>
+  <!-- flame: the tip curls a little to the right, the left edge dips in - a candle flame, not a drop -->
+  <path d="M540 236 C 528 300, 600 352, 628 432 C 652 500, 650 572, 616 626 C 590 668, 552 692, 510 692 C 444 692, 388 640, 388 566 C 388 498, 428 452, 462 410 C 500 362, 548 316, 540 236 Z" fill="url(#flame)"/>
+  <path d="M528 470 C 524 506, 566 540, 566 594 C 566 630, 542 656, 510 656 C 478 656, 454 632, 454 600 C 454 558, 494 528, 528 470 Z" fill="url(#core)"/>
+  <rect x="300" y="752" width="424" height="6" rx="3" fill="url(#line)"/>
 </svg>
