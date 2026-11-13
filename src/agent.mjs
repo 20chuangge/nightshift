@@ -232,6 +232,8 @@ import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolv
 /** A 1:1 task keeps going by itself at most this many turns before it asks the human. */
 const TASK_MAX_CONTINUATIONS = 12;
 const TASK_OPEN = ['running', 'waiting', 'stalled'];
+/** Turns a direct chat goes on by itself at the step limit (no open checklist), per message from the human. */
+const LIMIT_CONTINUATIONS = 6;
 import { isRequestable, toolLabel, toolsForText, abilitySummary } from './abilities.mjs';
 
 /**
@@ -742,8 +744,10 @@ export class AgentRuntime {
     const maxTurnMs = Math.max(Number(bot.policy?.maxTurnMs) || 0, 30 * 60 * 1000);
     const deadline = Date.now() + maxTurnMs;
     const startedAt = nowIso();
-    // A task this turn finished while the step limit cut its answer off (set below).
-    let wrapUpTask = null;
+    // Cut off by the step limit with no open checklist: the next turn starts by itself (set below).
+    let autoContinue = null;
+    // A message from the human starts the count of those automatic turns again.
+    if (source !== 'task') this.limitRuns?.delete(botId);
 
     // Crash-recovery breadcrumb: write the turn as "running" *before* anything
     // can block, so a hard kill still leaves an explanation behind. The write is
@@ -1104,13 +1108,17 @@ export class AgentRuntime {
         // done, yet "回一句「继续」" - and an open task goes on by itself anyway).
         const tsk = direct ? this.tasks?.get(bot.id) : null;
         const open = tsk ? openSteps(tsk).length : 0;
-        const finishedHere = tsk && tsk.status === 'done' && !tsk.summarized && Date.parse(tsk.updatedAt || 0) >= Date.parse(startedAt);
-        if (finishedHere) wrapUpTask = tsk;
-        const note = tsk && tsk.status === 'running' && open
+        const taskGoesOn = Boolean(tsk && tsk.status === 'running' && open);
+        // Without an open checklist (none, or every step ticked while work went
+        // on - seen on Ubuntu) a direct chat goes on by itself too, a few times
+        // per message from the human; going round in circles stopped it earlier.
+        const used = this.limitRuns?.get(bot.id) || 0;
+        if (direct && !taskGoesOn && used < LIMIT_CONTINUATIONS) autoContinue = { goal: tsk && tsk.status === 'done' ? tsk.goal : '' };
+        const note = taskGoesOn
           ? `这一轮已经做了 ${steps} 步，到了单轮的上限。任务「${tsk.goal}」还有 ${open} 步没做完，我会自动接着做，不用回「继续」。`
-          : finishedHere
-            ? `任务「${tsk.goal}」清单上的 ${tsk.tasks.length} 步都做完了。这一轮操作比较多，到了单轮 ${maxSteps} 步的上限，我接着把结果整理给你。`
-            : `这件事已经做了 ${steps} 步还没完成，我先停一下，免得白白消耗额度。\n\n`
+          : autoContinue
+            ? `这一轮已经做了 ${steps} 步，到了单轮的上限。我会自动接着做（第 ${used + 1} 次，最多 ${LIMIT_CONTINUATIONS} 次），做完就告诉你结果，不用回「继续」；要停就点停止或直接说。`
+            : `这件事已经做了 ${steps} 步还没完成${used ? `（已经自动接着做了 ${used} 次）` : ''}，我先停一下，免得白白消耗额度。\n\n`
               + `最后几步：${last}\n\n`
               + '如果还要继续，回一句「继续」我就接着做；如果方向不对，告诉我该改哪里。';
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
@@ -1179,17 +1187,18 @@ export class AgentRuntime {
       });
       this.groupTurns.delete(turnId);
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor).catch(() => {});
-      // The task got done but the step limit cut the answer off: one more short
-      // turn tells the human the result, without them having to ask.
-      if (wrapUpTask) {
-        wrapUpTask.summarized = true;
-        this.taskChanged(wrapUpTask).catch(() => {});
-        const goal = wrapUpTask.goal;
+      // Cut off by the step limit with no open checklist: the next turn starts
+      // by itself. The bot decides - finished: say the result; not: go on.
+      if (autoContinue) {
+        this.limitRuns = this.limitRuns || new Map();
+        const n = (this.limitRuns.get(bot.id) || 0) + 1;
+        this.limitRuns.set(bot.id, n);
+        const what = autoContinue.goal ? `任务「${autoContinue.goal}」` : `用户交给你的事（他的原话：「${String(text).slice(0, 300)}」）`;
         const timer = setTimeout(() => this.runTurn({
           botId: bot.id,
           source: 'task',
           recordUser: false,
-          text: `（系统自动发起，用户没有发新消息）任务「${goal}」清单上的步骤都完成了，但上一轮到了步数上限，没来得及把结果告诉用户。进度：\n${taskText(wrapUpTask)}\n现在用几句话告诉用户：做成了什么、结果在哪里（文件路径、文件夹、数量），有没有没做成的。不要再调用工具。`,
+          text: `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`,
         }).catch(() => {}), this.taskDelayMs ?? 1500);
         timer.unref?.();
       }

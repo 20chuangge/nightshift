@@ -3627,34 +3627,40 @@ async function scenarioMcp({ home, toolsMod }) {
       // A turn that reaches the 80-step limit: the note says what really happens next.
       const { AgentRuntime } = await import('../src/agent.mjs');
       const wsL = path.join(home, 'workspace');
-      const runLimit = async (stepsDone) => {
+      const agSrc29 = await readText('../src/agent.mjs');
+      const runLimit = async (stepsDone, { plan = true, used = 0 } = {}) => {
         let n = 0;
         const model = { provider: 'fake', model: 'fake', complete: async () => {
           n += 1;
-          if (n === 1) return { content: '', toolCalls: [{ id: 'p', name: 'task_plan', arguments: { goal: '整理收件箱', steps: ['挑出广告', '删掉广告', '汇报'] } }] };
+          if (n === 1 && plan) return { content: '', toolCalls: [{ id: 'p', name: 'task_plan', arguments: { goal: '整理收件箱', steps: ['挑出广告', '删掉广告', '汇报'] } }] };
           if (n - 1 <= stepsDone) return { content: '', toolCalls: [{ id: `s${n}`, name: 'task_step', arguments: { step: n - 1, status: 'done', note: 'ok' } }] };
           return { content: '', toolCalls: [{ id: `l${n}`, name: 'fs_list', arguments: { path: `nowhere-${n}` } }] };
         } };
-        const botL = { id: `m29bot${stepsDone}`, name: '测', role: '', tools: ['fs_list'], skills: [], policy: {} };
+        const botL = { id: `m29bot${stepsDone}${plan ? '' : 'np'}${used}`, name: '测', role: '', tools: ['fs_list'], skills: [], policy: {} };
         const ev = [];
         const rt = new AgentRuntime({ config: { workspaceDir: wsL, policy: {} }, registry: toolsMod.createRegistry({ workspaceDir: wsL, config: {} }), model,
           bots: { getBot: async () => botL, listBots: async () => [botL] }, memory: { renderMemoryDigest: async () => '' }, skills: { renderSkillsDigest: async () => '' },
           approvals: { cancelForTurn() {}, request: () => Promise.resolve({ decision: 'approved' }) }, bus: { emit: (e) => ev.push(e) } });
         rt.record = async () => {};
+        if (used) rt.limitRuns = new Map([[botL.id, used]]);
         rt.taskDelayMs = 0;
-        const res = await rt.runTurn({ botId: botL.id, text: '整理收件箱' });
+        const res = await rt.runTurn({ botId: botL.id, text: '整理收件箱', source: used ? 'task' : 'chat' });
         const next = [];
         rt.runTurn = async (o) => { next.push(o); return {}; };
         await new Promise((r) => setTimeout(r, 50));
-        return { res, note: ev.filter((e) => e.type === 'message' && e.system).map((e) => e.text).join(' | '), next, task: rt.tasks.get(botL.id) };
+        return { res, note: ev.filter((e) => e.type === 'message' && e.system).map((e) => e.text).join(' | '), next, task: rt.tasks?.get(botL.id), limitRuns: rt.limitRuns?.get(botL.id) };
       };
       const done = await runLimit(3);
       const open = await runLimit(1);
-      check('M29 step limit with a task: every step done -> it says so and a short turn tells the result (no 「回一句继续」); steps still open -> it says how many and goes on by itself',
-        done.res.status === 'max_steps' && /清单上的 3 步都做完了.*接着把结果整理给你/.test(done.note) && !/回一句「继续」/.test(done.note)
-        && done.next.length === 1 && done.next[0].source === 'task' && /不要再调用工具/.test(done.next[0].text) && done.task.summarized === true
-        && open.res.status === 'max_steps' && /还有 2 步没做完，我会自动接着做，不用回「继续」/.test(open.note) && open.next.length === 1 && /接着做下一个没完成的步骤/.test(open.next[0].text),
-        JSON.stringify({ d: done.note, o: open.note, dn: done.next.length, on: open.next.length }));
+      const none = await runLimit(-1, { plan: false });
+      const capped = await runLimit(-1, { plan: false, used: 6 });
+      check('M29 step limit: steps still open -> it says how many and the task goes on; checklist all ticked or no checklist -> it goes on by itself too (finished: it says the result, not: it carries on), counted per message from the human; after 6 it stops and asks',
+        open.res.status === 'max_steps' && /还有 2 步没做完，我会自动接着做，不用回「继续」/.test(open.note) && open.next.length === 1 && /接着做下一个没完成的步骤/.test(open.next[0].text)
+        && /我会自动接着做（第 1 次，最多 6 次）/.test(done.note) && !/回一句「继续」/.test(done.note) && done.next.length === 1 && done.next[0].source === 'task' && /任务「整理收件箱」/.test(done.next[0].text) && /如果已经做完/.test(done.next[0].text)
+        && /我会自动接着做（第 1 次/.test(none.note) && none.next.length === 1 && /他的原话：「整理收件箱」/.test(none.next[0].text) && none.limitRuns === 1
+        && /已经自动接着做了 6 次/.test(capped.note) && /回一句「继续」/.test(capped.note) && capped.next.length === 0
+        && agSrc29.includes("if (source !== 'task') this.limitRuns?.delete(botId);"),
+        JSON.stringify({ d: done.note, o: open.note, n: none.note, c: capped.note, dn: done.next.length, nn: none.next.length, cn: capped.next.length }));
     }
     check('M28 machine sync: this computer checks its own sync login still works before handing it to the other machines, and makes a new one if not (they had taken it for offline and skipped it)',
       mainSrc.includes("bootLog('peer token no longer accepted here: pairing a new one');") && mainSrc.includes('/api/auth`, { headers: { authorization: `Bearer ${token}` }'));
