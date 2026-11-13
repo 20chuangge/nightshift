@@ -1488,7 +1488,7 @@ async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
       const there = (cat.apps || []).find((a) => a.id === catalogId);
       if (!there) return { machine: p.name, ok: false, message: '那台机器的夜班版本较旧，更新后再同步' };
       if (there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
-      const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret };
+      const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret, ...(payload.fields ? { fields: payload.fields } : {}) };
       const out = await state.peers.json(peer, 'POST', `/api/mcp/catalog/${encodeURIComponent(catalogId)}/connect`, { body, timeoutMs: 60000 });
       return { machine: p.name, ok: true, authorizeUrl: out.authorizeUrl || '' };
     } catch (err) {

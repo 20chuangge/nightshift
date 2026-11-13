@@ -3570,6 +3570,87 @@ async function scenarioMcp({ home, toolsMod }) {
       && cat.suno?.auth === 'oauth' && cat.suno.url === 'https://api.suno.com/mcp' && cat['baidu-pan']?.auth === 'token' && cat['baidu-pan'].transport === 'sse'
       && cat['baidu-pan'].url.includes('access_token=${TOKEN}') && /openapi\.baidu\.com\/oauth/.test(cat['baidu-pan'].tokenUrl) && !cat.kling);
   }
+  // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
+  {
+    const net = await import('node:net');
+    const M = await import('../src/mail.mjs');
+    const F = await import('./mail-fake.mjs');
+    const fsx = await import('node:fs');
+    const nl = (t) => t.replace(/\r?\n/g, '\r\n');
+    const gb = Buffer.from([0xd6, 0xdc, 0xb1, 0xa8]); // 周报 in GBK
+    const m1 = Buffer.from(nl(`From: =?UTF-8?B?${Buffer.from('张三').toString('base64')}?= <zhang@corp.cn>
+To: me@qq.com
+Subject: =?GB2312?B?${gb.toString('base64')}?=
+Date: Thu, 13 Nov 2026 09:00:00 +0800
+Message-ID: <m1@corp.cn>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=GBK
+Content-Transfer-Encoding: base64
+
+${gb.toString('base64')}
+--b1
+Content-Type: application/pdf; name="x.pdf"
+Content-Disposition: attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf
+Content-Transfer-Encoding: base64
+
+${Buffer.from('%PDF-fake').toString('base64')}
+--b1--
+`), 'latin1');
+    const m2 = Buffer.from(nl('From: news@shop.com\nTo: me@qq.com\nSubject: Weekly deals\nDate: Thu, 13 Nov 2026 10:00:00 +0800\nMessage-ID: <m2@shop.com>\nContent-Type: text/html; charset=utf-8\n\n<html><body><p>Big sale</p><br>50% off</body></html>\n'), 'utf8');
+    const imap = await F.fakeImap({ user: 'me@qq.com', pass: 'code123', messages: [
+      { uid: 101, raw: m1, subject: '周报', from: 'zhang@corp.cn', seen: false },
+      { uid: 102, raw: m2, subject: 'Weekly deals', from: 'news@shop.com', seen: true },
+    ] });
+    const smtp = await F.fakeSmtp({ user: 'me@qq.com', pass: 'code123' });
+    const ws = path.join(home, 'workspace');
+    fsx.writeFileSync(path.join(ws, 'mail-plan.txt'), '计划');
+    const mk = (pass) => M.createMailServer({
+      env: { EMAIL: 'me@qq.com', PASS: pass }, workspaceDir: ws,
+      imapImpl: () => new M.Imap({ host: '127.0.0.1', port: imap.port, connect: () => net.connect(imap.port, '127.0.0.1') }),
+      smtpImpl: () => new M.Smtp({ host: '127.0.0.1', port: smtp.port, connect: () => net.connect(smtp.port, '127.0.0.1') }),
+    });
+    const app = mk('code123');
+    const call = async (name, args = {}) => (await app.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result;
+    const init = await app.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    const tl = (await app.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).result.tools;
+    const folders = (await call('mail_folders')).content[0].text;
+    const list = (await call('mail_list', { limit: 5 })).content[0].text;
+    const found = (await call('mail_search', { subject: '周报' })).content[0].text;
+    const read = (await call('mail_read', { uid: 101, save_attachments: true })).content[0].text;
+    const html = (await call('mail_read', { uid: 102 })).content[0].text;
+    check('M23 mail read: folders (已发送 from modified UTF-7, no unselectable ones), newest first with unread marks, a Chinese search (sent as a literal), GBK subject and text, an RFC 2231 attachment saved to the workspace, HTML as text; reading tools are read-only',
+      init.result?.serverInfo?.name === 'nightshift-mail' && /已发送 \(Sent\)/.test(folders) && !/Gmail/.test(folders)
+      && /uid 102 \|[\s\S]*uid 101 ·未读 \|.*张三 <zhang@corp\.cn> \| 周报/.test(list) && /找到 1 封[\s\S]*uid 101/.test(found)
+      && /主题：周报/.test(read) && /\n\n周报$/.test(read) && /附件：报告\.pdf（1 KB） → mail\/[\d-]+\/101\/报告\.pdf/.test(read)
+      && /Big sale[\s\S]*50% off/.test(html) && !/<p>/.test(html)
+      && tl.filter((t) => t.annotations.readOnlyHint).map((t) => t.name).join() === 'mail_folders,mail_list,mail_search,mail_read'
+      && imap.log.some((c) => /^ID \(/.test(c)), JSON.stringify({ list, found, read: read.slice(0, 200) }));
+    const sent = (await call('mail_send', { to: ['张三 <zhang@corp.cn>'], body: '收到，谢谢。', attachments: ['mail-plan.txt'], reply_to_uid: 101 })).content[0].text;
+    const back = M.parseMessage(Buffer.from(smtp.sent[0]?.data || ''));
+    const outside = await call('mail_send', { to: 'a@b.com', body: 'x', attachments: ['../secret.txt'] });
+    const mark = (await call('mail_mark', { uids: [101], read: true })).content[0].text;
+    const bad = await mk('wrong').handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    check('M23 mail send: a reply goes to the address only (no display name), "Re:" subject, In-Reply-To set, UTF-8 text and a workspace attachment; files outside the workspace are refused; marking works; a wrong code says to use the 授权码',
+      /^已发出/.test(sent) && smtp.sent[0]?.to.join() === 'zhang@corp.cn' && M.decodeWords(back.headers.subject) === 'Re: 周报' && back.headers['in-reply-to'] === '<m1@corp.cn>'
+      && back.text === '收到，谢谢。' && back.attachments[0]?.filename === 'mail-plan.txt' && back.attachments[0]?.data.toString() === '计划'
+      && outside.isError && /工作区/.test(outside.content[0].text) && /已读/.test(mark) && /授权码/.test(bad.error?.message || ''), JSON.stringify({ sent, bad: bad.error }));
+    imap.close(); smtp.close();
+    fsx.rmSync(path.join(ws, 'mail'), { recursive: true, force: true });
+    fsx.rmSync(path.join(ws, 'mail-plan.txt'), { force: true });
+    // Through the client: an app built into Nightshift, and the catalog's check before saving.
+    const c = new mcp.McpClient({ transport: 'internal', module: 'mail', env: { EMAIL: '${EMAIL}', PASS: '${PASS}' } }, { secrets: { EMAIL: 'x@unknown-mail.org', PASS: 'p' } });
+    let cErr = '';
+    try { await c.connect(); } catch (e) { cErr = e.message; }
+    c.close();
+    const conn = await api('/api/mcp/catalog/email/connect', { method: 'POST', body: { fields: { EMAIL: 'x@outlook.com', PASS: 'p' } } });
+    const cat = mcp.MCP_CATALOG.find((e) => e.id === 'email');
+    check('M23 mail app: runs inside the hub as a connected app (unknown mailbox asks for its servers); 连接 checks the address before saving (Outlook says why it cannot); the catalog lists 邮箱 with the code fields',
+      /不认识「unknown-mail\.org」/.test(cErr) && conn.status === 400 && /Outlook/.test(conn.json?.message || conn.text || '') && cat?.auth === 'mail' && cat.transport === 'internal' && cat.env.PASS === '${PASS}',
+      JSON.stringify({ cErr, st: conn.status, msg: conn.json?.message }));
+  }
   // The API on the running hub: add, list without values, bad input, delete.
   {
     const bad = await api('/api/mcp', { method: 'POST', body: { name: 'x', transport: 'stdio' } });

@@ -87,6 +87,7 @@ export const MCP_CATALOG = [
     id: 'baidu-pan', name: '百度网盘', category: '存储', badge: '百', color: '#06a7ff',
     desc: '查找、整理、分享网盘里的文件（百度网盘官方 MCP）', auth: 'token', transport: 'sse', url: 'https://mcp-pan.baidu.com/sse?access_token=${TOKEN}', secret: 'TOKEN',
     help: '点「去获取」会打开百度的授权页，登录后点「授权」；跳转后的网址里 access_token= 后面那一串就是，复制贴到下面。它大约一个月过期，过期后重新获取一次。从本机上传文件到网盘这一项官方只在本地模式提供，这里没有。',
+    tokenLabel: '去获取 token ↗',
     tokenUrl: 'https://openapi.baidu.com/oauth/2.0/authorize?response_type=token&client_id=QHOuRXiepJBMjtk0esLhrPoNlQyYd0mF&redirect_uri=oob&scope=basic,netdisk',
   },
   {
@@ -98,6 +99,12 @@ export const MCP_CATALOG = [
     id: 'suno', name: 'Suno', category: '创作', badge: 'S', color: '#1a1a1a',
     desc: '写歌、生成音乐（Suno 官方 MCP，测试版）', auth: 'oauth', transport: 'http', url: 'https://api.suno.com/mcp',
     help: 'Suno 的 MCP 还在内测：先在 suno.com/mcp 申请开通，通过后再点「连接」，在 Suno 的页面登录授权。生成的歌用你 Suno 套餐里的额度。',
+  },
+  {
+    id: 'email', name: '邮箱', category: '通信', badge: '邮', color: '#0f9d58',
+    desc: '收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码）', auth: 'mail', transport: 'internal', module: 'mail',
+    env: { EMAIL: '${EMAIL}', PASS: '${PASS}', IMAP: '${IMAP}', SMTP: '${SMTP}' },
+    help: '填邮箱地址和「授权码」（不是登录密码）。QQ 邮箱：设置 → 账号 → 开启 IMAP/SMTP 服务，按提示生成授权码。163 / 126：设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，按提示设置授权码。Gmail：先开两步验证，再到 Google 账号的「应用专用密码」生成一个。夜班自己连邮箱服务器，不经过别的服务；授权码加密存在这台机器的保险箱里。发信每次都会先问你。',
   },
   {
     id: 'feishu', name: '飞书', category: '通信', badge: '飞', color: '#3370ff',
@@ -345,6 +352,11 @@ export class McpClient {
   }
 
   async send(msg, { timeoutMs = MCP_CALL_TIMEOUT_MS } = {}) {
+    if (this.cfg.transport === 'internal') {
+      const res = await this.internal.handle(msg);
+      if (res) this.receive(JSON.stringify(res));
+      return undefined;
+    }
     if (this.cfg.transport === 'http') return this.postHttp(msg, { timeoutMs });
     if (this.cfg.transport === 'sse') return this.postSse(msg, { timeoutMs });
     return this.writeStdio(msg);
@@ -373,7 +385,14 @@ export class McpClient {
   }
 
   async connect() {
-    if (this.cfg.transport === 'sse') await this.startSse();
+    if (this.cfg.transport === 'internal') {
+      // Apps built into Nightshift (邮箱): the same JSON-RPC, answered in this process.
+      const fill = (v) => fillSecrets(v, this.secrets);
+      const env = Object.fromEntries(Object.entries(this.cfg.env || {}).map(([k, v]) => [k, fill(v)]));
+      if (this.cfg.module !== 'mail') throw Object.assign(new Error(`没有内置应用「${this.cfg.module}」`), { code: 'MCP_NO_MODULE' });
+      const { createMailServer } = await import('./mail.mjs');
+      this.internal = createMailServer({ env, workspaceDir: this.workspaceDir, version: this.clientVersion });
+    } else if (this.cfg.transport === 'sse') await this.startSse();
     else if (this.cfg.transport !== 'http') this.startStdio();
     const init = await this.request('initialize', {
       protocolVersion: MCP_PROTOCOL,
@@ -452,6 +471,7 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
 /** What makes two connections the same app: the web address, or the package npx / uvx runs. */
 export function catalogKey(c) {
   if (!c) return '';
+  if (c.transport === 'internal') return `internal:${c.module || ''}`;
   if (c.transport === 'http' || c.transport === 'sse') return String(c.url || '').trim().replace(/\?.*$/, '').replace(/\/+$/, '').toLowerCase();
   const cmd = path.basename(String(c.command || '')).replace(/\.(cmd|exe)$/i, '').toLowerCase();
   if (!['npx', 'uvx', 'bunx', 'pnpx'].includes(cmd)) return '';
@@ -682,7 +702,7 @@ export function createMcpManager({
     const wanted = input.transport ?? old.transport;
     const urlIn = String(input.url ?? old.url ?? '');
     // A web address ending in /sse is the older HTTP+SSE form (百度网盘 and others).
-    const transport = wanted === 'sse' || (wanted === 'http' && /\/sse\/?(\?|$)/i.test(urlIn)) ? 'sse' : wanted === 'http' ? 'http' : 'stdio';
+    const transport = wanted === 'internal' ? 'internal' : wanted === 'sse' || (wanted === 'http' && /\/sse\/?(\?|$)/i.test(urlIn)) ? 'sse' : wanted === 'http' ? 'http' : 'stdio';
     const web = transport !== 'stdio';
     const strMap = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).map(([k, v]) => [String(k).trim(), String(v ?? '')]).filter(([k]) => k).slice(0, 30));
     const cfg = {
@@ -691,7 +711,8 @@ export function createMcpManager({
       transport,
       command: transport === 'stdio' ? String(input.command ?? old.command ?? '').trim().slice(0, 300) : '',
       args: transport === 'stdio' ? (Array.isArray(input.args) ? input.args : old.args || []).map(String).slice(0, 40) : [],
-      env: transport === 'stdio' ? strMap(input.env ?? old.env) : {},
+      env: transport === 'stdio' || transport === 'internal' ? strMap(input.env ?? old.env) : {},
+      module: transport === 'internal' ? String(input.module ?? old.module ?? '').slice(0, 40) : '',
       url: web ? urlIn.trim().slice(0, 500) : '',
       headers: web ? strMap(input.headers ?? old.headers) : {},
       enabled: input.enabled !== undefined ? Boolean(input.enabled) : old.enabled !== false,
@@ -805,7 +826,7 @@ export function createMcpManager({
         const pub = cfg ? publicCfg(cfg) : null;
         return {
           id: e.id, name: e.name, category: e.category, badge: e.badge, color: e.color, desc: e.desc,
-          auth: e.auth, help: e.help, tokenUrl: e.tokenUrl || '',
+          auth: e.auth, help: e.help, tokenUrl: e.tokenUrl || '', tokenLabel: e.tokenLabel || '',
           server: pub,
         };
       });
@@ -816,11 +837,24 @@ export function createMcpManager({
      * {authorizeUrl, server} for an OAuth app: the page opens that URL.
      * `origin` is where this hub's page was opened (the callback comes back there).
      */
-    async connectCatalog(catalogId, { origin = '', relay = '', token = '', appId = '', appSecret = '' } = {}) {
+    async connectCatalog(catalogId, { origin = '', relay = '', token = '', appId = '', appSecret = '', fields = null } = {}) {
       const e = catalog.find((x) => x.id === catalogId);
       if (!e) throw Object.assign(new Error('目录里没有这个应用'), { status: 404, code: 'MCP_NOT_IN_CATALOG' });
       let cfg = configs.find((c) => c.catalogId === e.id);
-      const base = { name: e.name, transport: e.transport, command: e.command, args: e.args, env: e.env, url: e.url, headers: e.headers };
+      const base = { name: e.name, transport: e.transport, command: e.command, args: e.args, env: e.env, url: e.url, headers: e.headers, module: e.module };
+      if (e.auth === 'mail') {
+        const f = fields && typeof fields === 'object' ? fields : {};
+        const typed = { EMAIL: String(f.EMAIL || '').trim(), PASS: String(f.PASS || '').replace(/\s+/g, ''), IMAP: String(f.IMAP || '').trim(), SMTP: String(f.SMTP || '').trim() };
+        if (!typed.EMAIL && cfg?.secretRef) {
+          const server = await api.update(cfg.id, { ...base, enabled: true });
+          return { server };
+        }
+        // Checked before anything is saved: a wrong address or an unknown mailbox says so at once.
+        const { resolveAccount } = await import('./mail.mjs');
+        resolveAccount({ email: typed.EMAIL, pass: typed.PASS, imap: typed.IMAP, smtp: typed.SMTP });
+        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, secrets: typed }) : await api.add({ ...base, secrets: typed, catalogId: e.id });
+        return { server };
+      }
       if (e.auth === 'token') {
         if (!String(token).trim() && !cfg?.secretRef) throw Object.assign(new Error('先把 token 贴进来'), { status: 400, code: 'MCP_TOKEN_NEEDED' });
         const secrets = String(token).trim() ? { [e.secret]: String(token).trim() } : undefined;
@@ -889,6 +923,10 @@ export function createMcpManager({
       if (e.auth === 'token') {
         const token = await vaultValue(cfg, e.secret);
         return token ? { catalogId: e.id, auth: e.auth, token } : null;
+      }
+      if (e.auth === 'mail') {
+        const s = await secretsFor(cfg);
+        return s.EMAIL && s.PASS ? { catalogId: e.id, auth: e.auth, fields: { EMAIL: s.EMAIL, PASS: s.PASS, IMAP: s.IMAP || '', SMTP: s.SMTP || '' } } : null;
       }
       if (e.auth === 'feishu') {
         const s = await secretsFor(cfg);

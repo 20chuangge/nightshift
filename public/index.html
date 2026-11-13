@@ -10975,7 +10975,7 @@ function mcpConnectForm(app) {
   go.type = 'button';
   if (app.auth === 'token') {
     if (app.tokenUrl) {
-      const a = el('a', '', '去建一个 token ↗');
+      const a = el('a', '', app.tokenLabel || '去建一个 token ↗');
       a.href = app.tokenUrl;
       a.target = '_blank';
       a.rel = 'noopener';
@@ -10990,6 +10990,30 @@ function mcpConnectForm(app) {
     go.addEventListener('click', () => {
       if (!tok.value.trim()) { toast('先把 token 贴进来', true); return; }
       connectMcpApp(app, { token: tok.value.trim() }, go);
+    });
+  } else if (app.auth === 'mail') {
+    const field = (ph, type = 'text') => {
+      const i = document.createElement('input');
+      i.className = 'field';
+      i.type = type;
+      i.placeholder = ph;
+      i.autocomplete = type === 'password' ? 'new-password' : 'off';
+      return i;
+    };
+    const email = field('邮箱地址，比如 name@qq.com', 'email');
+    const pass = field('授权码（不是登录密码）', 'password');
+    box.append(email, pass);
+    // Only for mailboxes Nightshift does not know: their servers.
+    const more = document.createElement('details');
+    more.className = 'mcp-more';
+    more.appendChild(el('summary', '', '其他邮箱：填收发信服务器'));
+    const imap = field('收信 IMAP，比如 imap.example.com:993');
+    const smtp = field('发信 SMTP，比如 smtp.example.com:465');
+    more.append(imap, smtp);
+    box.appendChild(more);
+    go.addEventListener('click', () => {
+      if (!email.value.trim() || !pass.value.trim()) { toast('先填邮箱地址和授权码', true); return; }
+      connectMcpApp(app, { fields: { EMAIL: email.value.trim(), PASS: pass.value.trim(), IMAP: imap.value.trim(), SMTP: smtp.value.trim() } }, go);
     });
   } else if (app.auth === 'feishu') {
     const id = document.createElement('input');
