@@ -3313,6 +3313,9 @@ async function scenarioCliAgents({ toolsMod, home }) {
     check('M31 cli: Cursor and Qoder found, logged in by their own "status", their models listed by their own list command',
       cur?.installed && cur.loggedIn && qo?.installed && qo.loggedIn
       && ['auto', 'gpt-5', 'claude-4.5-sonnet', 'Qwen3.8-Max'].every((m) => cur.models.includes(m)) && !cur.models.includes('Available') && !cur.models.includes('Tip'), JSON.stringify(cur?.models));
+    check('M35 cli: Qoder CN\'s real "--list-models" output (a MODEL heading, then one name per line) reads right; a built-in name it also lists is not shown twice',
+      cli.parseModelList('MODEL\nAuto\nFast\nQwen4-Max-Preview\nDeepSeek-V4-Pro\nGLM-5.3\nDeepSeek-V4-Pro\n').join(',') === 'Auto,Fast,Qwen4-Max-Preview,DeepSeek-V4-Pro,GLM-5.3'
+      && qo.models.filter((m) => m.toLowerCase() === 'auto').length === 1, JSON.stringify(qo?.models));
     process.env.FAKE_CLI_LOGGED_OUT = '1';
     const out4 = await cli.detectCliAgents();
     delete process.env.FAKE_CLI_LOGGED_OUT;
@@ -3394,6 +3397,23 @@ async function scenarioCliAgents({ toolsMod, home }) {
         mainSrc.includes("path.join(SERVER_DIR, 'src', 'localvnc.mjs')") && mainSrc.includes("m.ensureLocalVnc({ dir: path.join(HOME, 'vnc') })")
         && (mainSrc.match(/stopLocalScreen\(\);/g) || []).length >= 2
         && remoteSrc.includes("import { tightVncInstaller } from './localvnc.mjs';") && !remoteSrc.includes('async function tightVncInstaller'));
+
+      // M36: several monitors -> one at a time.
+      check('M36 screens: primary / one numbered screen / all map to TightVNC\'s own share commands; anything else falls back to the primary screen',
+        lv.shareArgs('primary').join(' ') === '-shareprimary' && lv.shareArgs(2).join(' ') === '-sharedisplay 2' && lv.shareArgs('2').join(' ') === '-sharedisplay 2'
+        && lv.shareArgs('all').join(' ') === '-sharefull' && lv.shareArgs('x; rm').join(' ') === '-shareprimary' && lv.shareArgs(99).join(' ') === '-shareprimary');
+      const srvSrc = await readText('../src/server.mjs');
+      const listed2 = await api('/api/desktop/screens');
+      const badPick = await api('/api/desktop/screen', { method: 'PUT', body: { screen: 'left' } });
+      check('M36 api: GET /api/desktop/screens answers (no screens to pick where the test hub has no TightVNC); a bad choice is refused',
+        listed2.status === 200 && listed2.json?.supported === false && Array.isArray(listed2.json.screens) && listed2.json.choice === 'primary' && badPick.status === 400);
+      check('M36 hub: the choice is kept (data/screen.json) and applied again whenever TightVNC comes back up; primary by default',
+        srvSrc.includes("const SCREEN_FILE = path.join(P.dataDir, 'screen.json');") && srvSrc.includes('if (up && !vncWasUp) {') && srvSrc.includes("return c === 'all' || (Number.isInteger(c) && c >= 1 && c <= 16) ? c : 'primary';"));
+      check('M36 panel: a screen picker next to 全屏, shown only with two or more screens; switching reconnects the view so it fits',
+        pageSrc.includes('id="pc-monitor"') && pageSrc.includes('if (screens.length < 2) { pick.hidden = true; return; }') && pageSrc.includes("await api('/api/desktop/screen', { method: 'PUT', body: { screen } });") && pageSrc.includes('loadScreens().catch(() => {});')
+        && pageSrc.includes('for (let attempt = 0; attempt < 3; attempt += 1) {') && pageSrc.includes('if (!ui || ui.connected) break;'));
+      check('M36 updates: a machine that was off when the app started is updated once it answers (checked again every 10 minutes)',
+        mainSrc.includes('setInterval(() => { updateAttempts.clear(); autoUpdateMachines().catch(() => {}); }, 10 * 60 * 1000);'));
     }
     check('M31 settings: each installed tool gets a model box with its list; the page says all four tools', pageSrc.includes('list.id = `cliagent-models-${a.id}`') && pageSrc.includes("api('/api/cliagents', { method: 'PUT'") && pageSrc.includes('Claude Code、Codex、Cursor 或 Qoder'));
     await api('/api/cliagents', { method: 'PUT', body: { agent: 'qoder', model: '' } });

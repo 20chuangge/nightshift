@@ -1017,6 +1017,46 @@ route('PUT', /^\/api\/desktops\/mode$/, async (_req, _res, { body, state }) => {
   return { mode, fullInstalled: fullDesktopInstalled() };
 });
 
+// Which screen a Windows machine with several monitors shows (one at a time,
+// the primary one by default; or all side by side). Kept in data/screen.json
+// and applied again whenever TightVNC comes (back) up.
+//   GET /api/desktop/screens -> {supported, screens:[{n,label,primary}], choice}
+//   PUT /api/desktop/screen {screen:'primary'|'all'|n} -> {ok, choice}
+const SCREEN_FILE = path.join(P.dataDir, 'screen.json');
+const screenChoice = () => {
+  const c = readJsonSync(SCREEN_FILE, null)?.screen;
+  return c === 'all' || (Number.isInteger(c) && c >= 1 && c <= 16) ? c : 'primary';
+};
+route('GET', /^\/api\/desktop\/screens$/, async () => {
+  if (process.platform !== 'win32' || !desktopSupport().available) return { supported: false, screens: [], choice: screenChoice() };
+  const { listScreens } = await import('./localvnc.mjs');
+  return { supported: true, screens: await listScreens(), choice: screenChoice() };
+});
+route('PUT', /^\/api\/desktop\/screen$/, async (_req, _res, { body }) => {
+  const raw = body?.screen;
+  const choice = raw === 'all' || raw === 'primary' ? raw : Number(raw);
+  if (choice !== 'all' && choice !== 'primary' && !(Number.isInteger(choice) && choice >= 1 && choice <= 16)) throw httpError(400, 'BAD_SCREEN', 'screen must be "primary", "all" or a screen number');
+  if (process.platform !== 'win32') throw httpError(409, 'SCREENS_UNSUPPORTED', '只有 Windows 电脑能选屏幕（Linux 上每个机器人的桌面本来就只有一块屏）');
+  const { shareScreen } = await import('./localvnc.mjs');
+  const r = await shareScreen(choice);
+  if (!r.ok) throw httpError(502, 'SCREEN_FAILED', r.error);
+  writeJsonSyncAtomic(SCREEN_FILE, { screen: choice, updatedAt: nowIso() });
+  return { ok: true, choice };
+});
+if (process.platform === 'win32' && process.env.DESK_SCREEN_WATCH !== '0') {
+  let vncWasUp = false;
+  const watchScreen = async () => {
+    const up = desktopSupport().available;
+    if (up && !vncWasUp) {
+      const { shareScreen } = await import('./localvnc.mjs');
+      await shareScreen(screenChoice()).catch(() => {});
+    }
+    vncWasUp = up;
+  };
+  setTimeout(() => watchScreen().catch(() => {}), 5000).unref?.();
+  setInterval(() => watchScreen().catch(() => {}), 15000).unref?.();
+}
+
 route('GET', /^\/api\/bots\/(?<botId>[^/]+)\/desktop$/, async (_req, _res, { params }) => {
   const botId = params.botId;
   try {

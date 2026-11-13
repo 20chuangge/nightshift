@@ -210,6 +210,85 @@ export async function ensureLocalVnc({ dir, installer } = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Which screen it shows. A machine with two or three monitors shows them side
+// by side as one wide picture; TightVNC can share one of them instead:
+//   tvnserver -controlservice|-controlapp -shareprimary | -sharedisplay N | -sharefull
+// Every Windows machine Nightshift sets up has TightVNC, so this works on all
+// of them (the service on added machines, the program on this computer).
+// ---------------------------------------------------------------------------
+
+/** Async PowerShell (the hub must not block on it). -> stdout */
+function psAsync(script, env = {}, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}`], { windowsHide: true, env: { ...process.env, ...env } });
+    } catch { resolve(''); return; }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeoutMs);
+    child.stdout.on('data', (c) => { out += c; });
+    child.on('error', () => { clearTimeout(timer); resolve(''); });
+    child.on('close', () => { clearTimeout(timer); resolve(out.trim()); });
+  });
+}
+
+/**
+ * The monitors, numbered the way TightVNC numbers them (1, 2, ...).
+ * -> [{n, label, primary, width, height}] ([] when it cannot tell)
+ * A hub started as a background task sees no screens of its own; then the
+ * count of active monitors from WMI is used, without sizes.
+ */
+export async function listScreens() {
+  if (process.platform !== 'win32') return [];
+  const out = await psAsync([
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$s = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { [pscustomobject]@{ primary = $_.Primary; w = $_.Bounds.Width; h = $_.Bounds.Height; x = $_.Bounds.X; y = $_.Bounds.Y } })',
+    '$wmi = 0; try { $wmi = @(Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction Stop | Where-Object { $_.Active }).Count } catch { }',
+    '[pscustomobject]@{ screens = $s; wmi = $wmi } | ConvertTo-Json -Compress -Depth 4',
+  ].join('; '));
+  let j;
+  try { j = JSON.parse(out); } catch { return []; }
+  const screens = (Array.isArray(j.screens) ? j.screens : j.screens ? [j.screens] : []);
+  if (screens.length >= Math.max(1, j.wmi || 0)) {
+    // Sizes are left out of the label: TightVNC shares physical pixels, Windows reports scaled ones.
+    return screens.map((s, i) => ({ n: i + 1, primary: Boolean(s.primary), width: s.w, height: s.h, label: `屏幕 ${i + 1}${s.primary ? '（主屏）' : ''}` }));
+  }
+  return Array.from({ length: j.wmi }, (_, i) => ({ n: i + 1, primary: false, width: null, height: null, label: `屏幕 ${i + 1}` }));
+}
+
+/** The running TightVNC and how to talk to it. -> {exe, control} or null */
+export async function runningVnc() {
+  if (process.platform !== 'win32') return null;
+  const out = await psAsync("Get-CimInstance Win32_Process -Filter \"Name='tvnserver.exe'\" | ForEach-Object { [pscustomobject]@{ path = $_.ExecutablePath; cmd = $_.CommandLine } } | ConvertTo-Json -Compress");
+  let list = [];
+  try { const j = JSON.parse(out); list = Array.isArray(j) ? j : [j]; } catch { return null; }
+  const server = list.find((p) => /\s-(service|run)\b/i.test(p.cmd || '')) || list.find((p) => !/-controlapp/i.test(p.cmd || ''));
+  if (!server?.path) return null;
+  return { exe: server.path, control: /\s-service\b/i.test(server.cmd || '') ? '-controlservice' : '-controlapp' };
+}
+
+/** 'primary' | 'all' | a screen number -> the TightVNC command line. */
+export function shareArgs(choice) {
+  if (choice === 'all') return ['-sharefull'];
+  const n = Number(choice);
+  if (Number.isInteger(n) && n >= 1 && n <= 16) return ['-sharedisplay', String(n)];
+  return ['-shareprimary'];
+}
+
+/** Tell the running TightVNC what to show. -> {ok, error?} */
+export async function shareScreen(choice) {
+  const vnc = await runningVnc();
+  if (!vnc) return { ok: false, error: '这台电脑上没有在运行的 TightVNC' };
+  return new Promise((resolve) => {
+    const child = spawn(vnc.exe, [vnc.control, ...shareArgs(choice)], { windowsHide: true, stdio: 'ignore' });
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve({ ok: false, error: 'TightVNC 没有回应' }); }, 10000);
+    child.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: err.message }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? { ok: true } : { ok: false, error: `TightVNC 返回 ${code}` }); });
+  });
+}
+
 /** Stop the copy Nightshift started (only that one). */
 export function stopLocalVnc(state) {
   if (!state || state.mode !== 'own') return false;

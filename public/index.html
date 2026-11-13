@@ -1061,6 +1061,7 @@
   .clip-row .btn { flex: 1 1 auto; }
   #clip-scrim { z-index: 96; }
   .pc-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+  .pc-monitor { width: auto; min-width: 0; height: 26px; padding: 0 6px; font-size: 12px; border-radius: 6px; }
 
   /* author display rules below would otherwise beat the UA [hidden] style */
   #pane-computer [hidden] { display: none !important; }
@@ -3419,6 +3420,7 @@
             <span id="pc-title">屏幕</span>
             <span class="pc-who" id="pc-who" hidden></span>
             <span class="pc-actions">
+              <select class="field pc-monitor" id="pc-monitor" aria-label="看哪块屏幕" title="这台电脑有几块屏幕：选一块看，或者全部并排" hidden></select>
               <button class="btn tiny" id="pc-max" type="button">全屏</button>
               <button class="btn tiny" id="pc-desktop" type="button">接管桌面</button>
               <button class="btn tiny" id="pc-refresh" type="button">刷新</button>
@@ -11974,6 +11976,7 @@ async function loadComputer() {
     return;
   }
   state.computer = data;
+  loadScreens().catch(() => {});
   if (data.desktop?.perBot && data.desktop?.url) {
     const wrap = $('pc-vnc-wrap');
     const current = wrap?.querySelector('iframe')?.getAttribute('src') || '';
@@ -12924,6 +12927,49 @@ function setupPhoneTouch() {
   $('pcm-handle')?.addEventListener('click', () => document.body.classList.remove('pcm-collapsed'));
 }
 
+/* A Windows machine with several monitors: show one at a time (the primary
+   one unless picked), or all side by side. Hidden with one screen, on Linux
+   and on hubs too old to know. */
+async function loadScreens() {
+  const pick = $('pc-monitor');
+  if (!pick) return;
+  let data = null;
+  try { data = await api('/api/desktop/screens'); } catch { data = null; }
+  const screens = data?.supported ? data.screens || [] : [];
+  if (screens.length < 2) { pick.hidden = true; return; }
+  const opts = [['primary', '主屏'], ...screens.map((s) => [String(s.n), s.label]), ['all', '全部屏幕']];
+  const html = opts.map(([v, l]) => `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join('');
+  if (pick.dataset.html !== html) { pick.innerHTML = html; pick.dataset.html = html; }
+  if (document.activeElement !== pick) pick.value = String(data.choice ?? 'primary');
+  pick.hidden = false;
+}
+
+async function pickScreen() {
+  const pick = $('pc-monitor');
+  const screen = pick.value === 'primary' || pick.value === 'all' ? pick.value : Number(pick.value);
+  pick.disabled = true;
+  try {
+    await api('/api/desktop/screen', { method: 'PUT', body: { screen } });
+    // The picture changes size: connect the view again so it fits. TightVNC
+    // drops its viewers while it switches, and a connection tried in that
+    // moment fails for good (seen: "无法连接到服务器"): wait, then check.
+    unmountViewer();
+    await new Promise((r) => setTimeout(r, 1500));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      syncViewer();
+      await new Promise((r) => setTimeout(r, 4000));
+      const ui = document.querySelector('#pc-vnc-wrap iframe')?.contentWindow?.UI;
+      if (!ui || ui.connected) break;
+      unmountViewer();
+    }
+  } catch (err) {
+    toast(`换屏幕失败：${err.message}`, true);
+    loadScreens().catch(() => {});
+  } finally {
+    pick.disabled = false;
+  }
+}
+
 function unmountViewer() {
   const wrap = $('pc-vnc-wrap');
   if (!wrap) return;
@@ -13472,6 +13518,7 @@ function wireChrome() {
       openPanel('activity');
     }
   });
+  $('pc-monitor')?.addEventListener('change', () => pickScreen().catch(() => {}));
   $('pc-refresh').addEventListener('click', () => {
     if ($('pc-vnc-wrap')?.querySelector('iframe')) {
       $('pc-vnc-wrap').innerHTML = '';

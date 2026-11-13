@@ -277,7 +277,11 @@ export async function detectCliAgents() {
     if (spec.listArgs && loggedIn) {
       const listed = await runQuick(file, spec.listArgs, 30000);
       const names = listed.code === 0 ? parseModelList(listed.out) : [];
-      if (names.length) models = [...new Set([...(spec.models || []), ...names])];
+      // Its own list wins; a built-in name is kept only when it is not there in any case ("auto" vs "Auto").
+      if (names.length) {
+        const have = new Set(names.map((n) => n.toLowerCase()));
+        models = [...(spec.models || []).filter((n) => !have.has(n.toLowerCase())), ...names];
+      }
     }
     result.push({ ...base, installed: true, loggedIn, models });
   }

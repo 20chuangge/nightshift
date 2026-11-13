@@ -1359,6 +1359,10 @@ if (!gotLock) {
       // Machines learn about each other now and every 10 minutes (new pairings, new addresses).
       setTimeout(() => sharePeers().catch(() => {}), 15000);
       setInterval(() => sharePeers().catch(() => {}), 10 * 60 * 1000);
+      // A machine that was off when this app started (a VM booted later) is
+      // updated once it answers: look again every 10 minutes. Machines already
+      // checked are skipped inside autoUpdateMachine.
+      setInterval(() => { updateAttempts.clear(); autoUpdateMachines().catch(() => {}); }, 10 * 60 * 1000);
     } catch (err) {
       dialog.showErrorBox(L('夜班启动失败', 'Nightshift failed to start'), String(err?.stack || err));
       app.quit();
