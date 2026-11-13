@@ -186,8 +186,10 @@ export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) =>
   const t = String(text || '').replace(/「[^」]{16,}」|“[^”]{16,}”|"[^"\n]{16,}"/g, ' ');
   if (!t.trim()) return out;
   const NEG = /(不存在|没有|没能|未能|没写|没存|没做|没发|未生成|未发送|不成立|并非|失败|找不到|做不到|无法|not found|missing|failed|did not|didn't)/i;
+  // What it is going to do ("风格定了之后会存到 essay.md") is a plan, not a claim (seen live).
+  const FUTURE = /(会存|会写|会保存|会放|会生成|将存|将写|将保存|将会|准备|打算|待会|稍后|接下来|下一步|等[^。！？\n]{0,20}(后|再)|再存|再写|要存到|要写到|要保存|计划|will |going to|later)/i;
   const sentences = t.split(/(?<=[。！？!?；;\n])/);
-  const claimed = (re) => sentences.some((x) => re.test(x) && !NEG.test(x));
+  const claimed = (re) => sentences.some((x) => re.test(x) && !NEG.test(x) && !FUTURE.test(x));
   const okCalls = (receipts || []).filter((r) => r.ok !== false);
   // files
   const seen = new Set();
@@ -200,7 +202,7 @@ export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) =>
     if (!CLAIM_SAVE_RE.test(before) && !CLAIM_SAVE_RE.test(after)) continue;
     // Saying it is NOT there, or did not get written, is an honest report.
     const sentence = sentences.find((x, k) => { const start = sentences.slice(0, k).join('').length; return m.index >= start && m.index < start + x.length; }) || '';
-    if (NEG.test(before + after) || NEG.test(sentence)) continue;
+    if (NEG.test(before + after) || NEG.test(sentence) || FUTURE.test(sentence)) continue;
     // A path in the other machine family's form (a Linux path seen on Windows, or the reverse) cannot be checked here.
     if ((process.platform === 'win32' && raw.startsWith('/')) || (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(raw))) continue;
     const full = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('/') ? raw : path.join(workspaceDir || '.', raw.replace(/^\.\//, ''));
@@ -806,6 +808,8 @@ export class AgentRuntime {
       // What this turn really did, for checking the final answer's claims.
       const receipts = [];
       let claimNudged = false;
+      // Answers that came back empty (seen live: all 4096 output tokens spent thinking).
+      let emptyNudges = 0;
       // Exact repeats of the same call (name + arguments) mean it is stuck.
       const recentCalls = [];
       let stuck = null;
@@ -864,6 +868,17 @@ export class AgentRuntime {
           { botId: bot.id, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source },
           { audit, bus: this.bus },
         ).catch(() => {});
+
+        // Nothing at all came back - no words, no tool call - most often because
+        // the output limit ran out while it was thinking, or in one long call.
+        // Say so and let it try again, instead of ending the turn with no answer.
+        if (!response.toolCalls?.length && !String(response.content || '').trim() && emptyNudges < 2 && steps < maxSteps - 1) {
+          emptyNudges += 1;
+          messages.push({ role: 'user', content: response.finishReason === 'length'
+            ? '（系统）你上一次的输出超过了单次输出上限，被截断了，什么都没留下（没有回答，也没有工具调用）。少想多做：直接调用工具动手；长内容分几次用 fs_write 写（后面几次用 mode "append"）；最后的回答简短。'
+            : '（系统）你上一次什么都没有返回（没有回答，也没有工具调用）。接着把事情做完：需要动手就调用工具，做完就给出结果。' });
+          continue;
+        }
 
         // A reply that reports running something, in a turn that ran nothing,
         // is made up (the model copying earlier output from the chat). Take
@@ -1297,7 +1312,8 @@ export class AgentRuntime {
     if ([...this.active.values()].some((info) => info.botId === botId)) return;
     if (!openSteps(plan).length) { plan.status = 'done'; await this.taskChanged(plan); return; }
     const done = doneSteps(plan);
-    plan.stalls = done > (plan.lastDone || 0) ? 0 : (plan.stalls || 0) + 1;
+    // Only turns it took on by itself count: the planning turn often just writes the plan (seen live).
+    plan.stalls = done > (plan.lastDone || 0) || !plan.continuations ? 0 : (plan.stalls || 0) + 1;
     plan.lastDone = done;
     let text;
     if (plan.stalls >= 2 || (plan.continuations || 0) >= TASK_MAX_CONTINUATIONS) {
@@ -1464,8 +1480,10 @@ export class AgentRuntime {
       plan.status = 'stopped';
       for (const t of plan.tasks) if (t.status === 'todo') t.status = 'stopped';
     } else {
-      task.status = res?.status === 'success' ? 'done' : 'failed';
-      task.result = String(res?.summary || '').slice(0, 4000);
+      // A turn that ended with nothing to show did not do the task.
+      const empty = !String(res?.summary || '').trim() || String(res?.summary).trim() === '(no answer)';
+      task.status = res?.status === 'success' && !empty ? 'done' : 'failed';
+      task.result = empty ? '没有给出任何结果（回答是空的）。' : String(res?.summary || '').slice(0, 4000);
     }
     await this.boardChanged(plan);
   }

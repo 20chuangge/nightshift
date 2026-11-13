@@ -949,6 +949,8 @@
   .pc-shield-hint { display: none; color: #cfd4e2; font-size: 11px; letter-spacing: .02em; }
   @media (max-width: 860px) { .pc-shield-hint { display: block; } }
   .pc-vnc-shield[hidden] { display: none; }
+  /* Already full screen: "点按画面进全屏" would only confuse. */
+  body.panel-max .pc-shield-hint { display: none !important; }
   /* Light (openbox) and kiosk (cage) screens are empty until a bot opens a
      window. The note sits under the screen: on top of it, it covered the
      browser once one was open (the page cannot tell an empty screen apart). */
@@ -1027,7 +1029,9 @@
   }
   /* Real landscape (native lock or browser fullscreen): fill the viewport and
      keep the controls on the right edge, upright, 44px touch targets. */
-  body.panel-max.pc-native-landscape #pc-screen-wrap { right: 76px; }
+  /* The 76px column is for the touch keys of a takeover; only looking, there is
+     no column, and keeping the space left a white strip (seen on a phone). */
+  body.panel-max.pc-native-landscape.pc-touching #pc-screen-wrap { right: 76px; }
   body.panel-max.pc-landscape .pc-mobile-bar {
     left: auto; right: 0; top: 0; bottom: 0; width: 76px;
     flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start;
@@ -1668,6 +1672,9 @@
       will-change: transform;
     }
     .panel.open { transform: translateY(0); }
+    /* Full screen: a transform here would make the sheet, not the screen, the
+       box the fixed desktop fills (seen on a phone: a white strip on the right). */
+    body.panel-max .panel, body.panel-max .panel.open { transform: none; will-change: auto; transition: none; }
     .grip {
       display: flex; align-items: center; justify-content: center;
       height: 22px; flex: none; padding-top: 8px;

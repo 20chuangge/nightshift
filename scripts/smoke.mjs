@@ -5269,6 +5269,27 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const abil = (await api('/api/audit?view=changes&limit=50')).json || [];
     check('activity log: ability changes are recorded (removed, then added back)', abil.some((r) => r.kind === 'bot.abilities' && (r.removed || []).includes('shell')) && abil.some((r) => r.kind === 'bot.abilities' && (r.added || []).includes('shell')));
   }
+  // M21 found in live tests: plans are not claims; a turn that returns nothing tries again; command-line work asks for shell.
+  {
+    const A = await import('../src/agent.mjs');
+    const AB = await import('../src/abilities.mjs');
+    const ex = () => false;
+    const plan1 = A.checkClaims('提纲已写好：outline.md。等你定了风格后，我会把正文存到 tests/essay.md。', [], { workspaceDir: 'W', exists: (p) => /outline/.test(p) });
+    const lie = A.checkClaims('正文已保存到 tests/essay.md。', [], { workspaceDir: 'W', exists: ex });
+    check('M21 claims: saying where it WILL save something ("之后会存到 essay.md") is a plan, not a claim; saying it is saved still has to be true',
+      plan1.length === 0 && lie.length === 1);
+    const agentSrc = await readText('../src/agent.mjs');
+    check('M21 empty answer: no words and no tool call (the output limit spent thinking) is sent back to try again, at most twice; a task that ends with nothing is "没做成", not done',
+      agentSrc.includes("if (!response.toolCalls?.length && !String(response.content || '').trim() && emptyNudges < 2") && agentSrc.includes("response.finishReason === 'length'")
+      && agentSrc.includes("task.status = res?.status === 'success' && !empty ? 'done' : 'failed';"));
+    check('M21 stalls: the turn that only wrote the plan does not count as "not moving"; only turns it took on by itself do',
+      agentSrc.includes('plan.stalls = done > (plan.lastDone || 0) || !plan.continuations ? 0 : (plan.stalls || 0) + 1;'));
+    const pageM21 = await readText('../public/index.html');
+    check('M21 phone full screen (seen on a phone): only a takeover keeps the 76px key column, the bottom sheet does not trap the full-screen layer, and the "点按画面进全屏" hint hides once full screen',
+      pageM21.includes('body.panel-max.pc-native-landscape.pc-touching #pc-screen-wrap { right: 76px; }') && !pageM21.includes('body.panel-max.pc-native-landscape #pc-screen-wrap { right: 76px; }')
+      && pageM21.includes('body.panel-max .panel, body.panel-max .panel.open { transform: none; will-change: auto; transition: none; }') && pageM21.includes('body.panel-max .pc-shield-hint { display: none !important; }'));
+    check('M21 command line: a task or role that says 命令行 / 终端 / 运行命令 calls for shell', AB.toolsForText('用命令行查一下 node 版本').includes('shell') && AB.toolsForText('在终端里跑').includes('shell') && !AB.toolsForText('编剧，写剧本').includes('shell'));
+  }
   // M20 tasks: longer work in a 1:1 chat is a checklist that keeps itself going.
   {
     const PL = await import('../src/plans.mjs');

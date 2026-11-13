@@ -20,7 +20,7 @@ export const BASE_TOOLS = [
 
 /** What a role (or a task) plainly calls for. */
 const ROLE_RULES = [
-  [/代码|开发|程序|编程|工程师|运维|部署|测试|脚本|服务器|数据库|数据分析|统计|爬虫|自动化|\b(code|coder|coding|dev|developer|engineer|ops|devops|test|qa|script|data)\b/i, ['shell']],
+  [/代码|开发|程序|编程|工程师|运维|部署|测试|脚本|服务器|数据库|数据分析|统计|爬虫|自动化|命令行|终端|运行命令|执行命令|跑一下命令|shell|terminal|\b(code|coder|coding|dev|developer|engineer|ops|devops|test|qa|script|data)\b/i, ['shell']],
   [/调研|研究|搜索|搜集|收集|资料|浏览|网页|网站|新闻|竞品|采集|查询|检索|\b(research|browse|search|web|news)\b/i, ['browser_open']],
   [/下载|上传|表单|填写|登录|后台|\b(download|upload|form|login)\b/i, ['browser_open']],
 ];
