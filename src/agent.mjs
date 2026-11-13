@@ -17,6 +17,7 @@
 
 import path from 'node:path';
 import fsp from 'node:fs/promises';
+import fsSync from 'node:fs';
 import {
   P,
   uid,
@@ -70,7 +71,7 @@ function renderGroupSection(bot, group, groupRole) {
   const coordinator = groupRole === 'coordinator';
   const speaker = groupRole === 'speaker';
   const members = (group.members || [])
-    .map((member) => `${member.name} (${member.id}) - ${member.role || 'no role set'}${member.remote ? ` [works on the machine "${member.remote.machine}"; @mention it like the others, its files are fetched here when it names them]` : ''}`)
+    .map((member) => `${member.name} (${member.id}) - ${member.role || 'no role set'}${Array.isArray(member.tools) ? ` [can: ${abilitySummary(member.tools)}]` : ''}${member.remote ? ` [works on the machine "${member.remote.machine}"; @mention it like the others, its files are fetched here when it names them]` : ''}`)
     .join('; ');
   const others = (group.members || []).filter((m) => m.id !== bot.id).map((m) => `@${m.name}`).join(' ');
   const lines = [
@@ -165,6 +166,58 @@ export function looksLikeMadeUpRun(userText, reply, canRun) {
   return /```|exit(code)?\s*[=:]\s*\d|退出码|执行完成|输出如下|原样输出|命令输出|stdout|已执行|运行结果/i.test(reply);
 }
 
+/**
+ * Claim checking ("tool receipts"): a final answer is held against what this
+ * turn actually did. Deterministic, no second model call:
+ *   - a file it says it wrote / saved / that is "at" a path must exist;
+ *   - "ran / executed" needs a command-running call that succeeded;
+ *   - "sent / submitted" needs a sending call (not checked in a group, where
+ *     the answer itself is what gets posted).
+ * receipts: [{name, args, ok}] of this turn. -> [problem, ...] (Chinese, for the bot)
+ */
+const CLAIM_FILE_RE = /([A-Za-z]:[\\/][^\s`'"“”「」（）()<>，。；]+?|(?:\.{0,2}\/)?[\w\u4e00-\u9fff.-]+(?:[\\/][\w\u4e00-\u9fff.-]+)*)\.(md|txt|html?|json|csv|png|jpe?g|gif|webp|svg|mp4|mov|webm|mp3|wav|ogg|pdf|docx?|xlsx?|pptx?|py|js|mjs|ts|sh|ya?ml|zip)\b/gi;
+const CLAIM_SAVE_RE = /(写好|写入|写进|写了|存到|存在|存好|存进|保存|已存|生成|创建|落盘|导出|放在|位于|路径|文件在|saved|wrote|written|created|generated|exported)/i;
+const RUN_TOOLS = /^(shell|cli_agent_run|desktop_ui|winui_|browser_|mcp__)/;
+const SEND_TOOLS = /(send|post|message|reply|mail|notify|publish|push|create_issue|create_pull|comment)/i;
+export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) => fsSync.existsSync(p), group = false } = {}) {
+  const out = [];
+  // Quoted sentences are reported speech ("你说的「已发送给张三」…"), not claims: drop them
+  // (a short quoted name or path stays). Sentences that deny something are not claims either.
+  const t = String(text || '').replace(/「[^」]{16,}」|“[^”]{16,}”|"[^"\n]{16,}"/g, ' ');
+  if (!t.trim()) return out;
+  const NEG = /(不存在|没有|没能|未能|没写|没存|没做|没发|未生成|未发送|不成立|并非|失败|找不到|做不到|无法|not found|missing|failed|did not|didn't)/i;
+  const sentences = t.split(/(?<=[。！？!?；;\n])/);
+  const claimed = (re) => sentences.some((x) => re.test(x) && !NEG.test(x));
+  const okCalls = (receipts || []).filter((r) => r.ok !== false);
+  // files
+  const seen = new Set();
+  for (const m of t.matchAll(CLAIM_FILE_RE)) {
+    const raw = m[0].replace(/[\\/]+$/, '');
+    if (seen.has(raw) || /^https?:/i.test(raw) || /\/\//.test(t.slice(Math.max(0, m.index - 8), m.index))) continue;
+    seen.add(raw);
+    const before = t.slice(Math.max(0, m.index - 24), m.index);
+    const after = t.slice(m.index + raw.length, m.index + raw.length + 12);
+    if (!CLAIM_SAVE_RE.test(before) && !CLAIM_SAVE_RE.test(after)) continue;
+    // Saying it is NOT there, or did not get written, is an honest report.
+    const sentence = sentences.find((x, k) => { const start = sentences.slice(0, k).join('').length; return m.index >= start && m.index < start + x.length; }) || '';
+    if (NEG.test(before + after) || NEG.test(sentence)) continue;
+    // A path in the other machine family's form (a Linux path seen on Windows, or the reverse) cannot be checked here.
+    if ((process.platform === 'win32' && raw.startsWith('/')) || (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(raw))) continue;
+    const full = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('/') ? raw : path.join(workspaceDir || '.', raw.replace(/^\.\//, ''));
+    if (!exists(full)) out.push(`说文件「${raw}」已经写好或在那里，但这个文件并不存在`);
+  }
+  // commands
+  if (claimed(/(运行了|执行了|跑了|跑完了|已执行|已运行|执行结果|exit\s*code|退出码)/i) && !okCalls.some((r) => RUN_TOOLS.test(r.name) || r.name === 'mcp_call')) {
+    out.push('说运行 / 执行了命令，但这一轮没有任何成功的执行类操作');
+  }
+  // sending
+  if (!group && claimed(/(已发送|发送了|已发给|已经发给|发出去了|已通知|已提交|已推送)/)
+    && !okCalls.some((r) => SEND_TOOLS.test(r.name) || (r.name === 'mcp_call' && SEND_TOOLS.test(String(r.args?.tool || ''))) || r.name === 'bot_message' || r.name === 'group_post')) {
+    out.push('说已经发送 / 提交了，但这一轮没有任何发送类操作');
+  }
+  return out;
+}
+
 /** The human's other machines, whose bots this one can hand work to. */
 function peersLine(peers, canHandOff) {
   if (!peers.length || !canHandOff) return [];
@@ -173,6 +226,7 @@ function peersLine(peers, canHandOff) {
 
 import { askPeerBot, fetchedNote } from './crossmachine.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember } from './plans.mjs';
+import { isRequestable, toolLabel, toolsForText, abilitySummary } from './abilities.mjs';
 
 /**
  * A task report that hands a request to a teammate by @mention instead of
@@ -417,6 +471,12 @@ export class AgentRuntime {
       '',
       '## Tools you have',
       toolDigest,
+      ...(() => {
+        const missing = this.registry.all().map((t) => t.name).filter((n) => isRequestable(n) && !this.registry.isGranted(bot, n));
+        return missing.length
+          ? [`Tools you do not have yet: ${missing.join(', ')}. If the work needs one, ask the human with tool_request (it shows them a card) and carry on once granted - never answer that you cannot do it because a tool is missing, and never drop the work.`]
+          : [];
+      })(),
       '',
       ...machinesSection(this.getApp()?.uiState),
       ...TAKEOVER_RULES,
@@ -641,6 +701,9 @@ export class AgentRuntime {
 
       const trail = [];
       let fabricationNudged = false;
+      // What this turn really did, for checking the final answer's claims.
+      const receipts = [];
+      let claimNudged = false;
       // Exact repeats of the same call (name + arguments) mean it is stuck.
       const recentCalls = [];
       let stuck = null;
@@ -710,6 +773,24 @@ export class AgentRuntime {
           messages.push({ role: 'assistant', content: response.content || '' });
           messages.push({ role: 'user', content: '（系统检查）你这一轮没有调用任何工具，却写出了执行结果。不要照着聊天记录或记忆编造输出。用户要你执行的命令，现在就调用 shell 真的执行，再按真实输出回答；做不了就直接说做不了。' });
           continue;
+        }
+
+        // The final answer, held against this turn's receipts: a claim with
+        // nothing behind it is sent back once to be corrected; if it stays,
+        // the answer carries a visible note.
+        if (!response.toolCalls?.length && response.content && response.content.trim()) {
+          const problems = checkClaims(String(response.content), receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(groupContext) });
+          if (problems.length && !claimNudged && steps < maxSteps - 1) {
+            claimNudged = true;
+            this.bus.emit({ type: 'message.retract', ...baseEvent });
+            messages.push({ role: 'assistant', content: response.content || '' });
+            messages.push({ role: 'user', content: `（系统核对）你的回答和这一轮的实际操作对不上：\n- ${problems.join('\n- ')}\n只更正上面这几条，其余说法不用改、也不要重做已经做完的事：做了的才说做了，没做到的直接说没做到；确实还需要做的，现在用工具去做，再按真实结果回答。` });
+            continue;
+          }
+          if (problems.length) {
+            response.content = `${response.content}\n\n⚠ 核对：这些说法在这一轮的操作记录里找不到依据——${problems.join('；')}。`;
+            audit({ kind: 'claims.unverified', botId: bot.id, turnId, problems }).catch(() => {});
+          }
         }
 
         // What the model said in this very step: a task_finish in the same
@@ -782,6 +863,7 @@ export class AgentRuntime {
           live.step = null;
           { const m = messages[messages.length - 1]; live.last = m?.role === 'tool' ? String(m.content || '').slice(-400) : ''; }
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
+          receipts.push({ name: call.name, args: call.arguments || call.args || {}, ok: outcome?.ok !== false && !outcome?.error });
           if (trail.length > 12) trail.shift();
           recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
           if (recentCalls.length > 3) recentCalls.shift();
@@ -1102,6 +1184,11 @@ export class AgentRuntime {
       inputs ? `前面几项的结果（可以直接用）：\n${inputs}` : '',
       task.handoffFrom ? `这项是「${names.get(task.handoffFrom) || task.handoffFrom}」交给你的：${task.handoffNote || ''}` : '',
       task.question ? `你之前问过用户：${task.question}\n用户的回答：${task.answer || '（没有回答）'}` : '',
+      (() => {
+        if (!owner || owner.remote || !Array.isArray(owner.tools)) return '';
+        const lack = toolsForText(`${task.title} ${task.brief || ''} ${task.deliverable || ''}`).filter((n) => !owner.tools.includes(n));
+        return lack.length ? `这项多半要用 ${lack.map(toolLabel).join('、')}，你还没有：先用 tool_request 向用户申请（说明这项任务要用），批了就接着做；不批再想别的办法或说明做不了的原因。` : '';
+      })(),
       '把这项做完，然后用一段话汇报结果和文件路径。',
     ].filter(Boolean).join('\n\n');
     let res;
@@ -1358,6 +1445,11 @@ export class AgentRuntime {
     // Handing work to Claude Code / Codex: another program that changes files on
     // the human's subscription. It asks every time - no level, rule or trust
     // setting turns that into "auto" (a "deny" still denies).
+    if (name === 'tool_request' && verdict.decision !== DECISION.DENY) {
+      const want = (Array.isArray(args?.tools) ? args.tools : []).map(String).filter((n) => isRequestable(n) && !this.registry.isGranted(bot, n));
+      verdict = { ...verdict, decision: DECISION.ASK, risk: want.includes('shell') || want.includes('fs_delete') || want.includes('desktop_ui') ? 'HIGH' : 'MEDIUM',
+        reason: `给「${bot.name}」加上：${want.map(toolLabel).join('、') || '（都已经有了）'}。原因：${String(args?.reason || '').trim().replace(/[。.！!；;]+$/, '').slice(0, 200) || '没说'}。同意后一直有效，可以在机器人设置里关掉；有风险的操作照样会先问你。` };
+    }
     if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
     }
@@ -1385,7 +1477,8 @@ export class AgentRuntime {
 
     // 1. Hard deny (not granted).
     if (verdict.decision === DECISION.DENY) {
-      const result = { error: { code: verdict.code || 'TOOL_NOT_GRANTED', message: verdict.reason } };
+      const askable = !granted && isRequestable(name);
+      const result = { error: { code: verdict.code || 'TOOL_NOT_GRANTED', message: askable ? `${verdict.reason} - ask the human for it with tool_request({tools:["${name}"], reason}) and carry on once granted` : verdict.reason } };
       this.pushToolResult(messages, call, result);
       this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok: false, denied: true, result });
       await this.record(bot.id, { kind: 'tool', name, args, ok: false, denied: true, reason: verdict.reason, output: result, turnId });

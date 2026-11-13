@@ -1635,4 +1635,7 @@ window.DESK_I18N_EN = {
   "交给编程助手": "Hand off to a coding assistant",
   "想把写代码的活交给 Claude Code / Codex": "Wants to hand programming work to Claude Code / Codex",
   "用你的订阅额度，在工作区的一个文件夹里写文件；勾了「运行命令」时还会运行命令。": "Uses your subscription and writes files in one workspace folder; also runs commands when \"run commands\" is allowed.",
+  "申请工具": "Ask for tools",
+  "想申请加上一些工具": "Wants to be given some tools",
+  "同意后这个机器人一直能用这些工具，可以在机器人设置里关掉；有风险的操作照样会先问你。": "Once you agree, this bot keeps these tools (switch them off in its settings); risky actions still ask you first.",
 };

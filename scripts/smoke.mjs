@@ -3795,9 +3795,13 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         brt.groups = { appendGroupMessage: async (gid, rec) => rec, publicGroupMessage: (m) => m };
         let handedOnce = false;
         let askedOnce = false;
+        const seq = [];
         brt.runTurn = async (o) => {
           calls.push({ who: o.botId, role: o.groupRole, noPlan: o.noPlan, text: o.text, at: Date.now() });
+          const title = (String(o.text).match(/你负责的任务：(.+)/) || [])[1] || o.groupRole;
+          seq.push(`start:${title}`);
           await new Promise((r) => setTimeout(r, 30));
+          seq.push(`end:${title}`);
           if (o.groupRole === 'task' && /配乐清单/.test(o.text) && !handedOnce) { handedOnce = true; return { status: 'success', summary: 'x', board: { handoff: { to: 'a1', note: '美术更懂' } } }; }
           if (o.groupRole === 'task' && /画首帧/.test(o.text) && !askedOnce) { askedOnce = true; return { status: 'success', summary: 'x', board: { askHuman: '要写实还是卡通？' } }; }
           return { status: 'success', summary: o.groupRole === 'task' ? `做好了：${(o.text.match(/你负责的任务：(.+)/) || [])[1]}，文件 out/${calls.length}.png` : '汇总好了' };
@@ -3808,7 +3812,8 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         const waitingAfterFirst = plan.status === 'waiting' && plan.tasks[1].status === 'waiting_human' && plan.tasks[3].status === 'todo';
         const handed = plan.tasks[2].owner === 'a1' && plan.tasks[2].handoffFrom === 'w1' && plan.tasks[2].status === 'done';
         const started = (name) => calls.filter((c) => c.text?.includes(`你负责的任务：${name}`)).map((c) => c.at);
-        const parallel = Math.abs(started('写分镜')[0] - started('配乐清单')[0]) < 25;
+        // Independent tasks overlap: the second starts before the first one ends (no timing window).
+        const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') < seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
         const took = await brt.answerBoard(grp, '卡通');
         for (let i = 0; i < 50 && plan.status !== 'done'; i++) await new Promise((r) => setTimeout(r, 20));
         const second = calls.filter((c) => c.text?.includes('你负责的任务：画首帧'));
@@ -3920,6 +3925,17 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       const agentSrcT = await readText('../src/agent.mjs');
       check('M16 hand-offs: as many as there are other members; handing a task back to someone who passed it on stops it (no ping-pong)',
         agentSrcT.includes('const handoffLimit = Math.max(3, (group.members || []).length - 1);') && agentSrcT.includes('(task.handedBy || []).includes(res.board.handoff.to)') && agentSrcT.includes('trimOldToolOutputs(messages);'));
+      const ex = (p) => /real\.md$/.test(p);
+      const cc = (t, r = [], o = {}) => A.checkClaims(t, r, { workspaceDir: 'W', exists: ex, ...o });
+      check('M17 claim checking: a file said to be written must exist; "ran" needs a successful run; "sent" needs a send (not in a group); honest "not there" and other-machine paths pass',
+        cc('文件已写好：tests/real.md').length === 0 && /tests\/fake\.md/.test(cc('文件已写好：tests/fake.md')[0] || '') && cc('写入了 `tests-board/x.md`').length === 1
+        && cc('我运行了 ls，结果如下').length === 1 && cc('我运行了 ls', [{ name: 'shell', ok: true }]).length === 0 && cc('我运行了 ls', [{ name: 'shell', ok: false }]).length === 1
+        && cc('已发送给张三').length === 1 && cc('已发送给张三', [], { group: true }).length === 0 && cc('已发送给张三', [{ name: 'mcp_call', args: { tool: 'mcp__m1__send_message' }, ok: true }]).length === 0
+        && cc('文件 tests/fake.md 不存在，没写成').length === 0 && cc('参考 https://a.com/x.md').length === 0 && cc('请看 README.md 的说明').length === 0
+        && (process.platform !== 'win32' || cc('已保存到 /home/ubuntu/out.md').length === 0)
+        && cc('如实更正：「tests-claim/two.md 已写好」和「已发送给张三」：两件都没做，也不成立。two.md 不存在。').length === 0 && cc('你说「帮我把这个写好存起来」，我已保存到 tests/fake.md。').length === 1);
+      check('M17 claim checking: an answer that does not match the turn\'s receipts is taken back once to be corrected; if it still does not, it carries a visible note',
+        agentSrcT.includes('const problems = checkClaims(String(response.content), receipts,') && agentSrcT.includes('（系统核对）你的回答和这一轮的实际操作对不上') && agentSrcT.includes('⚠ 核对：这些说法在这一轮的操作记录里找不到依据') && agentSrcT.includes('receipts.push({ name: call.name,'));
     }
     check('M6 tool limit: mcp_find_tools finds a hidden tool with its parameters', found.tools[0]?.name === 'mcp__mbig__tool-77' && found.tools[0].parameters?.type === 'object');
     const agentSrc = await readText('../src/agent.mjs');
@@ -5252,6 +5268,34 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('abilities: switching it back on clears the record', back.tools.includes('shell') && !(back.revokedTools || []).includes('shell'));
     const abil = (await api('/api/audit?view=changes&limit=50')).json || [];
     check('activity log: ability changes are recorded (removed, then added back)', abil.some((r) => r.kind === 'bot.abilities' && (r.removed || []).includes('shell')) && abil.some((r) => r.kind === 'bot.abilities' && (r.added || []).includes('shell')));
+  }
+  // M18 permissions: a new bot can do its job; a missing tool is asked for, not a dead end.
+  {
+    const fsx = await import('node:fs');
+    const botFileOf = (id) => path.join(home, 'config', 'bots', `${id}.json`);
+    const dev = (await api('/api/bots', { method: 'POST', body: { name: 'perm-dev', role: '写代码的开发工程师' } })).json?.bot;
+    const writer = (await api('/api/bots', { method: 'POST', body: { name: 'perm-writer', role: '编剧，写剧本' } })).json?.bot;
+    const t1 = dev?.tools || [], t2 = writer?.tools || [];
+    check('M18 new bots: every new bot can read/write its files and fetch pages; a developer also gets the command line, a writer does not',
+      ['fs_read', 'fs_write', 'http_fetch', 'group_post'].every((t) => t1.includes(t) && t2.includes(t)) && t1.includes('shell') && !t2.includes('shell') && !t2.includes('fs_delete'), JSON.stringify({ t1, t2 }));
+    // A bot from before: no tools at all, one switched off by the human.
+    fsx.writeFileSync(botFileOf('perm-old'), JSON.stringify({ id: 'perm-old', name: 'perm-old', role: '', tools: [], revokedTools: ['fs_write'] }));
+    const { migrateBaseGrants } = await import('../src/bots.mjs');
+    await migrateBaseGrants();
+    const old = JSON.parse(fsx.readFileSync(botFileOf('perm-old'), 'utf8'));
+    check('M18 old bots: bots made with no tools get the base set once, except what the human switched off', old.tools.includes('fs_read') && old.tools.includes('http_fetch') && !old.tools.includes('fs_write') && old.baseGrantsVersion === 1, JSON.stringify(old.tools));
+    for (const id of [dev?.id, writer?.id, 'perm-old']) if (id) await api(`/api/bots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+    const reg = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: { policy: {} }, getRuntime: () => { throw new Error('no'); }, getRoutines: () => { throw new Error('no'); } });
+    const bot = { id: 'perm-x', name: 'x', tools: [] };
+    let patched = null;
+    const ctx = { bot, bots: { updateBot: async (id, p) => { patched = { id, ...p }; return { tools: p.tools, revokedTools: [] }; } } };
+    const r = await reg.get('tool_request').run({ tools: ['shell', 'bot_create', 'nope'], reason: 'run the build' }, ctx);
+    check('M18 tool_request: any bot may ask; a yes adds the tool to the bot for good and for its next step; team/settings tools are not handed out this way',
+      reg.isGranted({ tools: [] }, 'tool_request') && r.granted?.join() === 'shell' && r.notRequestable?.join() === 'bot_create' && r.unknown?.join() === 'nope' && bot.tools.includes('shell') && patched?.id === 'perm-x', JSON.stringify(r));
+    const agentSrc = await readText('../src/agent.mjs');
+    check('M18 runtime: asking for tools always goes to the human (a card), the bot is told what it can ask for, and a task owner lacking an obvious tool is told to ask first',
+      agentSrc.includes("if (name === 'tool_request' && verdict.decision !== DECISION.DENY)") && agentSrc.includes('Tools you do not have yet:') && agentSrc.includes('你还没有：先用 tool_request 向用户申请') && agentSrc.includes('[can: ${abilitySummary(member.tools)}]'));
   }
   {
     const get = await api('/api/policy');

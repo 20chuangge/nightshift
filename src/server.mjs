@@ -52,6 +52,7 @@ import {
   AVATAR_MAX_BYTES,
   AVATAR_MIME_TYPES,
   migrateSeedGrants,
+  migrateBaseGrants,
   migrateBuiltinNames,
   writeAssistantConfig,
 } from './bots.mjs';
@@ -177,6 +178,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // additive migration (config seeds are copy-if-missing).
   const renamed = await migrateBuiltinNames();
   if (renamed) console.log(`[assistant] renamed ${renamed} built-in bot(s)`);
+  await migrateBaseGrants().catch((err) => console.error('[bots] base grants:', err.message));
   const migrated = await migrateSeedGrants();
   if (migrated) console.log(`[assistant] migrated seed grants for ${migrated} bot(s)`);
 
@@ -2346,7 +2348,7 @@ function groupMemberList(group, byId) {
   const taken = new Set(group.members.map((id) => byId.get(id)?.name).filter(Boolean));
   return group.members.map((id) => {
     const bot = byId.get(id);
-    if (bot) return { id, name: bot.name, role: bot.role, avatar: bot.avatar };
+    if (bot) return { id, name: bot.name, role: bot.role, avatar: bot.avatar, tools: bot.tools || [] };
     const far = group.remotes?.[id];
     if (!far) return null;
     // Two members of the same name: the far one says where it is.

@@ -30,6 +30,7 @@ import {
 import { DEFAULT_DENY_PATTERNS } from './approvals.mjs';
 import { readSkill } from './skills.mjs';
 import { repairGroupsAfterBotDelete } from './groups.mjs';
+import { BASE_TOOLS, grantsForNewBot } from './abilities.mjs';
 
 function localTimezone() {
   try {
@@ -332,6 +333,7 @@ function normalizeBot(raw, index) {
     // Kept through edits: without it, renaming a built-in bot re-ran the
     // grant migration on the next start.
     ...(raw.seedGrantsVersion ? { seedGrantsVersion: Number(raw.seedGrantsVersion) } : {}),
+    ...(raw.baseGrantsVersion ? { baseGrantsVersion: Number(raw.baseGrantsVersion) } : {}),
     policy: {
       autoApproveMedium: policy.autoApproveMedium ?? false,
       denyPatterns: Array.isArray(policy.denyPatterns) ? policy.denyPatterns.map(String) : [],
@@ -439,6 +441,29 @@ export async function migrateBuiltinNames() {
   return changed;
 }
 
+/**
+ * Bots made before new bots got the base tools (often with none at all): add
+ * the base set once, except what the human switched off. Returns how many changed.
+ */
+export async function migrateBaseGrants() {
+  let changed = 0;
+  for (const name of await listFiles(P.botsDir, (n) => n.endsWith('.json')).catch(() => [])) {
+    const file = path.join(P.botsDir, name);
+    let bot;
+    try { bot = JSON.parse(await fsp.readFile(file, 'utf8')); } catch { continue; }
+    if (Number(bot.baseGrantsVersion || 0) >= 1) continue;
+    const tools = new Set(Array.isArray(bot.tools) ? bot.tools : []);
+    const revoked = new Set(Array.isArray(bot.revokedTools) ? bot.revokedTools : []);
+    const before = tools.size;
+    for (const t of BASE_TOOLS) if (!revoked.has(t)) tools.add(t);
+    bot.tools = [...tools];
+    bot.baseGrantsVersion = 1;
+    await fsp.writeFile(file, `${JSON.stringify(bot, null, 2)}\n`);
+    if (tools.size !== before) changed += 1;
+  }
+  return changed;
+}
+
 /** Idempotent, additive migration for the built-in bots. Returns how many changed. */
 export async function migrateSeedGrants() {
   let changed = 0;
@@ -518,9 +543,15 @@ export async function createBot(input = {}) {
   const bots = await listBots();
   const avatarColor =
     normalizeColor(input.avatarColor) || avatarPatch?.color || AVATAR_COLORS[bots.length % AVATAR_COLORS.length];
+  // No grant list given (the 新建 form): start with what every teammate needs
+  // plus what its role calls for, not with nothing - a bot that cannot read or
+  // write a file only looks like a member of the team.
+  const tools = Array.isArray(input.tools) ? input.tools : grantsForNewBot({ role: input.role });
   const bot = normalizeBot(
     {
       ...input,
+      tools,
+      baseGrantsVersion: 1,
       id,
       name,
       created: nowIso(),

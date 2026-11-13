@@ -48,6 +48,7 @@ function sameSite(a, b) {
   return base(x) === base(y);
 }
 import { getBrowserManager } from './browser.mjs';
+import { grantsForNewBot, isRequestable } from './abilities.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -1392,6 +1393,47 @@ export function createRegistry(deps) {
     },
   });
 
+  // --- asking for a tool ------------------------------------------------------
+  //
+  // A bot that finds it lacks a tool asks the human here instead of answering
+  // "I can't". Always asks (the runtime turns AUTO into ASK for it); a yes adds
+  // the tools to the bot for good, and they are usable from its next step.
+
+  add({
+    name: 'tool_request',
+    description:
+      'Ask the human to give you tools you do not have yet but need for the work in hand (e.g. shell to run a command, browser_open to use a browser, fs_delete to remove files). The human sees a card and decides; on yes the tools are yours from your next step, so carry on with the work. Use this instead of saying you cannot do something because a tool is missing.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        tools: { type: 'array', items: { type: 'string' }, description: 'Tool names you need.' },
+        reason: { type: 'string', description: 'One sentence: what you need them for.' },
+      },
+      required: ['tools', 'reason'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      if (typeof ctx.bots?.updateBot !== 'function') throw toolError('BOTS_API_UNAVAILABLE', 'this runtime cannot change grants');
+      const wanted = [...new Set((Array.isArray(args?.tools) ? args.tools : []).map(String))];
+      const unknown = wanted.filter((n) => !tools.has(n));
+      const refused = wanted.filter((n) => tools.has(n) && !isRequestable(n));
+      const add = wanted.filter((n) => tools.has(n) && isRequestable(n) && !(ctx.bot.tools || []).includes(n));
+      if (add.length) {
+        const updated = await ctx.bots.updateBot(ctx.bot.id, { tools: [...new Set([...(ctx.bot.tools || []), ...add])] });
+        // The turn's bot object is what the next model call reads its tools from.
+        ctx.bot.tools = updated.tools;
+        ctx.bot.revokedTools = updated.revokedTools;
+      }
+      return {
+        granted: add,
+        ...(unknown.length ? { unknown } : {}),
+        ...(refused.length ? { notRequestable: refused, note: 'these stay with the primary bot; ask it with bot_message or tell the human' } : {}),
+        next: add.length ? 'granted: use them now and carry on with the work' : 'nothing new was granted',
+      };
+    },
+  });
+
   // --- roster management ---------------------------------------------------
   //
   // MEDIUM: creating a teammate or reshaping the team is a real change, so it
@@ -1402,7 +1444,7 @@ export function createRegistry(deps) {
   add({
     name: 'bot_create',
     description:
-      'Create a new teammate bot on this machine. It appears in the roster immediately with its own memory and its own transcript. Give it only the tools it needs; defaults to none. Name it in the language the human writes in (Chinese conversation -> a Chinese name such as 编剧 or 美术). When the human asks for a team, first list the bots you would create (name + job, keep it to the fewest that cover the work) and ask before creating more than one; create a group only if the human asks for one or agrees.',
+      'Create a new teammate bot on this machine. It appears in the roster immediately with its own memory and its own transcript. It gets the tools every teammate needs automatically (read/write its workspace files, fetch pages, notes, group_post) plus shell / browser_open when its role plainly calls for them; list in tools anything else its job needs (e.g. fs_delete, bot_message, routine_create) - not more. Tell the human in one line what it can do. Later it can ask the human for a missing tool itself. Name it in the language the human writes in (Chinese conversation -> a Chinese name such as 编剧 or 美术). When the human asks for a team, first list the bots you would create (name + job, keep it to the fewest that cover the work) and ask before creating more than one; create a group only if the human asks for one or agrees.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
@@ -1438,7 +1480,8 @@ export function createRegistry(deps) {
       const created = await ctx.bots.createBot({
         name,
         role: String(args?.role ?? ''),
-        tools: Array.isArray(args?.tools) ? args.tools : [],
+        // What every teammate needs, what its role calls for, and what was asked for.
+        tools: grantsForNewBot({ role: args?.role, requested: Array.isArray(args?.tools) ? args.tools : [], known: new Set(tools.keys()) }),
         skills: Array.isArray(args?.skills) ? args.skills : [],
         ...(args?.avatar && typeof args.avatar === 'object' ? { avatar: args.avatar } : {}),
       });
@@ -2059,7 +2102,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      if (name === 'task_finish' || name === 'tool_request' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       // Tools of connected MCP servers: Settings → 连接应用 says which bots get them.
       if (name.startsWith('mcp__')) return Boolean(api.mcpGate?.(bot, name));
       if (name === 'mcp_find_tools' || name === 'mcp_call') return [...tools.keys()].some((n) => n.startsWith('mcp__') && api.mcpGate?.(bot, n));
