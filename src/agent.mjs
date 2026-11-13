@@ -288,6 +288,48 @@ const GROUP_TOOLS = {
 };
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
+/**
+ * A long answer to the human, as several chat messages: the lead (the answer
+ * itself) first, then one message per section. Cut only between paragraphs,
+ * never inside a code block, and never after a heading or a line ending in
+ * a colon, so nothing is lost and each message reads on its own.
+ */
+export function splitReply(text, { min = 350, target = 600, maxParts = 5 } = {}) {
+  const t = String(text || '');
+  if (t.length < min) return [t];
+  const blocks = [];
+  let cur = [];
+  let fence = false;
+  for (const line of t.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (!fence && !line.trim()) { if (cur.length) { blocks.push(cur.join('\n')); cur = []; } continue; }
+    cur.push(line);
+  }
+  if (cur.length) blocks.push(cur.join('\n'));
+  const firstLine = (b) => b.split('\n')[0].trim();
+  const isHeading = (b) => /^#{1,6}\s/.test(firstLine(b)) || (/^\*\*[^*\n]{1,40}\*\*/.test(firstLine(b)) && firstLine(b).length <= 40);
+  // A block that only introduces what follows stays with it.
+  const leadsOn = (b) => (isHeading(b) && !b.includes('\n')) || /[:：]\s*$/.test(b);
+  const parts = [];
+  let part = [];
+  for (const b of blocks) {
+    const len = part.join('\n\n').length;
+    const leadDone = parts.length === 0 && len >= 60;
+    if (part.length && !leadsOn(part[part.length - 1]) && (isHeading(b) || len + b.length > target || leadDone)) {
+      parts.push(part.join('\n\n'));
+      part = [];
+    }
+    part.push(b);
+  }
+  if (part.length) parts.push(part.join('\n\n'));
+  // A short closing line ("有问题再说") rides with the part before it.
+  for (let i = parts.length - 1; i > 0; i -= 1) {
+    if (parts[i].length < 50) { parts[i - 1] = `${parts[i - 1]}\n\n${parts[i]}`; parts.splice(i, 1); }
+  }
+  if (parts.length > maxParts) parts.splice(maxParts - 1, parts.length, parts.slice(maxParts - 1).join('\n\n'));
+  return parts.length > 1 ? parts : [t];
+}
+
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
     this.config = config;
@@ -428,7 +470,9 @@ export class AgentRuntime {
   // system prompt
   // -------------------------------------------------------------------------
 
-  async buildSystemPrompt(bot, { unattended, group = null, groupRole = 'coordinator' }) {
+  async buildSystemPrompt(bot, { unattended, group = null, groupRole = 'coordinator', depth = 0 }) {
+    // Talking with the human directly (not a group, not a routine, not a teammate's request).
+    const direct = !unattended && !group && !depth;
     const [memoryDigest, skillsDigest, toolDigest] = await Promise.all([
       this.memory.renderMemoryDigest({ botId: bot.id, limit: 8 }),
       this.skills.renderSkillsDigest(bot.skills || []),
@@ -494,8 +538,15 @@ export class AgentRuntime {
       '',
       '## How to work',
       '- Do the work with tools; do not describe what you would do.',
-      '- The human sees only your messages, not your tool calls. Never narrate your steps, never say "let me check", "next I will", "先看一下", "接着我来". Work silently and speak once.',
-      '- One turn = at most one short message, delivered when you have the result or need a decision. If you must ask something, ask it in that message and stop.',
+      ...(direct
+        ? [
+          '- The human sees only your messages, not your tool calls. When the request needs more than a quick step or two (research, several commands, making files), put ONE short sentence in your first reply, next to the tool calls: what you are about to do and roughly how long (e.g. "好，我先查一下 X 的资料，大概一两分钟。"). It reaches them at once, so they are not left waiting. Skip it for quick things. Apart from that one line, never narrate your steps ("next I will", "接着我来"): work, then give the result.',
+          '- The result: put the answer or conclusion first, in 1-3 sentences of its own. Details, steps and lists come after. A long answer is shown as several messages, cut at your paragraphs and headings, so give each section a short heading and keep it self-contained. Leave nothing important out. If you must ask something, ask it and stop.',
+        ]
+        : [
+          '- The human sees only your messages, not your tool calls. Never narrate your steps, never say "let me check", "next I will", "先看一下", "接着我来". Work silently and speak once.',
+          '- One turn = at most one short message, delivered when you have the result or need a decision. If you must ask something, ask it in that message and stop.',
+        ]),
       '- Read the workspace before assuming what is in it.',
       '- Save durable facts with memory_write (scope "shared" for things the whole team should know).',
       '- Save a procedure that worked as a skill with skill_save, so the next run is cheaper.',
@@ -515,8 +566,15 @@ export class AgentRuntime {
 
   async loadHistory(botId, limit = 16) {
     const records = await readJsonl(sessionFile(botId));
-    const usable = records.filter((r) => (r.kind === 'user' || r.kind === 'assistant') && r.text);
-    return usable.slice(-limit).map((r) => ({ role: r.kind, content: String(r.text) }));
+    const usable = [];
+    for (const r of records) {
+      if (!((r.kind === 'user' || r.kind === 'assistant') && r.text)) continue;
+      const prev = usable[usable.length - 1];
+      // An opening line and a reply cut into parts belong to one answer.
+      if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && r.turnId && prev.turnId === r.turnId) prev.text = `${prev.text}\n\n${r.text}`;
+      else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId });
+    }
+    return usable.slice(-limit).map((r) => ({ role: r.kind, content: r.text }));
   }
 
   async record(botId, record) {
@@ -658,7 +716,7 @@ export class AgentRuntime {
     let waitingFor = null;
 
     try {
-      const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole });
+      const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth });
       // A group turn replays the group transcript (not the bot's 1:1 history), so
       // the coordinator can follow the conversation it is answering.
       const history = coordinatorTurn
@@ -796,7 +854,14 @@ export class AgentRuntime {
         // What the model said in this very step: a task_finish in the same
         // step must not repeat it as a second message.
         ctx.spokeThisStep = Boolean(response.content && response.content.trim());
-        if (response.content && response.content.trim()) {
+        const replyParts = !response.toolCalls?.length && !groupContext && !depth && !unattended && response.content ? splitReply(response.content) : [];
+        if (replyParts.length > 1) {
+          // The streamed bubble becomes the first part; the rest follow as their own messages.
+          for (const [i, part] of replyParts.entries()) {
+            this.bus.emit({ type: 'message', ...baseEvent, text: part, final: true, part: i + 1, parts: replyParts.length });
+            await this.record(bot.id, { kind: 'assistant', text: part, turnId, source: baseEvent.source, final: true, part: i + 1, parts: replyParts.length });
+          }
+        } else if (response.content && response.content.trim()) {
           if (deltaOffset === 0) {
             // This provider did not stream (or answered in one piece). Keep the
             // UI alive by chunking the finished text instead of dumping it.
@@ -1347,8 +1412,17 @@ export class AgentRuntime {
    * task_finish summaries, non-streaming providers). No artificial delay: the
    * mock answers instantly and a fake typewriter effect would just be lies.
    */
-  async streamText(baseEvent, bot, turnId, content) {
+  async streamText(baseEvent, bot, turnId, content, { split = false } = {}) {
     const text = String(content);
+    // A long answer to the human (also a task_finish summary): several messages.
+    const parts = split ? splitReply(text) : [text];
+    if (parts.length > 1) {
+      for (const [i, part] of parts.entries()) {
+        this.bus.emit({ type: 'message', ...baseEvent, text: part, final: true, part: i + 1, parts: parts.length });
+        await this.record(bot.id, { kind: 'assistant', text: part, turnId, source: baseEvent.source, final: true, part: i + 1, parts: parts.length });
+      }
+      return;
+    }
     const CHUNK = 28;
     for (let i = 0; i < text.length; i += CHUNK) {
       this.bus.emit({ type: 'message.delta', ...baseEvent, text: text.slice(i, i + CHUNK), index: i });
@@ -1632,7 +1706,7 @@ export class AgentRuntime {
       // answer so the UI does not have a special case for "task finished".
       // When the model already answered in the same step, that answer is the
       // reply; the summary only names the turn (no second, repeated bubble).
-      if (!ctx?.spokeThisStep) await this.streamText(baseEvent, bot, turnId, finalSummary);
+      if (!ctx?.spokeThisStep) await this.streamText(baseEvent, bot, turnId, finalSummary, { split: !ctx?.group && !ctx?.depth && !ctx?.unattended });
       return { finalSummary };
     }
 

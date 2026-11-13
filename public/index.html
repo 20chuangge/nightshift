@@ -865,6 +865,15 @@
     border-radius: 10px; padding: 8px 14px; font-size: 12.5px; cursor: pointer;
   }
   .pc-exit:hover { background: var(--accent); color: #fff; }
+  /* Phones: over the remote picture a blurred see-through button came out as
+     dark text on dark (seen on Android). Solid, bigger, easy to hit. */
+  @media (pointer: coarse) {
+    .pc-exit {
+      backdrop-filter: none; background: #232a38; border-color: rgba(255, 255, 255, 0.32);
+      color: #fff; font-size: 14px; font-weight: 600; padding: 11px 18px; border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    }
+  }
 
   .key-link { color: var(--accent-2); text-decoration: none; display: inline-block; margin-top: 4px; }
   .key-link:hover { text-decoration: underline; }
@@ -6413,22 +6422,10 @@ function renderMessages() {
   );
   const statuses = state.messages.filter((m) => m.role === 'status');
 
-  // One turn produces one message per model step. The human should see one
-  // reply, not a stutter of bubbles, so consecutive assistant rows from the
-  // same turn are merged before rendering.
-  const items = [];
-  for (const item of visible) {
-    const prev = items[items.length - 1];
-    const sameTurnAssistant = prev
-      && prev.role === 'assistant' && item.role === 'assistant'
-      && prev.turnId && prev.turnId === item.turnId;
-    if (sameTurnAssistant) {
-      prev.text = `${prev.text || ''}\n\n${item.text || ''}`.trim();
-      prev.ts = item.ts || prev.ts;
-      continue;
-    }
-    items.push({ ...item });
-  }
+  // A turn may say several things on purpose: one short line when it starts
+  // longer work, then the answer - a long one cut into a few messages. Shown
+  // as they were sent (one bubble each), the same as while it was live.
+  const items = visible.map((item) => ({ ...item }));
   // A card the human acts on (takeover, login) comes after what the bot said in
   // that turn ("点下面的「接管屏幕」"), not before it.
   for (let i = items.length - 1; i >= 0; i -= 1) {
@@ -13027,6 +13024,11 @@ async function enterLandscape() {
   document.body.classList.add('pc-rotated');
 }
 
+/** The phone app can really turn the screen (Android); a browser or an iPhone cannot be relied on. */
+function canNativeRotate() {
+  return typeof window.desk?.setOrientation === 'function' || Boolean(isNativeApp() && screenOrientationPlugin());
+}
+
 async function exitLandscape() {
   const was = document.body.classList.contains('pc-landscape');
   document.body.classList.remove('pc-landscape', 'pc-rotated', 'pc-native-landscape');
@@ -13065,6 +13067,9 @@ async function togglePanelMax(on) {
   }
   $('pc-max').textContent = next ? '退出全屏' : '全屏';
   syncViewer();
+  // A desktop is wide: held upright, a phone showed it as a thin strip in the
+  // middle of a black screen. Full screen on the phone app turns it sideways.
+  if (next && isMobile() && canNativeRotate() && window.innerHeight > window.innerWidth) enterLandscape();
 }
 
 function desktopTakeover() {
@@ -13392,6 +13397,8 @@ function wireChrome() {
   });
   $('pc-max').addEventListener('click', () => togglePanelMax());
   $('pc-exit').addEventListener('click', () => togglePanelMax(false));
+  // No Esc key on a phone.
+  if (window.matchMedia?.('(pointer: coarse)').matches) $('pc-exit').textContent = '退出全屏';
   $('pc-done')?.addEventListener('click', finishTakeover);
   $('conn-retry')?.addEventListener('click', () => pollHealth());
   $('conn-local')?.addEventListener('click', () => switchMachine(''));

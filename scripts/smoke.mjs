@@ -5269,6 +5269,40 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const abil = (await api('/api/audit?view=changes&limit=50')).json || [];
     check('activity log: ability changes are recorded (removed, then added back)', abil.some((r) => r.kind === 'bot.abilities' && (r.removed || []).includes('shell')) && abil.some((r) => r.kind === 'bot.abilities' && (r.added || []).includes('shell')));
   }
+  // M19 replies: a long answer comes as several messages, the answer first; longer work starts with one line.
+  {
+    const { splitReply } = await import('../src/agent.mjs');
+    const long = [
+      '修好了，在 1.2.121 里，还没发布。自测全部通过，四台机器都已经更新。',
+      '**改了什么**\n- 新机器人自带基础工具：读写自己工作区的文件、建文件夹、抓取网页、记笔记、在群里发言。\n- 按职责补工具：写代码、运维这类给命令行；调研、搜资料这类给浏览器。删除文件、改设置这些不会默认给。',
+      '**实测**',
+      '1. 新建写 Python 的机器人：建出来就带命令行和读写文件，介绍的能力和实际一致。\n2. 只有基础工具的编剧运行 node --version：先申请命令行，批准后答出了版本号。',
+      '步骤如下：',
+      '```bash\nnpm run smoke\n\nnpm run check:i18n\n```',
+      '**还没测的**\n群里任务板上负责人缺工具先申请这一路，和单聊用的是同一套卡片，但没在群里实际跑过。这里再多写几句，让这一段长一些，好看出来分条是按段落和标题来的。',
+      '有问题再告诉我。',
+    ].join('\n\n');
+    const parts = splitReply(long);
+    const strip = (x) => x.replace(/\s+/g, '');
+    const fencesWhole = parts.every((p) => (p.match(/```/g) || []).length % 2 === 0);
+    const noDangling = parts.slice(0, -1).every((p) => !/(\*\*实测\*\*|步骤如下：)$/.test(p.trim()));
+    check('M19 split: a long answer becomes a few messages - the answer itself first, then one per section; nothing lost, code blocks whole, a heading or "如下：" never left at the end of a message',
+      parts.length >= 3 && parts.length <= 5 && parts[0].startsWith('修好了') && !parts[0].includes('改了什么') && parts.some((p) => p.startsWith('**改了什么**')) && strip(parts.join('')) === strip(long) && fencesWhole && noDangling && parts[parts.length - 1].includes('有问题再告诉我'),
+      JSON.stringify(parts.map((p) => p.slice(0, 20))));
+    check('M19 split: a short answer stays one message, exactly as written', splitReply('好的，已经改好了。').length === 1 && splitReply('好的，已经改好了。')[0] === '好的，已经改好了。');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('M19 runtime: only a direct chat with the human is split (not groups, routines or a teammate\'s request); each part is its own message and record (a task_finish summary too); the model reads one turn\'s parts back as one answer',
+      agentSrc.includes('!response.toolCalls?.length && !groupContext && !depth && !unattended && response.content ? splitReply(response.content) : []')
+      && agentSrc.includes("kind: 'assistant', text: part, turnId, source: baseEvent.source, final: true, part: i + 1")
+      && agentSrc.includes('prev.turnId === r.turnId) prev.text =')
+      && agentSrc.includes('streamText(baseEvent, bot, turnId, finalSummary, { split: !ctx?.group && !ctx?.depth && !ctx?.unattended })'));
+    check('M19 prompt: in a direct chat, longer work starts with one short line of what and how long, and the answer comes first; elsewhere it stays one quiet message',
+      agentSrc.includes('const direct = !unattended && !group && !depth;') && agentSrc.includes('put ONE short sentence in your first reply') && agentSrc.includes('put the answer or conclusion first') && agentSrc.includes('Work silently and speak once.'));
+    const page = await readText('../public/index.html');
+    check('M19 phone desktop: full screen on the phone app turns sideways; the exit button is solid and says 退出全屏 on a phone',
+      page.includes('if (next && isMobile() && canNativeRotate() && window.innerHeight > window.innerWidth) enterLandscape();') && page.includes('@media (pointer: coarse) {\n    .pc-exit {') && page.includes("$('pc-exit').textContent = '退出全屏'"));
+    check('M19 chat: an opening line and the parts of a long answer stay separate bubbles after a reload too (not merged back into one)', page.includes('const items = visible.map((item) => ({ ...item }));') && !page.includes('const sameTurnAssistant = prev'));
+  }
   // M18 permissions: a new bot can do its job; a missing tool is asked for, not a dead end.
   {
     const fsx = await import('node:fs');
