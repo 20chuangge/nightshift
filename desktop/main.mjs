@@ -150,6 +150,19 @@ async function thisComputerAsPeer() {
   if (!url) return null;
   let token = '';
   try { token = JSON.parse(fs.readFileSync(PEER_TOKEN_FILE, 'utf8')).token || ''; } catch { /* first time */ }
+  // The login behind it can be gone (removed in Settings → 设备, or lost). Handed
+  // out anyway, every other machine was refused and took this computer for
+  // offline, so nothing reached it (seen: a mailbox connected on Ubuntu never
+  // came here). Ask this computer's own hub, by its LAN address, whether it
+  // still lets that login in; if not, make a new one.
+  if (token) {
+    const stillGood = await net.fetch(`${url.replace(/\/+$/, '')}/api/auth`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+      .then((r) => r.json()).then((a) => !(a && a.required && a.authorized === false)).catch(() => true);
+    if (!stillGood) {
+      bootLog('peer token no longer accepted here: pairing a new one');
+      token = '';
+    }
+  }
   if (!token) {
     // A one-time link from this computer's own hub, spent right away on a device of its own.
     const link = await (await net.fetch(`${local}/api/pairing/link`, { method: 'POST', signal: AbortSignal.timeout(5000) })).json();

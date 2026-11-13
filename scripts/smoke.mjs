@@ -3594,6 +3594,38 @@ async function scenarioMcp({ home, toolsMod }) {
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
       && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
   }
+  // Two gaps found after release: a stale sync login made the other machines skip this computer; task_finish summaries were not checked.
+  {
+    const ag = await readText('../src/agent.mjs');
+    const mainSrc = await readText('../desktop/main.mjs');
+    check('M28 task_finish: what it says when it finishes is held against the receipts like a plain answer (sent back once, the same one send-back per turn; flagged if it stays)',
+      ag.includes('const said = ctx.spokeThisStep ? ctx.spokenText : finalSummary;') && ag.includes("（系统核对）你收尾时说的和这一轮的实际操作对不上") && ag.includes('ctx.claimState = claimState;')
+      && ag.includes("audit({ kind: 'claims.unverified', botId: bot.id, turnId, problems, via: 'task_finish' })") && !/let claimNudged/.test(ag));
+    {
+      // A whole turn with a scripted model: a task_finish that claims an unwritten file is sent back, the corrected one is what shows.
+      const { AgentRuntime } = await import('../src/agent.mjs');
+      const wsT = path.join(home, 'workspace');
+      const seenT = [];
+      let nT = 0;
+      const modelT = { provider: 'fake', model: 'fake', complete: async (msgs) => {
+        seenT.push(msgs[msgs.length - 1]); nT += 1;
+        return { content: '', toolCalls: [{ id: `c${nT}`, name: 'task_finish', arguments: { summary: nT === 1 ? '已经把内容写好并保存到 tests-m28/fake.md 了。' : '更正：tests-m28/fake.md 没有写成。' } }] };
+      } };
+      const botT = { id: 'm28bot', name: '测', role: '', tools: [], skills: [], policy: {} };
+      const evT = [];
+      const rtT = new AgentRuntime({ config: { workspaceDir: wsT, policy: {} }, registry: toolsMod.createRegistry({ workspaceDir: wsT, config: {} }), model: modelT,
+        bots: { getBot: async () => botT, listBots: async () => [botT] }, memory: { renderMemoryDigest: async () => '' }, skills: { renderSkillsDigest: async () => '' },
+        approvals: { cancelForTurn() {}, request: () => Promise.resolve({ decision: 'approved' }) }, bus: { emit: (e) => evT.push(e) } });
+      rtT.record = async () => {};
+      const rT = await rtT.runTurn({ botId: 'm28bot', text: '写个文件' });
+      const shownT = evT.filter((e) => e.type === 'message').map((e) => e.text);
+      check('M28 task_finish in a real turn: the made-up summary never shows; it is sent back once and the corrected one is what the human gets',
+        rT.status === 'success' && nT === 2 && seenT.some((m) => m?.role === 'user' && /你收尾时说的和这一轮的实际操作对不上/.test(m.content || '')) && shownT.length === 1 && /没有写成/.test(shownT[0]),
+        JSON.stringify({ status: rT.status, nT, shownT }));
+    }
+    check('M28 machine sync: this computer checks its own sync login still works before handing it to the other machines, and makes a new one if not (they had taken it for offline and skipped it)',
+      mainSrc.includes("bootLog('peer token no longer accepted here: pairing a new one');") && mainSrc.includes('/api/auth`, { headers: { authorization: `Bearer ${token}` }'));
+  }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
     const net = await import('node:net');

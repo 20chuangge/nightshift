@@ -807,7 +807,10 @@ export class AgentRuntime {
       let fabricationNudged = false;
       // What this turn really did, for checking the final answer's claims.
       const receipts = [];
-      let claimNudged = false;
+      // One send-back per turn, shared by the final answer and a task_finish summary.
+      const claimState = { nudged: false };
+      ctx.receipts = receipts;
+      ctx.claimState = claimState;
       // Answers that came back empty (seen live: all 4096 output tokens spent thinking).
       let emptyNudges = 0;
       // Exact repeats of the same call (name + arguments) mean it is stuck.
@@ -897,8 +900,8 @@ export class AgentRuntime {
         // the answer carries a visible note.
         if (!response.toolCalls?.length && response.content && response.content.trim()) {
           const problems = checkClaims(String(response.content), receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(groupContext) });
-          if (problems.length && !claimNudged && steps < maxSteps - 1) {
-            claimNudged = true;
+          if (problems.length && !claimState.nudged && steps < maxSteps - 1) {
+            claimState.nudged = true;
             this.bus.emit({ type: 'message.retract', ...baseEvent });
             messages.push({ role: 'assistant', content: response.content || '' });
             messages.push({ role: 'user', content: `（系统核对）你的回答和这一轮的实际操作对不上：\n- ${problems.join('\n- ')}\n只更正上面这几条，其余说法不用改、也不要重做已经做完的事：做了的才说做了，没做到的直接说没做到；确实还需要做的，现在用工具去做，再按真实结果回答。` });
@@ -913,6 +916,7 @@ export class AgentRuntime {
         // What the model said in this very step: a task_finish in the same
         // step must not repeat it as a second message.
         ctx.spokeThisStep = Boolean(response.content && response.content.trim());
+        ctx.spokenText = ctx.spokeThisStep ? String(response.content) : '';
         const replyParts = !response.toolCalls?.length && !groupContext && !depth && !unattended && response.content ? splitReply(response.content) : [];
         if (replyParts.length > 1) {
           // The streamed bubble becomes the first part; the rest follow as their own messages.
@@ -1875,7 +1879,28 @@ export class AgentRuntime {
     });
 
     if (name === 'task_finish' && ok) {
-      const finalSummary = String(result?.summary || 'Done.');
+      let finalSummary = String(result?.summary || 'Done.');
+      // Held against this turn's receipts like a plain final answer: the words the
+      // human gets (what it said in this step, else the summary). A mismatch is
+      // sent back once - the turn goes on - and flagged if it stays.
+      if (ctx?.receipts) {
+        const said = ctx.spokeThisStep ? ctx.spokenText : finalSummary;
+        const problems = checkClaims(said, ctx.receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(ctx.group) });
+        if (problems.length && !ctx.claimState?.nudged) {
+          ctx.claimState.nudged = true;
+          messages.push({ role: 'user', content: `（系统核对）你收尾时说的和这一轮的实际操作对不上：\n- ${problems.join('\n- ')}\n只更正上面这几条，其余说法不用改、也不要重做已经做完的事：做了的才说做了，没做到的直接说没做到；确实还需要做的，现在用工具去做，然后再调用 task_finish。` });
+          return {};
+        }
+        if (problems.length) {
+          const note = `⚠ 核对：这些说法在这一轮的操作记录里找不到依据——${problems.join('；')}。`;
+          if (ctx.spokeThisStep) {
+            // Its words are already on screen: the note follows them.
+            this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
+            await this.record(bot.id, { kind: 'assistant', text: note, turnId, source: baseEvent.source, final: true, system: true });
+          } else finalSummary = `${finalSummary}\n\n${note}`;
+          audit({ kind: 'claims.unverified', botId: bot.id, turnId, problems, via: 'task_finish' }).catch(() => {});
+        }
+      }
       // The closing summary is ordinary assistant text: stream it like any other
       // answer so the UI does not have a special case for "task finished".
       // When the model already answered in the same step, that answer is the
