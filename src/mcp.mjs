@@ -79,6 +79,27 @@ export const MCP_CATALOG = [
     tokenUrl: 'https://github.com/settings/personal-access-tokens/new',
   },
   {
+    id: 'gitlab', name: 'GitLab', category: '开发', badge: 'GL', color: '#fc6d26',
+    desc: '项目、Issue、合并请求、流水线（GitLab 官方 MCP）', auth: 'oauth', transport: 'http', url: 'https://gitlab.com/api/v4/mcp',
+    help: '会打开 GitLab 的授权页，点「Authorize」（会提示这是未验证的动态应用，属正常）。用不了时，请顶层群组的所有者在群组设置里打开「允许访问 MCP 服务器」。自建的 GitLab 用下面「自己添加」，地址填 https://你的GitLab地址/api/v4/mcp。',
+  },
+  {
+    id: 'baidu-pan', name: '百度网盘', category: '存储', badge: '百', color: '#06a7ff',
+    desc: '查找、整理、分享网盘里的文件（百度网盘官方 MCP）', auth: 'token', transport: 'sse', url: 'https://mcp-pan.baidu.com/sse?access_token=${TOKEN}', secret: 'TOKEN',
+    help: '点「去获取」会打开百度的授权页，登录后点「授权」；跳转后的网址里 access_token= 后面那一串就是，复制贴到下面。它大约一个月过期，过期后重新获取一次。从本机上传文件到网盘这一项官方只在本地模式提供，这里没有。',
+    tokenUrl: 'https://openapi.baidu.com/oauth/2.0/authorize?response_type=token&client_id=QHOuRXiepJBMjtk0esLhrPoNlQyYd0mF&redirect_uri=oob&scope=basic,netdisk',
+  },
+  {
+    id: 'runway', name: 'Runway', category: '创作', badge: 'R', color: '#0b0b0b',
+    desc: '生成图片和视频（Runway 官方 MCP，用你账户里的额度）', auth: 'oauth', transport: 'http', url: 'https://mcp.runwayml.com/mcp',
+    help: '会打开 Runway 的登录授权页，登录后点允许。生成会用掉你 Runway 账户里的额度。',
+  },
+  {
+    id: 'suno', name: 'Suno', category: '创作', badge: 'S', color: '#1a1a1a',
+    desc: '写歌、生成音乐（Suno 官方 MCP，测试版）', auth: 'oauth', transport: 'http', url: 'https://api.suno.com/mcp',
+    help: 'Suno 的 MCP 还在内测：先在 suno.com/mcp 申请开通，通过后再点「连接」，在 Suno 的页面登录授权。生成的歌用你 Suno 套餐里的额度。',
+  },
+  {
     id: 'feishu', name: '飞书', category: '通信', badge: '飞', color: '#3370ff',
     desc: '消息、文档、多维表格、日历（飞书官方 MCP，测试版）', auth: 'feishu', transport: 'stdio', command: 'npx',
     args: ['-y', '@larksuiteoapi/lark-mcp', 'mcp', '-a', '${APP_ID}', '-s', '${APP_SECRET}'],
@@ -238,6 +259,71 @@ export class McpClient {
     }
   }
 
+  // --- HTTP + SSE (the older remote form, e.g. 百度网盘): answers come over one
+  // long GET stream; requests are POSTed to the address its first event names.
+  startSse({ timeoutMs = INIT_TIMEOUT_MS } = {}) {
+    const url = fillSecrets(this.cfg.url, this.secrets);
+    const headers = { accept: 'text/event-stream' };
+    for (const [k, v] of Object.entries(this.cfg.headers || {})) headers[k] = fillSecrets(v, this.secrets);
+    this.sseAbort = new AbortController();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Object.assign(new Error('连接后没有拿到消息地址'), { code: 'MCP_TIMEOUT' })), timeoutMs);
+      const gone = (why) => {
+        clearTimeout(timer);
+        const err = Object.assign(new Error(why), { code: 'MCP_EXITED' });
+        for (const p of this.pending.values()) p.reject(err);
+        this.pending.clear();
+        reject(err);
+        if (!this.closed) this.onNotify({ type: 'closed', error: err.message });
+      };
+      fetch(url, { headers, signal: this.sseAbort.signal }).then(async (res) => {
+        if (!res.ok) {
+          const text = (await res.text().catch(() => '')).slice(0, 200);
+          // 百度网盘 answers a bad or expired token with 400 "auth fail:token fail".
+          const why = res.status === 401 || res.status === 403 || /auth fail|token fail|invalid.?token|expired/i.test(text) ? '密钥不对、过期了或没有权限' : `HTTP ${res.status}`;
+          gone(`${why}${text ? `：${text}` : ''}`);
+          return;
+        }
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let k;
+          while ((k = buf.search(/\r?\n\r?\n/)) >= 0) {
+            const block = buf.slice(0, k);
+            buf = buf.slice(k).replace(/^\r?\n\r?\n/, '');
+            const lines = block.split(/\r?\n/);
+            const event = (lines.find((l) => l.startsWith('event:')) || 'event: message').slice(6).trim();
+            const data = lines.filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+            if (event === 'endpoint' && data) {
+              this.postUrl = new URL(data, url).toString();
+              clearTimeout(timer);
+              resolve();
+            } else if (data) this.receive(data);
+          }
+        }
+        if (!this.closed) gone('连接断开了');
+      }).catch((err) => { if (!this.closed) gone(`连接失败（${err.message}）`); });
+    });
+  }
+
+  async postSse(msg, { timeoutMs }) {
+    if (!this.postUrl) throw Object.assign(new Error('还没有连上'), { code: 'MCP_CLOSED' });
+    const headers = { 'content-type': 'application/json' };
+    for (const [k, v] of Object.entries(this.cfg.headers || {})) headers[k] = fillSecrets(v, this.secrets);
+    const res = await fetch(this.postUrl, { method: 'POST', headers, body: JSON.stringify(msg), signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok && res.status !== 202) {
+      const text = (await res.text().catch(() => '')).slice(0, 300);
+      throw Object.assign(new Error(`HTTP ${res.status}${text ? `：${text}` : ''}`), { code: 'MCP_HTTP', status: res.status });
+    }
+    // Some servers answer right here as well as on the stream.
+    const body = await res.text().catch(() => '');
+    if (body.trim().startsWith('{') || body.trim().startsWith('[')) this.receive(body);
+  }
+
   // --- JSON-RPC ---
   receive(line) {
     let msg;
@@ -260,6 +346,7 @@ export class McpClient {
 
   async send(msg, { timeoutMs = MCP_CALL_TIMEOUT_MS } = {}) {
     if (this.cfg.transport === 'http') return this.postHttp(msg, { timeoutMs });
+    if (this.cfg.transport === 'sse') return this.postSse(msg, { timeoutMs });
     return this.writeStdio(msg);
   }
 
@@ -286,7 +373,8 @@ export class McpClient {
   }
 
   async connect() {
-    if (this.cfg.transport !== 'http') this.startStdio();
+    if (this.cfg.transport === 'sse') await this.startSse();
+    else if (this.cfg.transport !== 'http') this.startStdio();
     const init = await this.request('initialize', {
       protocolVersion: MCP_PROTOCOL,
       capabilities: {},
@@ -317,6 +405,7 @@ export class McpClient {
     this.closed = true;
     for (const p of this.pending.values()) p.reject(Object.assign(new Error('已断开'), { code: 'MCP_CLOSED' }));
     this.pending.clear();
+    try { this.sseAbort?.abort(); } catch { /* gone */ }
     if (this.child && this.child.exitCode === null) {
       try {
         if (process.platform === 'win32') spawn('taskkill', ['/pid', String(this.child.pid), '/T', '/F'], { windowsHide: true });
@@ -363,7 +452,7 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
 /** What makes two connections the same app: the web address, or the package npx / uvx runs. */
 export function catalogKey(c) {
   if (!c) return '';
-  if (c.transport === 'http') return String(c.url || '').trim().replace(/\/+$/, '').toLowerCase();
+  if (c.transport === 'http' || c.transport === 'sse') return String(c.url || '').trim().replace(/\?.*$/, '').replace(/\/+$/, '').toLowerCase();
   const cmd = path.basename(String(c.command || '')).replace(/\.(cmd|exe)$/i, '').toLowerCase();
   if (!['npx', 'uvx', 'bunx', 'pnpx'].includes(cmd)) return '';
   const pkg = (c.args || []).map(String).find((a) => !a.startsWith('-'));
@@ -590,7 +679,11 @@ export function createMcpManager({
   }
 
   function clean(input, old = {}) {
-    const transport = (input.transport ?? old.transport) === 'http' ? 'http' : 'stdio';
+    const wanted = input.transport ?? old.transport;
+    const urlIn = String(input.url ?? old.url ?? '');
+    // A web address ending in /sse is the older HTTP+SSE form (百度网盘 and others).
+    const transport = wanted === 'sse' || (wanted === 'http' && /\/sse\/?(\?|$)/i.test(urlIn)) ? 'sse' : wanted === 'http' ? 'http' : 'stdio';
+    const web = transport !== 'stdio';
     const strMap = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).map(([k, v]) => [String(k).trim(), String(v ?? '')]).filter(([k]) => k).slice(0, 30));
     const cfg = {
       ...old,
@@ -599,14 +692,14 @@ export function createMcpManager({
       command: transport === 'stdio' ? String(input.command ?? old.command ?? '').trim().slice(0, 300) : '',
       args: transport === 'stdio' ? (Array.isArray(input.args) ? input.args : old.args || []).map(String).slice(0, 40) : [],
       env: transport === 'stdio' ? strMap(input.env ?? old.env) : {},
-      url: transport === 'http' ? String(input.url ?? old.url ?? '').trim().slice(0, 500) : '',
-      headers: transport === 'http' ? strMap(input.headers ?? old.headers) : {},
+      url: web ? urlIn.trim().slice(0, 500) : '',
+      headers: web ? strMap(input.headers ?? old.headers) : {},
       enabled: input.enabled !== undefined ? Boolean(input.enabled) : old.enabled !== false,
       trust: (input.trust ?? old.trust) === 'always' ? 'always' : 'ask',
       bots: Array.isArray(input.bots) ? input.bots.map(String).slice(0, 50) : (input.bots === 'all' ? 'all' : old.bots || 'all'),
     };
     if (transport === 'stdio' && !cfg.command) throw Object.assign(new Error('填一下要运行的命令'), { status: 400, code: 'MCP_NO_COMMAND' });
-    if (transport === 'http' && !/^https?:\/\//i.test(cfg.url)) throw Object.assign(new Error('网址要以 http:// 或 https:// 开头'), { status: 400, code: 'MCP_BAD_URL' });
+    if (web && !/^https?:\/\//i.test(cfg.url)) throw Object.assign(new Error('网址要以 http:// 或 https:// 开头'), { status: 400, code: 'MCP_BAD_URL' });
     return cfg;
   }
 

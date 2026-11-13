@@ -3525,6 +3525,51 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M4 mcp http: JSON and SSE answers both work; the session id and the filled-in header go with every later request',
       tools[0]?.name === 'hi' && r.content[0].text === 'hi there' && seen.every((x) => x.auth === 'Bearer gh-x') && seen.slice(1).every((x) => x.session === 'sess-1'), JSON.stringify(seen));
   }
+  // HTTP + SSE (the older remote form, e.g. 百度网盘): answers on one GET stream, requests POSTed to the address it names.
+  {
+    const seen = [];
+    let stream = null;
+    const srv = http.createServer(async (req, res) => {
+      const u = new URL(req.url, 'http://x');
+      if (req.method === 'GET' && u.pathname === '/sse') {
+        seen.push({ get: u.searchParams.get('access_token') });
+        if (u.searchParams.get('access_token') !== 'bd-tok') { res.writeHead(401); res.end('bad token'); return; }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('event: endpoint\ndata: /messages?sessionId=s9\n\n');
+        stream = res;
+        return;
+      }
+      let body = '';
+      for await (const c of req) body += c;
+      const msg = JSON.parse(body);
+      seen.push({ post: u.pathname + u.search, method: msg.method });
+      res.writeHead(202); res.end('Accepted');
+      if (msg.id === undefined) return;
+      const result = msg.method === 'initialize' ? { protocolVersion: msg.params.protocolVersion, capabilities: {}, serverInfo: { name: 'fake-sse' } }
+        : msg.method === 'tools/list' ? { tools: [{ name: 'file_list', description: 'List files.', inputSchema: { type: 'object', properties: {} } }] }
+          : { content: [{ type: 'text', text: '/我的资源' }] };
+      stream.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result })}\n\n`);
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const c = new mcp.McpClient({ transport: 'sse', url: `${base}/sse?access_token=\${TOKEN}` }, { secrets: { TOKEN: 'bd-tok' } });
+    await c.connect();
+    const tools = await c.listTools();
+    const r = await c.callTool('file_list', {});
+    c.close();
+    const bad = new mcp.McpClient({ transport: 'sse', url: `${base}/sse?access_token=\${TOKEN}` }, { secrets: { TOKEN: 'wrong' } });
+    let badErr = '';
+    try { await bad.connect(); } catch (e) { badErr = e.message; }
+    bad.close();
+    srv.close();
+    check('M22 mcp sse: the token goes in the address, requests go to the address the stream names, answers come back on the stream; a wrong token says so',
+      tools[0]?.name === 'file_list' && r.content[0].text === '/我的资源' && seen.some((x) => x.post === '/messages?sessionId=s9' && x.method === 'tools/call') && /密钥不对、过期了或没有权限/.test(badErr), JSON.stringify({ seen, badErr }));
+    const cat = Object.fromEntries(mcp.MCP_CATALOG.map((e) => [e.id, e]));
+    check('M22 catalog: GitLab, Runway and Suno sign in on their own pages (official MCP, OAuth); 百度网盘 is a token in the official SSE address, with where to get one',
+      cat.gitlab?.auth === 'oauth' && cat.gitlab.url === 'https://gitlab.com/api/v4/mcp' && cat.runway?.auth === 'oauth' && cat.runway.url === 'https://mcp.runwayml.com/mcp'
+      && cat.suno?.auth === 'oauth' && cat.suno.url === 'https://api.suno.com/mcp' && cat['baidu-pan']?.auth === 'token' && cat['baidu-pan'].transport === 'sse'
+      && cat['baidu-pan'].url.includes('access_token=${TOKEN}') && /openapi\.baidu\.com\/oauth/.test(cat['baidu-pan'].tokenUrl) && !cat.kling);
+  }
   // The API on the running hub: add, list without values, bad input, delete.
   {
     const bad = await api('/api/mcp', { method: 'POST', body: { name: 'x', transport: 'stdio' } });

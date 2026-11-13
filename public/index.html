@@ -11017,7 +11017,7 @@ function renderMcp() {
   if (!list) return;
   list.innerHTML = '';
   const q = String($('mcp-search')?.value || '').trim().toLowerCase();
-  const custom = mcpUi.servers.filter((s) => !s.catalogId).map((s) => ({ id: `custom-${s.id}`, name: s.name, category: '自己添加的', badge: s.name.slice(0, 1).toUpperCase(), color: '#7a5af8', desc: s.transport === 'http' ? hostOfUrl(s.url) : s.command, auth: 'custom', server: s }));
+  const custom = mcpUi.servers.filter((s) => !s.catalogId).map((s) => ({ id: `custom-${s.id}`, name: s.name, category: '自己添加的', badge: s.name.slice(0, 1).toUpperCase(), color: '#7a5af8', desc: s.transport !== 'stdio' ? hostOfUrl(s.url) : s.command, auth: 'custom', server: s }));
   const apps = [...(mcpUi.apps || []), ...custom].filter((a) => !q || `${a.name} ${a.desc} ${a.category}`.toLowerCase().includes(q));
   if (!apps.length) { list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
   const cats = [...new Set(apps.map((a) => a.category))];
