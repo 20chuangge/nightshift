@@ -2895,7 +2895,7 @@ async function scenarioCrashRecovery() {
   const opsMessages = await api('/api/bots/ops/messages');
   check(
     'the message log explains that the turn was interrupted',
-    opsMessages.json.some((m) => m.role === 'assistant' && String(m.text || '').includes('server stopped')),
+    opsMessages.json.some((m) => m.role === 'assistant' && String(m.text || '').includes('应用重启时这一轮被打断了')),
     opsMessages.text.slice(-300),
   );
   check(
@@ -5268,6 +5268,96 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('abilities: switching it back on clears the record', back.tools.includes('shell') && !(back.revokedTools || []).includes('shell'));
     const abil = (await api('/api/audit?view=changes&limit=50')).json || [];
     check('activity log: ability changes are recorded (removed, then added back)', abil.some((r) => r.kind === 'bot.abilities' && (r.removed || []).includes('shell')) && abil.some((r) => r.kind === 'bot.abilities' && (r.added || []).includes('shell')));
+  }
+  // M20 tasks: longer work in a 1:1 chat is a checklist that keeps itself going.
+  {
+    const PL = await import('../src/plans.mjs');
+    const { AgentRuntime } = await import('../src/agent.mjs');
+    const one = PL.makeTask({ botId: 'tb', request: 'x', steps: ['只有一步'] });
+    const t = PL.makeTask({ botId: 'tb', request: '做一份竞品调研', goal: '竞品调研', steps: ['查定价', '查功能', '写报告'] }).plan;
+    const noNote = PL.updateStep(t, { step: 2, status: 'blocked' });
+    PL.updateStep(t, { step: 1, status: 'done', note: 'research/pricing.md' });
+    check('M20 task: at least two steps; step 1 starts in progress, finishing one moves "in progress" on; blocked needs a question',
+      /至少要两步/.test(one.error || '') && t.tasks[0].status === 'done' && t.tasks[1].status === 'doing' && /blocked/.test(noNote.error || '') && /\[完成\] 查定价 —— research\/pricing\.md/.test(PL.taskText(t)));
+
+    const events = [];
+    const mk = () => {
+      const rt = new AgentRuntime({ config: { workspaceDir: path.join(home, 'workspace') }, registry: { schemasFor: () => [] }, model: {}, bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) } });
+      rt.record = async () => {};
+      rt.taskDelayMs = 0;
+      return rt;
+    };
+    const rt = mk();
+    const msgs = [];
+    const call = (name, args) => rt.soloToolCall({ call: { id: name, name, arguments: args }, bot: { id: 'tb', name: 'tb' }, messages: msgs, baseEvent: { botId: 'tb' }, turnId: 'turn1', request: '做一份竞品调研' });
+    await call('task_plan', { goal: '竞品调研', steps: ['查定价', '查功能', '写报告'] });
+    await call('task_step', { step: 1, status: 'done', note: 'pricing.md' });
+    const plan = rt.activeTask('tb');
+    check('M20 task_plan / task_step: the task is kept for the bot, saved, and its chat is told (bot.plan)',
+      plan?.kind === 'task' && plan.tasks[0].status === 'done' && events.some((e) => e.type === 'bot.plan' && e.botId === 'tb' && e.plan.id === plan.id) && Boolean(await PL.loadPlan(plan.id)));
+
+    // Turns end with steps open: the runtime goes on by itself, and stops when it is not moving.
+    const calls = [];
+    rt.runTurn = async (o) => {
+      calls.push(o);
+      if (calls.length === 1) PL.updateStep(rt.activeTask('tb'), { step: 2, status: 'done' });
+      await rt.afterTaskTurn('tb', 'success');
+    };
+    await rt.afterTaskTurn('tb', 'success');
+    for (let i = 0; i < 40 && calls.length < 4; i += 1) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 30));
+    check('M20 keeps going: with steps open the next turn starts by itself (no 继续 needed, not shown as the human\'s words); two turns without a finished step and it stops and says where it is stuck',
+      calls.length === 4 && calls.slice(0, 3).every((c) => c.source === 'task' && c.recordUser === false && /接着做下一个没完成的步骤/.test(c.text)) && /先停下来/.test(calls[3].text) && rt.tasks.get('tb').status === 'stalled',
+      JSON.stringify({ n: calls.length, st: rt.tasks.get('tb')?.status }));
+
+    // The human says go on: the step is picked up again with a fresh budget.
+    await call('task_step', { step: 3, status: 'doing' });
+    const revived = rt.activeTask('tb');
+    await call('task_step', { step: 3, status: 'blocked', note: '报告用中文还是英文？' });
+    const before = calls.length;
+    await rt.afterTaskTurn('tb', 'success');
+    await new Promise((r) => setTimeout(r, 30));
+    check('M20 the human: after a stop, marking a step again runs the task with a fresh budget; a step blocked on the human parks it (no turn starts) until they answer',
+      revived.status === 'waiting' && revived.continuations === 0 && revived.stalls === 0 && calls.length === before && /中文还是英文/.test(PL.taskText(revived)));
+    await call('task_step', { step: 3, status: 'done', note: 'report.md' });
+    check('M20 done: the last step done closes the task', rt.tasks.get('tb').status === 'done' && rt.activeTask('tb') === null);
+
+    // Busy with the human, or stopped by them: no turn of its own.
+    const rt2 = mk();
+    const c2 = [];
+    rt2.runTurn = async (o) => { c2.push(o); };
+    rt2.tasks = new Map([['tb2', PL.makeTask({ botId: 'tb2', request: 'y', steps: ['a', 'b'] }).plan]]);
+    rt2.active.set('busy', { botId: 'tb2' });
+    await rt2.continueTask('tb2');
+    rt2.active.delete('busy');
+    await rt2.afterTaskTurn('tb2', 'cancelled');
+    await new Promise((r) => setTimeout(r, 20));
+    check('M20 not on top of the human: while the bot is in a turn nothing extra starts; the stop button stops the task', c2.length === 0 && rt2.tasks.get('tb2').status === 'stopped');
+
+    // After a restart: an open task from the last day goes on; an old one stays put.
+    const fresh = PL.makeTask({ botId: 'tb3', request: 'z', goal: '重启后继续', steps: ['a', 'b'] }).plan;
+    await PL.savePlan(fresh);
+    const stale = PL.makeTask({ botId: 'tb4', request: 'z', steps: ['a', 'b'] }).plan;
+    await PL.savePlan(stale);
+    const staleFile = (await import('node:fs')).readdirSync(path.join(home, 'data', 'groups', 'plans')).find((n) => n.startsWith(stale.id));
+    const sf = path.join(home, 'data', 'groups', 'plans', staleFile);
+    const fsx = await import('node:fs');
+    fsx.writeFileSync(sf, JSON.stringify({ ...JSON.parse(fsx.readFileSync(sf, 'utf8')), updatedAt: new Date(Date.now() - 3 * 86400000).toISOString() }));
+    const rt3 = mk();
+    const c3 = [];
+    rt3.runTurn = async (o) => { c3.push(o); };
+    const n = await rt3.resumeTasks({ delayMs: 0 });
+    for (let i = 0; i < 20 && !c3.length; i += 1) await new Promise((r) => setTimeout(r, 10));
+    check('M20 restart: an open task from the last day is picked up again by itself; one left for days is not',
+      n >= 1 && c3.some((c) => c.botId === 'tb3' && /重启后继续/.test(c.text)) && !c3.some((c) => c.botId === 'tb4'), JSON.stringify({ n, who: c3.map((c) => c.botId) }));
+
+    const agentSrc = await readText('../src/agent.mjs');
+    const srv = await readText('../src/server.mjs');
+    const page = await readText('../public/index.html');
+    check('M20 wiring: only a direct chat gets the task tools; the prompt shows the checklist (or how to start one); a quick answer while busy includes the progress; the chat shows a live checklist card; the app resumes tasks on start',
+      agentSrc.includes('const boardTools = !groupContext ? (direct ? SOLO_TASK_TOOLS : []) :') && agentSrc.includes("'## Your current task (the human sees it as a checklist)'") && agentSrc.includes("'## Longer work'")
+      && agentSrc.includes('的进度：\\n${taskText(this.activeTask(bot.id))}') && srv.includes('runtime.resumeTasks()') && srv.includes("case 'plan':\n      return { ...base, role: 'plan', planId: record.planId")
+      && page.includes("if (ev.type === 'bot.plan') {") && page.includes("case 'plan': {") && agentSrc.includes('会在半分钟内自动接着做'));
   }
   // M19 replies: a long answer comes as several messages, the answer first; longer work starts with one line.
   {

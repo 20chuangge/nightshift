@@ -117,3 +117,81 @@ export function planText(plan, names) {
   const nameOf = (id) => names.get(id) || id;
   return plan.tasks.map((t, i) => `${i + 1}. ${t.title} —— ${nameOf(t.owner)}${t.needs.length ? `（等 ${t.needs.map((n) => n.slice(1)).join('、')} 完成）` : ''}`).join('\n');
 }
+
+/** Every saved plan (group boards and 1:1 tasks), for picking work back up after a restart. */
+export async function listPlans() {
+  const fsp = await import('node:fs/promises');
+  let names = [];
+  try { names = await fsp.readdir(DIR()); } catch { return []; }
+  const out = [];
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const p = await readJson(path.join(DIR(), n), null).catch(() => null);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 1:1 tasks: the same board, one owner (the bot), shown in its own chat.
+//
+// A bot given work of several steps writes them down (task_plan) and ticks them
+// off (task_step). When a turn ends with steps still open, the runtime starts
+// the next turn itself - the human does not have to say 继续 - until every step
+// is done, a step waits for the human, or it stops moving (agent.mjs).
+//   {id, kind:'task', botId, goal, request, status, continuations, stalls, lastDone, tasks:[...]}
+//   status: running | waiting | done | stopped | stalled
+// ---------------------------------------------------------------------------
+
+export function makeTask({ botId, request, goal, steps }) {
+  const list = (Array.isArray(steps) ? steps : []).map((s) => String(typeof s === 'object' && s ? s.title || '' : s || '').trim()).filter(Boolean).slice(0, 15);
+  if (list.length < 2) return { error: 'steps 至少要两步（一步就能做完的事不用列任务）' };
+  const now = nowIso();
+  return {
+    plan: {
+      id: uid('task'),
+      kind: 'task',
+      botId,
+      groupId: null,
+      coordinatorId: botId,
+      goal: String(goal || request || '').trim().slice(0, 300),
+      request: String(request || '').slice(0, 4000),
+      status: 'running',
+      continuations: 0,
+      stalls: 0,
+      lastDone: 0,
+      createdAt: now,
+      updatedAt: now,
+      tasks: list.map((title, i) => ({ id: `t${i + 1}`, title: title.slice(0, 160), owner: botId, needs: [], status: i === 0 ? 'doing' : 'todo', result: '' })),
+    },
+  };
+}
+
+const STEP_STATUS = { done: 'done', doing: 'doing', blocked: 'waiting_human', skipped: 'skipped', failed: 'failed' };
+
+/** task_step: one step's new state. -> {ok} or {error} */
+export function updateStep(plan, { step, status, note }) {
+  const ref = String(step ?? '').trim();
+  const t = plan.tasks.find((x) => x.id === ref) || plan.tasks[Number(ref) - 1];
+  if (!t) return { error: `没有第「${ref}」步（共 ${plan.tasks.length} 步）` };
+  const s = STEP_STATUS[String(status || '')];
+  if (!s) return { error: 'status 只能是 done / doing / blocked / skipped / failed' };
+  const text = String(note || '').trim().slice(0, 1500);
+  if (s === 'waiting_human' && !text) return { error: 'blocked 要在 note 里写清楚需要用户做什么或回答什么' };
+  t.status = s;
+  if (s === 'waiting_human') { t.question = text; t.answer = ''; plan.status = 'waiting'; } else if (text) t.result = text;
+  // The next open step is the one in progress.
+  if (s === 'done' || s === 'skipped' || s === 'failed') {
+    const next = plan.tasks.find((x) => x.status === 'todo');
+    if (next && !plan.tasks.some((x) => x.status === 'doing')) next.status = 'doing';
+  }
+  return { ok: true };
+}
+
+export const openSteps = (plan) => plan.tasks.filter((t) => t.status === 'todo' || t.status === 'doing' || t.status === 'waiting_human');
+export const doneSteps = (plan) => plan.tasks.filter((t) => t.status === 'done' || t.status === 'skipped').length;
+
+/** The checklist as the bot (and a progress answer) reads it. */
+export function taskText(plan) {
+  return plan.tasks.map((t, i) => `${i + 1}. [${TASK_STATUS_TEXT[t.status] || t.status}] ${t.title}${t.result ? ` —— ${t.result.slice(0, 200)}` : ''}${t.question ? `（问用户：${t.question.slice(0, 200)}${t.answer ? `；用户答：${t.answer.slice(0, 200)}` : ''}）` : ''}`).join('\n');
+}

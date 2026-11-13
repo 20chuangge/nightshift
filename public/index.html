@@ -5259,12 +5259,14 @@ state.plans = state.plans || new Map();
 function planCard(planId, fallbackText = '') {
   const card = el('div', 'plan-card');
   card.dataset.plan = planId;
-  card.appendChild(el('div', 'plan-head', '任务板'));
+  card.appendChild(el('div', 'plan-head', isGroupMode() ? '任务板' : '任务'));
   if (fallbackText) card.appendChild(el('div', 'plan-fallback', fallbackText));
   const known = state.plans.get(planId);
+  const url = isGroupMode() && state.groupId ? `/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`
+    : state.botId ? `/api/bots/${encodeURIComponent(state.botId)}/plans/${encodeURIComponent(planId)}` : '';
   if (known) fillPlanCard(card, known);
-  else if (state.groupId) {
-    api(`/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`)
+  else if (url) {
+    api(url)
       .then((r) => { if (r?.plan) { state.plans.set(planId, r.plan); fillPlanCard(card, r.plan); } })
       .catch(() => {});
   }
@@ -5273,10 +5275,12 @@ function planCard(planId, fallbackText = '') {
 
 function fillPlanCard(card, plan) {
   card.innerHTML = '';
+  const solo = plan.kind === 'task';
   const done = plan.tasks.filter((t) => t.status === 'done').length;
   const head = el('div', 'plan-head');
-  head.appendChild(el('span', 'plan-title', '任务板'));
-  const overall = plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止' : '进行中';
+  head.appendChild(el('span', 'plan-title', solo ? `任务：${plan.goal || ''}` : '任务板'));
+  const overall = plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止'
+    : plan.status === 'stalled' ? '停下了，等你说继续' : plan.status === 'replaced' ? '已换成新计划' : '进行中';
   head.appendChild(el('span', `plan-progress${plan.status === 'running' ? ' live' : ''}`, `${done}/${plan.tasks.length} · ${overall}`));
   card.appendChild(head);
   const bar = el('div', 'plan-bar');
@@ -5289,11 +5293,10 @@ function fillPlanCard(card, plan) {
     const row = el('details', `plan-task st-${(PLAN_STATUS[t.status] || PLAN_STATUS.todo)[1]}`);
     const sum = el('summary');
     const who = members.get(t.owner);
-    const av = who ? avatarNode(who, 22) : el('span', 'av g-empty');
-    sum.appendChild(av);
+    if (!solo) sum.appendChild(who ? avatarNode(who, 22) : el('span', 'av g-empty'));
     const text = el('span', 'plan-task-text');
     text.appendChild(el('b', '', `${i + 1}. ${t.title}`));
-    text.appendChild(el('small', '', `${who?.name || t.owner}${t.needs?.length ? ` · 等第 ${t.needs.map((n) => n.slice(1)).join('、')} 项` : ''}`));
+    if (!solo) text.appendChild(el('small', '', `${who?.name || t.owner}${t.needs?.length ? ` · 等第 ${t.needs.map((n) => n.slice(1)).join('、')} 项` : ''}`));
     sum.appendChild(text);
     sum.appendChild(el('span', 'plan-chip', (PLAN_STATUS[t.status] || PLAN_STATUS.todo)[0]));
     row.appendChild(sum);
@@ -6799,6 +6802,11 @@ function renderItem(item) {
     }
     case 'approval':
       return buildApprovalCard(item);
+    case 'plan': {
+      const row = el('div', 'row assistant card-row');
+      row.appendChild(planCard(item.planId, item.text));
+      return row;
+    }
     default:
       return el('div', 'status-line', item.text || item.role);
   }
@@ -8362,6 +8370,16 @@ function handleEvent(ev) {
     onPlanEvent(ev.plan);
     return;
   }
+  if (ev.type === 'bot.plan') {
+    // A bot's own task: a new one shows up in its open chat right away.
+    onPlanEvent(ev.plan);
+    if (!isGroupMode() && ev.botId === state.botId && ev.plan?.id && !document.querySelector(`.plan-card[data-plan="${cssEscape(ev.plan.id)}"]`)) {
+      if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
+      messagesEl.appendChild(renderItem({ role: 'plan', planId: ev.plan.id, text: '' }));
+      scrollToBottom();
+    }
+    return;
+  }
   if (ev.type === 'tool.progress') {
     // "Video queued, waited 2 min": shown in the working line, not the activity feed.
     if (chatKeyOf(ev) === currentChatKey()) showTyping(ev.botId || state.botId, ev.text || '正在处理…');
@@ -8884,7 +8902,7 @@ const ACTIVITY_KIND_LABELS = { turn: '对话', tool: '工具', approval: '审批
 
 function activityLabel(ev) {
   switch (ev.type) {
-    case 'turn.start': return { kind: 'turn', text: `${ev.botName || ev.botId}：${truncate(ev.text, 90)}` };
+    case 'turn.start': return { kind: 'turn', text: `${ev.botName || ev.botId}：${ev.source === 'task' ? (/先停下来/.test(ev.text || '') ? '任务没有进展，停下来说明情况' : '任务自动接着做') : truncate(ev.text, 90)}` };
     case 'turn.end': return { kind: 'turn', text: `${ev.botName || ev.botId} 结束（${runStatusLabel(ev.status)}${ev.steps ? `，${ev.steps} 步` : ''}）` };
     case 'tool.call': return { kind: 'tool', text: `${ev.botName || ev.botId} · ${toolNameLabel(ev.name)}${ev.risk ? `（${riskLabel(ev.risk)}风险）` : ''} ${decisionLabel(ev.decision)}` };
     case 'tool.result': return { kind: ev.ok ? 'tool' : 'error', text: `${toolNameLabel(ev.name)} ${ev.ok ? '完成' : '没成功'}${ev.denied ? '（被拒绝）' : ''}` };

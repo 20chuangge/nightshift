@@ -347,6 +347,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getPeers: () => refs.peers || null,
   });
   refs.runtime = runtime;
+  // Tasks a bot was working through before the app stopped go on by themselves.
+  runtime.resumeTasks().then((n) => { if (n) console.log(`[tasks] picking up ${n} open task(s) in a moment`); }).catch((err) => console.error('[tasks] resume:', err.message));
 
   // --- crash recovery ------------------------------------------------------
   // Restore cards a human had not answered yet, and explain every turn the
@@ -2415,6 +2417,14 @@ route('GET', /^\/api\/groups\/(?<id>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (_
   return { plan };
 });
 
+//   GET /api/bots/:id/plans/:planId -> {plan}   a bot's task (the checklist card in its chat)
+route('GET', /^\/api\/bots\/(?<id>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (_req, _res, { params, state }) => {
+  const live = state.runtime.tasks?.get(params.id);
+  const plan = live?.id === params.planId ? live : await loadPlan(params.planId);
+  if (!plan || plan.kind !== 'task' || plan.botId !== params.id) throw httpError(404, 'PLAN_NOT_FOUND', 'no such task');
+  return { plan };
+});
+
 route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { params, body, state }) => {
   const group = await groups.getGroup(params.id);
   if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
@@ -3492,6 +3502,8 @@ function toMessageItem(record, index) {
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };
+    case 'plan':
+      return { ...base, role: 'plan', planId: record.planId, text: record.text || '' };
     default:
       return { ...base, role: 'system', text: record.text || record.kind };
   }

@@ -1638,4 +1638,9 @@ window.DESK_I18N_EN = {
   "申请工具": "Ask for tools",
   "想申请加上一些工具": "Wants to be given some tools",
   "同意后这个机器人一直能用这些工具，可以在机器人设置里关掉；有风险的操作照样会先问你。": "Once you agree, this bot keeps these tools (switch them off in its settings); risky actions still ask you first.",
+  "任务：{0}": "Task: {0}",
+  "停下了，等你说继续": "Paused - say go on to continue",
+  "已换成新计划": "Replaced by a new plan",
+  "任务没有进展，停下来说明情况": "Task not moving: stopping to explain",
+  "任务自动接着做": "Task going on by itself",
 };

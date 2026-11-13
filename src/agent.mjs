@@ -225,7 +225,11 @@ function peersLine(peers, canHandOff) {
 }
 
 import { askPeerBot, fetchedNote } from './crossmachine.mjs';
-import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember } from './plans.mjs';
+import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember, listPlans, makeTask, updateStep, openSteps, doneSteps, taskText } from './plans.mjs';
+
+/** A 1:1 task keeps going by itself at most this many turns before it asks the human. */
+const TASK_MAX_CONTINUATIONS = 12;
+const TASK_OPEN = ['running', 'waiting', 'stalled'];
 import { isRequestable, toolLabel, toolsForText, abilitySummary } from './abilities.mjs';
 
 /**
@@ -286,6 +290,22 @@ const GROUP_TOOLS = {
     parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
   },
 };
+GROUP_TOOLS.task_plan = {
+  name: 'task_plan',
+  description: 'For work of several steps (about 3 or more, or anything that may take more than a few minutes): write the steps down first. The human sees them as a checklist; your progress is kept, and you are kept going turn after turn until every step is done (also after a restart) - nobody has to say 继续. Calling it again replaces the current task (when the human changes the plan). Quick things need no task.',
+  parameters: { type: 'object', properties: { goal: { type: 'string', description: 'The goal in one line, in the human\'s language.' }, steps: { type: 'array', items: { type: 'string' }, description: 'The steps in order, each a short concrete action with its result (e.g. "查 3 家竞品的定价，存到 research/pricing.md").' } }, required: ['goal', 'steps'] },
+};
+GROUP_TOOLS.task_step = {
+  name: 'task_step',
+  description: 'Mark a step of your current task: done (note = one line of what was made and where), doing, blocked (note = exactly what you need from the human; then ask it in your reply and stop - the task waits for their answer), skipped or failed (note = why).',
+  parameters: { type: 'object', properties: { step: { type: 'integer', description: 'Step number, 1-based.' }, status: { type: 'string', enum: ['done', 'doing', 'blocked', 'skipped', 'failed'] }, note: { type: 'string' } }, required: ['step', 'status'] },
+};
+GROUP_TOOLS.task_end = {
+  name: 'task_end',
+  description: 'Close your current task: done=true when it is finished, false when the human called it off or moved on to something else.',
+  parameters: { type: 'object', properties: { done: { type: 'boolean' }, note: { type: 'string' } }, required: ['done'] },
+};
+const SOLO_TASK_TOOLS = ['task_plan', 'task_step', 'task_end'];
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
 /**
@@ -408,6 +428,7 @@ export class AgentRuntime {
       `用户交给你的事（他的原话，不代表你已经在照做）：「${String(busy.task || '').slice(0, 300)}」。从开始到现在 ${secs(now - busy.startedAt)}，已经做完 ${busy.steps || 0} 步。`,
       step ? `你此刻实际在做的（唯一可信）：调用工具 ${step.name}，参数 ${JSON.stringify(step.args || {}).slice(0, 300)}，这一步已经 ${secs(now - step.startedAt)}，还没结束。` : '你此刻实际在做的（唯一可信）：没有在跑工具，在想下一步怎么做（模型在思考）。',
       busy.last ? `上一步的结果（节选）：${busy.last}` : '',
+      !group?.id && this.activeTask(bot.id) ? `任务「${this.activeTask(bot.id).goal}」的进度：\n${taskText(this.activeTask(bot.id))}` : '',
     ].filter(Boolean).join('\n') : '你手上没有正在做的事。';
     const model = (await this.modelFor(bot).catch(() => null)) || this.model;
     const baseEvent = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true, ...(group?.id ? { groupId: group.id } : {}) };
@@ -470,7 +491,7 @@ export class AgentRuntime {
   // system prompt
   // -------------------------------------------------------------------------
 
-  async buildSystemPrompt(bot, { unattended, group = null, groupRole = 'coordinator', depth = 0 }) {
+  async buildSystemPrompt(bot, { unattended, group = null, groupRole = 'coordinator', depth = 0, task = null }) {
     // Talking with the human directly (not a group, not a routine, not a teammate's request).
     const direct = !unattended && !group && !depth;
     const [memoryDigest, skillsDigest, toolDigest] = await Promise.all([
@@ -501,6 +522,21 @@ export class AgentRuntime {
       ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
+      ...(!direct ? [] : task ? [
+        '## Your current task (the human sees it as a checklist)',
+        `Goal: ${task.goal}`,
+        taskText(task),
+        task.status === 'waiting'
+          ? 'It waits for the human (a step is blocked on their answer). If this message answers it or says go on, mark that step doing or done with task_step and carry on; if they moved on to something else, call task_end(done=false) and answer what they asked.'
+          : task.status === 'stalled'
+            ? 'It stopped because it was not moving. If the human says go on (继续) or gives a new direction, mark the step you work on with task_step and carry on; if they moved on to something else, call task_end(done=false).'
+            : 'Work through the open steps in order. Mark each with task_step as soon as it is done (one line: what was made and where). A step that needs the human (a decision, a login, facts only they have): mark it blocked with the question and ask it. You are started again automatically while steps are open, so never stop to ask "要不要继续". When every step is done, give the human the result.',
+        '',
+      ] : [
+        '## Longer work',
+        'For work of several steps (about 3 or more, or anything that may take more than a few minutes), call task_plan with the steps first. The human sees a checklist, your progress is kept, and you are kept going until every step is done - nobody has to say 继续. Quick things need no task.',
+        '',
+      ]),
       '## One shared computer',
       `Every bot sees the same workspace directory: ${this.config.workspaceDir || 'workspace/'}.`,
       'A file you write is immediately visible to every other bot and to the human. Anything outside that directory is somebody else\'s data and needs a human approval.',
@@ -645,7 +681,9 @@ export class AgentRuntime {
     // speak in the group directly; a member reached by bot_message does not.
     const coordinatorTurn = Boolean(groupContext && (groupRole === 'coordinator' || groupRole === 'speaker' || groupRole === 'task'));
     // Task-board tools this turn may use.
-    const boardTools = !groupContext ? [] : groupRole === 'coordinator' && !noPlan && !kickoff ? ['group_plan'] : groupRole === 'task' ? ['task_handoff', 'task_ask_member', 'task_ask_human'] : [];
+    // Talking with the human directly: longer work becomes a task that keeps itself going.
+    const direct = !groupContext && !depth && !unattended;
+    const boardTools = !groupContext ? (direct ? SOLO_TASK_TOOLS : []) : groupRole === 'coordinator' && !noPlan && !kickoff ? ['group_plan'] : groupRole === 'task' ? ['task_handoff', 'task_ask_member', 'task_ask_human'] : [];
     let boardOutcome = null;
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
@@ -716,7 +754,13 @@ export class AgentRuntime {
     let waitingFor = null;
 
     try {
-      const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth });
+      // The human's words come in while a task waits on them: they are the answer.
+      const task = direct ? this.activeTask(bot.id) : null;
+      if (task && source !== 'task') {
+        const waiting = task.tasks.find((t) => t.status === 'waiting_human');
+        if (waiting && !waiting.answer) { waiting.answer = String(text).slice(0, 1000); await this.taskChanged(task); }
+      }
+      const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth, task });
       // A group turn replays the group transcript (not the bot's 1:1 history), so
       // the coordinator can follow the conversation it is answering.
       const history = coordinatorTurn
@@ -730,7 +774,7 @@ export class AgentRuntime {
         { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '') },
       ];
 
-      await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });
+      if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });
       if (coordinatorTurn && recordUser) {
         await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId });
       }
@@ -1071,6 +1115,7 @@ export class AgentRuntime {
         ...(waitingFor ? { waitingFor } : {}),
       });
       this.groupTurns.delete(turnId);
+      if (direct) this.afterTaskTurn(bot.id, status, waitingFor).catch(() => {});
     }
   }
 
@@ -1138,6 +1183,7 @@ export class AgentRuntime {
    * the outcome ends the turn and tells the caller what to do next.
    */
   async boardToolCall({ call, bot, group, messages, baseEvent, turnId, request }) {
+    if (SOLO_TASK_TOOLS.includes(call.name)) return this.soloToolCall({ call, bot, messages, baseEvent, turnId, request });
     const args = call.arguments || {};
     const members = group.members || [];
     let result;
@@ -1169,6 +1215,116 @@ export class AgentRuntime {
     this.pushToolResult(messages, call, result);
     this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name: call.name, args: truncateJson(args, 2000), ok: !result.error, risk: 'LOW', result });
     return board ? { board } : {};
+  }
+
+  // ---- 1:1 tasks ------------------------------------------------------------
+
+  /** The bot's open task (running, waiting for the human, or stopped for lack of progress), or null. */
+  activeTask(botId) {
+    const t = this.tasks?.get(botId);
+    return t && TASK_OPEN.includes(t.status) ? t : null;
+  }
+
+  /** A task changed: save it and tell the bot's windows. */
+  async taskChanged(plan) {
+    await savePlan(plan).catch(() => {});
+    this.bus.emit({ type: 'bot.plan', botId: plan.botId, plan });
+  }
+
+  async soloToolCall({ call, bot, messages, baseEvent, turnId, request }) {
+    const args = call.arguments || {};
+    this.tasks = this.tasks || new Map();
+    const cur = this.activeTask(bot.id);
+    let result;
+    if (call.name === 'task_plan') {
+      const made = makeTask({ botId: bot.id, request, goal: args.goal, steps: args.steps });
+      if (made.error) result = { error: { code: 'BAD_TASK', message: made.error } };
+      else {
+        if (cur) { cur.status = 'replaced'; await this.taskChanged(cur); }
+        this.tasks.set(bot.id, made.plan);
+        await this.record(bot.id, { kind: 'plan', planId: made.plan.id, text: `任务：${made.plan.goal}`, turnId });
+        await this.taskChanged(made.plan);
+        result = { ok: true, steps: made.plan.tasks.length, next: 'Start on step 1 now. Mark each step with task_step when it is done; you are started again automatically until every step is done.' };
+      }
+    } else if (!cur) {
+      result = { error: { code: 'NO_TASK', message: 'there is no open task: call task_plan first' } };
+    } else if (call.name === 'task_step') {
+      const r = updateStep(cur, args);
+      if (r.error) result = { error: { code: 'BAD_STEP', message: r.error } };
+      else {
+        // The human answered or said go on: the task runs again, with a fresh budget.
+        if (args.status !== 'blocked' && (cur.status === 'waiting' || cur.status === 'stalled')) {
+          cur.status = 'running'; cur.stalls = 0; cur.continuations = 0; cur.lastDone = doneSteps(cur);
+        }
+        const open = openSteps(cur).length;
+        if (!open && cur.status === 'running') cur.status = 'done';
+        await this.taskChanged(cur);
+        result = {
+          ok: true,
+          open,
+          ...(cur.status === 'waiting' ? { next: 'Ask the human your question in your reply now and stop; the task waits for their answer.' } : open ? {} : { next: 'Every step is done: give the human the result (what was made, where it is).' }),
+        };
+      }
+    } else {
+      cur.status = args.done ? 'done' : 'stopped';
+      if (args.note) cur.endNote = String(args.note).slice(0, 500);
+      await this.taskChanged(cur);
+      result = { ok: true };
+    }
+    this.pushToolResult(messages, call, result);
+    this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name: call.name, args: truncateJson(args, 2000), ok: !result.error, risk: 'LOW', result });
+    await this.record(bot.id, { kind: 'tool', name: call.name, args, ok: !result.error, risk: 'LOW', output: result, turnId });
+    return {};
+  }
+
+  /** A direct turn ended: keep an open task going, park it, or stop it. */
+  async afterTaskTurn(botId, status, waitingFor) {
+    const plan = this.activeTask(botId);
+    if (!plan) return;
+    if (status === 'cancelled') { plan.status = 'stopped'; await this.taskChanged(plan); return; }
+    if (plan.status !== 'running') return;
+    if (waitingFor) { plan.status = 'waiting'; await this.taskChanged(plan); return; }
+    if (status === 'failed') return; // a model error: the next message (or a restart) picks it up
+    const timer = setTimeout(() => this.continueTask(botId).catch((err) => this.bus.emit({ type: 'error', botId, message: err.message })), this.taskDelayMs ?? 1500);
+    timer.unref?.();
+  }
+
+  /** Start the next turn of an open task, or stop it when it is not moving. */
+  async continueTask(botId) {
+    const plan = this.activeTask(botId);
+    if (!plan || plan.status !== 'running') return;
+    // The human is talking to it right now: that turn's end comes back here.
+    if ([...this.active.values()].some((info) => info.botId === botId)) return;
+    if (!openSteps(plan).length) { plan.status = 'done'; await this.taskChanged(plan); return; }
+    const done = doneSteps(plan);
+    plan.stalls = done > (plan.lastDone || 0) ? 0 : (plan.stalls || 0) + 1;
+    plan.lastDone = done;
+    let text;
+    if (plan.stalls >= 2 || (plan.continuations || 0) >= TASK_MAX_CONTINUATIONS) {
+      plan.status = 'stalled';
+      await this.taskChanged(plan);
+      text = `（系统自动发起，用户没有发新消息）任务「${plan.goal}」${plan.stalls >= 2 ? '连续两轮没有新完成的步骤' : `已经自动接着做了 ${plan.continuations} 轮`}，先停下来。进度：\n${taskText(plan)}\n用两三句话告诉用户：做到哪了、卡在哪、需要他做什么；他回一句「继续」或给个新方向就会接着做。这一轮不要再调用工具。`;
+    } else {
+      plan.continuations = (plan.continuations || 0) + 1;
+      await this.taskChanged(plan);
+      text = `（任务继续，系统自动发起，用户没有发新消息）目标：${plan.goal}\n进度：\n${taskText(plan)}\n接着做下一个没完成的步骤，不用开场白，不要重做已经完成的步骤；每做完一步马上用 task_step 标记。全部做完后给用户最终结果（结果本身和文件路径）。`;
+    }
+    await this.runTurn({ botId, text, source: 'task', recordUser: false });
+  }
+
+  /** After a restart: open tasks from the last day are picked up again. */
+  async resumeTasks({ delayMs = 20000 } = {}) {
+    this.tasks = this.tasks || new Map();
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    const open = (await listPlans()).filter((p) => p.kind === 'task' && TASK_OPEN.includes(p.status) && Date.parse(p.updatedAt || 0) > cutoff)
+      .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
+    for (const p of open) this.tasks.set(p.botId, p); // the newest per bot wins
+    const running = [...this.tasks.values()].filter((p) => p.status === 'running');
+    for (const p of running) {
+      const timer = setTimeout(() => this.continueTask(p.botId).catch(() => {}), delayMs);
+      timer.unref?.();
+    }
+    return running.length;
   }
 
   /** The task board a group is working through (or waiting on), from memory or disk. */
@@ -1790,6 +1946,10 @@ export async function recoverInterruptedTurns({ bus = null } = {}) {
 
   const recovered = [];
   const doneFiles = [];
+  // A bot with an open task goes on by itself (resumeTasks): say that instead.
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  const openTasks = new Map((await listPlans().catch(() => []))
+    .filter((p) => p.kind === 'task' && p.status === 'running' && Date.parse(p.updatedAt || 0) > cutoff).map((p) => [p.botId, p]));
 
   for (const name of names) {
     const file = path.join(P.turnsDir, name);
@@ -1817,7 +1977,9 @@ export async function recoverInterruptedTurns({ bus = null } = {}) {
           await appendJsonl(sessionFile(record.botId), {
             ts: recoveredAt,
             kind: 'assistant',
-            text: `[Recovered after restart] ${RECOVERY_NOTE}`,
+            text: openTasks.has(record.botId)
+              ? `应用重启时这一轮被打断了。任务「${openTasks.get(record.botId).goal}」会在半分钟内自动接着做，已经写好的文件都还在。`
+              : '应用重启时这一轮被打断了，没有做完，也不会自动重做。已经写好的文件都还在工作区里；需要的话再跟我说一次。如果它当时在等你批准，那张卡片还在「动态」里。',
             system: true,
             recovered: true,
             turnId: record.id,

@@ -567,7 +567,8 @@ export function createFeishu(o) {
       // A background job (a finished video) reports to the bot: pass it on to
       // the Feishu chat that last talked to that bot, if that was recent.
       const recent = lastChat.get(ev.botId);
-      if (ev.source === 'media' && recent && Date.now() - recent.at < 6 * 3600 * 1000) {
+      // A task that went on by itself reports to the same chat too.
+      if ((ev.source === 'media' || ev.source === 'task') && recent && Date.now() - recent.at < 6 * 3600 * 1000) {
         const texts = [];
         // the texts of that turn were not collected; the summary is enough here
         deliver({ chatId: recent.chatId }, texts, ev.summary).catch(() => {});
