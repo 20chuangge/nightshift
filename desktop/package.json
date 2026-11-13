@@ -1,13 +1,13 @@
 {
   "name": "desk-desktop",
-  "productName": "Nightshift",
-  "version": "1.2.145",
-  "description": "Nightshift - AI bots that put your idle computers to work",
+  "productName": "Evenlight",
+  "version": "1.2.148",
+  "description": "Evenlight - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
   "type": "module",
   "author": {
-    "name": "Nightshift"
+    "name": "Evenlight"
   },
   "license": "MIT",
   "scripts": {

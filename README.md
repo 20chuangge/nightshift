@@ -1,6 +1,8 @@
-# Nightshift · 夜班
+# 长明 · Evenlight
 
-你睡觉，它值夜班。一个有自己电脑的 AI 助理：说一句要做什么，它在电脑上把事情办完。
+> 1.2.146 起改名为「长明 · Evenlight」，之前叫 Nightshift · 夜班；数据和自动更新都不受影响。网站与使用文档：https://20chuangge.github.io/nightshift/
+
+你休息时，灯还亮着。一个有自己电脑的 AI 助理：说一句要做什么，它在电脑上把事情办完。
 
 **官网和下载：https://20chuangge.github.io/nightshift/**
 
@@ -14,7 +16,7 @@
 
 ## 下载
 
-到 [Releases](../../releases) 下载 `Nightshift-Setup-x.y.z.exe`（安装版）或 `Nightshift-Portable-x.y.z.exe`（免安装）。首次打开后在「设置 → 模型」填一个模型密钥（DeepSeek、通义、Kimi、OpenAI 等 OpenAI 兼容接口都行）。
+到 [Releases](../../releases) 下载 `Evenlight-Setup-x.y.z.exe`（安装版）或 `Evenlight-Portable-x.y.z.exe`（免安装）。首次打开后在「设置 → 模型」填一个模型密钥（DeepSeek、通义、Kimi、OpenAI 等 OpenAI 兼容接口都行）。
 
 ## 从源码运行
 
@@ -41,7 +43,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 1036 assertions, boots the real server on a free port
+npm run smoke                  # 1043 assertions, boots the real server on a free port
 
 # 2) 桌面应用（Electron 壳）
 npm run desktop                # 开发模式，等同 npm start 但带窗口/托盘
