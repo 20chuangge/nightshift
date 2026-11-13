@@ -352,6 +352,37 @@ export function splitReply(text, { min = 350, target = 600, maxParts = 5 } = {})
   return parts.length > 1 ? parts : [t];
 }
 
+/**
+ * A step that reaches Nightshift's own secrets or internals: the vault (where
+ * app codes and logins live) or its own modules run from a script. Seen on
+ * Ubuntu: a bot cleaning a mailbox wrote a script that imported the mail
+ * module and took the mailbox code out of the vault, so thousands of moves ran
+ * as one unasked shell command instead of through the app's tools (which ask).
+ * -> a reason when it does, else ''.
+ */
+const escRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const HUB_SRC_DIR = (() => {
+  try { return path.dirname(decodeURIComponent(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1')); } catch { return ''; }
+})();
+// Nightshift's own module files (a project of the human's has src/*.mjs of its own).
+const HUB_MODULES = (() => {
+  try { return fsSync.readdirSync(HUB_SRC_DIR).filter((f) => f.endsWith('.mjs')).map((f) => escRe(f.slice(0, -4))); } catch { return ['agent', 'mail', 'mcp', 'vault', 'tools', 'server']; }
+})();
+const HUB_ROOTS = ['desk-hub', ...(HUB_SRC_DIR ? [path.dirname(HUB_SRC_DIR), path.dirname(HUB_SRC_DIR).replace(/\\/g, '/')] : [])].map(escRe);
+const HUB_MODULE = new RegExp(String.raw`\b(import|require)\b[\s\S]{0,400}?(${HUB_ROOTS.join('|')}|[\\/]src[\\/](${HUB_MODULES.join('|')})\.mjs)`, 'i');
+
+export function reachesSecrets(name, args = {}) {
+  const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|\brevealVault\b|\bputVault\b)/i;
+  const text = name === 'shell' ? String(args.command || '')
+    : name === 'fs_write' ? `${args.path || ''}\n${args.content || ''}`
+      : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')
+        : '';
+  if (!text) return '';
+  if (SECRET_FILES.test(text)) return '要碰夜班保险箱里的密钥或授权码（vault），每次都先问你';
+  if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用夜班自己的模块（会绕过「连接应用」的审批），每次都先问你';
+  return '';
+}
+
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
     this.config = config;
@@ -586,6 +617,8 @@ export class AgentRuntime {
           '- One turn = at most one short message, delivered when you have the result or need a decision. If you must ask something, ask it in that message and stop.',
         ]),
       '- Read the workspace before assuming what is in it.',
+      '- A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one: do not import Nightshift\'s own modules or read its vault, secrets or codes - that skips the human\'s approval. If a tool is too slow for a big job, use it in batches.',
+      '- Bulk changes to someone\'s data (mail, files, records): change only what should change. Never move everything out and then move the keepers back; check the list of what you will touch first.',
       '- Save durable facts with memory_write (scope "shared" for things the whole team should know).',
       '- Save a procedure that worked as a skill with skill_save, so the next run is cheaper.',
       bot.primary
@@ -709,6 +742,8 @@ export class AgentRuntime {
     const maxTurnMs = Math.max(Number(bot.policy?.maxTurnMs) || 0, 30 * 60 * 1000);
     const deadline = Date.now() + maxTurnMs;
     const startedAt = nowIso();
+    // A task this turn finished while the step limit cut its answer off (set below).
+    let wrapUpTask = null;
 
     // Crash-recovery breadcrumb: write the turn as "running" *before* anything
     // can block, so a hard kill still leaves an explanation behind. The write is
@@ -1065,10 +1100,19 @@ export class AgentRuntime {
         summary = `Stopped after ${maxSteps} steps.`;
         // Say it in the chat, not only in the status row: a silent stop looks
         // like a crash.
-        const note =
-          `这件事已经做了 ${steps} 步还没完成，我先停一下，免得白白消耗额度。\n\n`
-          + `最后几步：${last}\n\n`
-          + '如果还要继续，回一句「继续」我就接着做；如果方向不对，告诉我该改哪里。';
+        // With a task the note says what really happens next (seen: every step
+        // done, yet "回一句「继续」" - and an open task goes on by itself anyway).
+        const tsk = direct ? this.tasks?.get(bot.id) : null;
+        const open = tsk ? openSteps(tsk).length : 0;
+        const finishedHere = tsk && tsk.status === 'done' && !tsk.summarized && Date.parse(tsk.updatedAt || 0) >= Date.parse(startedAt);
+        if (finishedHere) wrapUpTask = tsk;
+        const note = tsk && tsk.status === 'running' && open
+          ? `这一轮已经做了 ${steps} 步，到了单轮的上限。任务「${tsk.goal}」还有 ${open} 步没做完，我会自动接着做，不用回「继续」。`
+          : finishedHere
+            ? `任务「${tsk.goal}」清单上的 ${tsk.tasks.length} 步都做完了。这一轮操作比较多，到了单轮 ${maxSteps} 步的上限，我接着把结果整理给你。`
+            : `这件事已经做了 ${steps} 步还没完成，我先停一下，免得白白消耗额度。\n\n`
+              + `最后几步：${last}\n\n`
+              + '如果还要继续，回一句「继续」我就接着做；如果方向不对，告诉我该改哪里。';
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
@@ -1135,6 +1179,20 @@ export class AgentRuntime {
       });
       this.groupTurns.delete(turnId);
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor).catch(() => {});
+      // The task got done but the step limit cut the answer off: one more short
+      // turn tells the human the result, without them having to ask.
+      if (wrapUpTask) {
+        wrapUpTask.summarized = true;
+        this.taskChanged(wrapUpTask).catch(() => {});
+        const goal = wrapUpTask.goal;
+        const timer = setTimeout(() => this.runTurn({
+          botId: bot.id,
+          source: 'task',
+          recordUser: false,
+          text: `（系统自动发起，用户没有发新消息）任务「${goal}」清单上的步骤都完成了，但上一轮到了步数上限，没来得及把结果告诉用户。进度：\n${taskText(wrapUpTask)}\n现在用几句话告诉用户：做成了什么、结果在哪里（文件路径、文件夹、数量），有没有没做成的。不要再调用工具。`,
+        }).catch(() => {}), this.taskDelayMs ?? 1500);
+        timer.unref?.();
+      }
     }
   }
 
@@ -1702,6 +1760,10 @@ export class AgentRuntime {
       verdict = { ...verdict, decision: DECISION.ASK, risk: want.includes('shell') || want.includes('fs_delete') || want.includes('desktop_ui') ? 'HIGH' : 'MEDIUM',
         reason: `给「${bot.name}」加上：${want.map(toolLabel).join('、') || '（都已经有了）'}。原因：${String(args?.reason || '').trim().replace(/[。.！!；;]+$/, '').slice(0, 200) || '没说'}。同意后一直有效，可以在机器人设置里关掉；有风险的操作照样会先问你。` };
     }
+    // Nightshift's own secrets and modules: asked every time - on a remote
+    // machine, for a trusted bot, at any level. Only "deny" stays a deny.
+    const secretReason = reachesSecrets(name, args);
+    if (secretReason && verdict.decision !== DECISION.DENY) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason };
     if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
     }

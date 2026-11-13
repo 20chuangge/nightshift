@@ -619,13 +619,13 @@ const TOOLS = [
   },
   {
     name: 'mail_move',
-    description: 'Move mail to another folder, e.g. to: "垃圾邮件" (spam), "已删除" (trash), "归档" (archive) or any folder mail_folders lists. folder = where it is now (default INBOX). Up to 500 uids at once.',
+    description: 'Move mail to another folder, e.g. to: "垃圾邮件" (spam), "已删除" (trash), "归档" (archive) or any folder mail_folders lists. folder = where it is now (default INBOX). Up to 500 uids at once. When cleaning up, move only the mail that should go - never move everything out and then move the keepers back.',
     inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string' }, to: { type: 'string' } }, required: ['uids', 'to'] },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
   {
     name: 'mail_delete',
-    description: 'Delete mail: it goes to the trash folder (已删除), where it can still be restored. permanent=true removes it for good - only when the human explicitly asked for permanent deletion; mail already in the trash is always removed for good. Up to 500 uids at once.',
+    description: 'Delete mail: it goes to the trash folder (已删除), where it can still be restored. permanent=true removes it for good - only when the human explicitly asked for permanent deletion; mail already in the trash is always removed for good. Up to 500 uids at once. Delete only the mail that should go; never delete everything and then restore the keepers.',
     inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string', description: 'Where the mail is now, default INBOX.' }, permanent: { type: 'boolean' } }, required: ['uids'] },
     annotations: { readOnlyHint: false, destructiveHint: true },
   },

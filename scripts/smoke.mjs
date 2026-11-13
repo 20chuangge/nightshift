@@ -3623,8 +3623,58 @@ async function scenarioMcp({ home, toolsMod }) {
         rT.status === 'success' && nT === 2 && seenT.some((m) => m?.role === 'user' && /你收尾时说的和这一轮的实际操作对不上/.test(m.content || '')) && shownT.length === 1 && /没有写成/.test(shownT[0]),
         JSON.stringify({ status: rT.status, nT, shownT }));
     }
+    {
+      // A turn that reaches the 80-step limit: the note says what really happens next.
+      const { AgentRuntime } = await import('../src/agent.mjs');
+      const wsL = path.join(home, 'workspace');
+      const runLimit = async (stepsDone) => {
+        let n = 0;
+        const model = { provider: 'fake', model: 'fake', complete: async () => {
+          n += 1;
+          if (n === 1) return { content: '', toolCalls: [{ id: 'p', name: 'task_plan', arguments: { goal: '整理收件箱', steps: ['挑出广告', '删掉广告', '汇报'] } }] };
+          if (n - 1 <= stepsDone) return { content: '', toolCalls: [{ id: `s${n}`, name: 'task_step', arguments: { step: n - 1, status: 'done', note: 'ok' } }] };
+          return { content: '', toolCalls: [{ id: `l${n}`, name: 'fs_list', arguments: { path: `nowhere-${n}` } }] };
+        } };
+        const botL = { id: `m29bot${stepsDone}`, name: '测', role: '', tools: ['fs_list'], skills: [], policy: {} };
+        const ev = [];
+        const rt = new AgentRuntime({ config: { workspaceDir: wsL, policy: {} }, registry: toolsMod.createRegistry({ workspaceDir: wsL, config: {} }), model,
+          bots: { getBot: async () => botL, listBots: async () => [botL] }, memory: { renderMemoryDigest: async () => '' }, skills: { renderSkillsDigest: async () => '' },
+          approvals: { cancelForTurn() {}, request: () => Promise.resolve({ decision: 'approved' }) }, bus: { emit: (e) => ev.push(e) } });
+        rt.record = async () => {};
+        rt.taskDelayMs = 0;
+        const res = await rt.runTurn({ botId: botL.id, text: '整理收件箱' });
+        const next = [];
+        rt.runTurn = async (o) => { next.push(o); return {}; };
+        await new Promise((r) => setTimeout(r, 50));
+        return { res, note: ev.filter((e) => e.type === 'message' && e.system).map((e) => e.text).join(' | '), next, task: rt.tasks.get(botL.id) };
+      };
+      const done = await runLimit(3);
+      const open = await runLimit(1);
+      check('M29 step limit with a task: every step done -> it says so and a short turn tells the result (no 「回一句继续」); steps still open -> it says how many and goes on by itself',
+        done.res.status === 'max_steps' && /清单上的 3 步都做完了.*接着把结果整理给你/.test(done.note) && !/回一句「继续」/.test(done.note)
+        && done.next.length === 1 && done.next[0].source === 'task' && /不要再调用工具/.test(done.next[0].text) && done.task.summarized === true
+        && open.res.status === 'max_steps' && /还有 2 步没做完，我会自动接着做，不用回「继续」/.test(open.note) && open.next.length === 1 && /接着做下一个没完成的步骤/.test(open.next[0].text),
+        JSON.stringify({ d: done.note, o: open.note, dn: done.next.length, on: open.next.length }));
+    }
     check('M28 machine sync: this computer checks its own sync login still works before handing it to the other machines, and makes a new one if not (they had taken it for offline and skipped it)',
       mainSrc.includes("bootLog('peer token no longer accepted here: pairing a new one');") && mainSrc.includes('/api/auth`, { headers: { authorization: `Bearer ${token}` }'));
+  }
+  // Seen on Ubuntu: a bot scripted around the mail app (imported Nightshift's mail module, took the code out of the vault) - no approval at all.
+  {
+    const { reachesSecrets } = await import('../src/agent.mjs');
+    const ag = await readText('../src/agent.mjs');
+    const mailSrc = await readText('../src/mail.mjs');
+    const ask = (n, a) => Boolean(reachesSecrets(n, a));
+    check('M30 secrets: reading the vault (files or functions) or importing Nightshift\'s own modules from a script or shell always asks - on a remote machine, for a trusted bot, at any level; reading the code, the human\'s own projects and ordinary commands do not',
+      ask('shell', { command: "cat > /tmp/chk.mjs <<'EOF'\nconst { revealVault } = await import(HUB + '/src/vault.mjs')\nEOF" })
+      && ask('shell', { command: "node -e \"import('/opt/desk-hub/src/mail.mjs')\"" }) && ask('fs_write', { path: 'tools/x.mjs', content: "import { Imap } from '../../src/mail.mjs';" })
+      && ask('fs_read', { path: '/opt/desk-hub/data/vault.key' }) && ask('shell', { command: 'cat data/secrets.json' })
+      && !ask('shell', { command: 'sed -n 1,20p /opt/desk-hub/src/mail.mjs' }) && !ask('fs_write', { path: 'myapp/index.mjs', content: "import { render } from './src/render-page.mjs';" })
+      && !ask('shell', { command: 'python3 sort.py && node build.mjs' }) && !ask('fs_write', { path: 'notes.md', content: '整理了邮箱' })
+      && ag.includes("if (secretReason && verdict.decision !== DECISION.DENY) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason };"));
+    check('M30 rules: a connected app is used only through its tools (never scripted around); bulk changes touch only what should change (never move everything out and the keepers back) - in the bot\'s rules and on the mail tools',
+      ag.includes('A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one') && ag.includes('Never move everything out and then move the keepers back')
+      && mailSrc.includes('never move everything out and then move the keepers back') && mailSrc.includes('never delete everything and then restore the keepers'));
   }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
