@@ -1,6 +1,6 @@
 {
   "name": "personal-assistant",
-  "version": "1.2.126",
+  "version": "1.2.128",
   "private": true,
   "type": "module",
   "description": "Nightshift - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
