@@ -3570,6 +3570,13 @@ async function scenarioMcp({ home, toolsMod }) {
       && cat.suno?.auth === 'oauth' && cat.suno.url === 'https://api.suno.com/mcp' && cat['baidu-pan']?.auth === 'token' && cat['baidu-pan'].transport === 'sse'
       && cat['baidu-pan'].url.includes('access_token=${TOKEN}') && /openapi\.baidu\.com\/oauth/.test(cat['baidu-pan'].tokenUrl) && !cat.kling);
   }
+  // The screen opens without waiting on the VNC server (measured on Ubuntu: 12 s cold, 4 s warm).
+  {
+    const dsk = await readText('../src/desktops.mjs');
+    check('M25 desktop viewer: ports are checked by reading /proc/net/tcp (a test connection held up the real viewer ~9 s); x11vnc runs threaded (single-threaded it answered a new viewer 4.6 s late; threaded 0.1 s), without naps or DNS lookups',
+      dsk.includes('function portListening(port)') && dsk.includes("for (const f of ['/proc/net/tcp', '/proc/net/tcp6'])")
+      && !/for \(let i = 0; i < 50 && !\(await portOpen\(/.test(dsk) && dsk.includes("'-nonap', '-nolookup', '-threads'"));
+  }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
     const net = await import('node:net');

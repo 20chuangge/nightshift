@@ -91,11 +91,11 @@ export async function ensureViewer(botId) {
   if (!entry || typeof entry.startViewer !== 'function') return Boolean(entry);
   if (entry.viewerStarting) return entry.viewerStarting;
   entry.lastViewerAt = Date.now();
-  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portOpen(entry.webPort))) return true;
+  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portReady(entry.webPort))) return true;
   entry.viewerStarting = (async () => {
     for (const proc of entry.viewProcs || []) { try { proc.kill(); } catch { /* gone */ } }
     entry.viewProcs = await entry.startViewer();
-    return portOpen(entry.webPort);
+    return portReady(entry.webPort);
   })().finally(() => { entry.viewerStarting = null; });
   return entry.viewerStarting;
 }
@@ -318,6 +318,29 @@ async function portOpen(port, host = '127.0.0.1') {
   });
 }
 
+/**
+ * Is something listening on this local port? Read from /proc/net/tcp, without
+ * connecting: a test connection is taken by x11vnc / wayvnc as a viewer, and
+ * while it waits to see what that "viewer" speaks the real one queues behind
+ * it (seen on Ubuntu: about 9 seconds before the first picture).
+ */
+function portListening(port) {
+  const hex = `:${Number(port).toString(16).toUpperCase().padStart(4, '0')} `;
+  let read = false;
+  for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text = '';
+    try { text = fs.readFileSync(f, 'utf8'); read = true; } catch { continue; }
+    // columns: sl local_address rem_address st ... ; st 0A = LISTEN
+    if (text.split(/\r?\n/).some((l) => { const c = l.trim().split(/\s+/); return c[1] && `${c[1].slice(c[1].lastIndexOf(':'))} `.toUpperCase() === hex && c[3] === '0A'; })) return true;
+  }
+  return read ? false : null; // null: no /proc here, the caller may probe instead
+}
+
+async function portReady(port) {
+  const l = portListening(port);
+  return l === null ? portOpen(port) : l;
+}
+
 /** Xvfb with -nolisten tcp is only visible as a unix socket. */
 function displayReady(display) {
   return fs.existsSync(`/tmp/.X11-unix/X${display}`);
@@ -456,9 +479,12 @@ async function ensureDesktopOnce(botId) {
     const view = [];
     killByPattern(`x11vnc -display :${display} `);
     killByPattern(`websockify.* 127.0.0.1:${webPort} `);
-    const args = ['-display', `:${display}`, '-localhost', '-nopw', '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-rfbport', String(vncPort)];
+    // -nonap: with nobody connected x11vnc naps and picks up a new viewer
+    // seconds late (seen: 4 s); it only runs while someone watches anyway.
+    // -nolookup: no reverse DNS for the (always local) client.
+    const args = ['-display', `:${display}`, '-localhost', '-nopw', '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-nonap', '-nolookup', '-threads', '-rfbport', String(vncPort)];
     view.push(spawnChild('x11vnc', args, { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')] }));
-    for (let i = 0; i < 50 && !(await portOpen(vncPort)); i += 1) await sleep(100);
+    for (let i = 0; i < 50 && !(await portReady(vncPort)); i += 1) await sleep(100);
     // 3) WebSocket bridge for that one display, loopback only. Viewers never
     // reach it directly: the hub relays /api/bots/<id>/desktop/ws to it after
     // the same pairing check as the API, so nobody on the LAN can open a bot's
@@ -466,7 +492,7 @@ async function ensureDesktopOnce(botId) {
     view.push(spawnChild('websockify', [`127.0.0.1:${webPort}`, `127.0.0.1:${vncPort}`], {
       stdio: ['ignore', childLog(botId, 'web'), childLog(botId, 'web')],
     }));
-    for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
+    for (let i = 0; i < 50 && !(await portReady(webPort)); i += 1) await sleep(100);
     return view;
   };
 
@@ -524,7 +550,7 @@ async function startWaylandDesktop(botId) {
   const startViewer = async () => {
     killByPattern(`wayvnc .*127.0.0.1 (${vncPort}|${webPort})$`);
     const view = [spawnChild(cmd.vnc[0], cmd.vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv })];
-    for (let i = 0; i < 50 && !(await portOpen(webPort)); i += 1) await sleep(100);
+    for (let i = 0; i < 50 && !(await portReady(webPort)); i += 1) await sleep(100);
     return view;
   };
   // One port: the WebSocket one.
