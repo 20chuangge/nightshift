@@ -3577,6 +3577,23 @@ async function scenarioMcp({ home, toolsMod }) {
       dsk.includes('function portListening(port)') && dsk.includes("for (const f of ['/proc/net/tcp', '/proc/net/tcp6'])")
       && !/for \(let i = 0; i < 50 && !\(await portOpen\(/.test(dsk) && dsk.includes("'-nonap', '-nolookup', '-threads'"));
   }
+  // A phone over a slow link: the chat arrives compact, the home page does not wait for it.
+  {
+    const srvMod = await import('../src/server.mjs');
+    const c = srvMod.compactToolItem({ role: 'tool', name: 'fs_write', args: { path: 'a.md', content: 'x'.repeat(5000) }, output: { stdout: 'y'.repeat(9000) } });
+    const small = srvMod.compactToolItem({ role: 'tool', name: 'request_takeover', args: { reason: 'r' }, output: { waiting: true, reason: 'r' } });
+    const user = srvMod.compactToolItem({ role: 'user', text: 'z'.repeat(5000) });
+    const full = await api('/api/bots/chief/messages?limit=50');
+    const compact = await api('/api/bots/chief/messages?limit=50&compact=1');
+    const pg = await readText('../public/index.html');
+    const srcSrv = await readText('../src/server.mjs');
+    check('M26 slow links: with steps hidden the chat comes compact (the steps it does not show are left out, the two cards the human acts on stay; long tool output and arguments cut to a preview); showing steps loads it whole; a phone shows its home page at once and loads the chat behind it; settings, voices and groups load together',
+      c.args.path === 'a.md' && /…（共 5000 字）$/.test(c.args.content) && c.output.cut === true && c.output.length > 9000 && c.output.preview.length === 1500
+      && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
+      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name)) && srcSrv.includes("items.filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name))")
+      && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
+      && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
+  }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
     const net = await import('node:net');
@@ -4073,7 +4090,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     check('M13 phone home page: the bot list is a page of its own (main bot big on top, last message and time per row, search and settings at the bottom); a bot opens the chat, a back arrow returns; the phone starts there',
       pageSrc.includes("document.body.classList.add('m-home');") && pageSrc.includes("document.body.classList.remove('m-home');") && pageSrc.includes('id="home-search"') && pageSrc.includes('function filterHome()')
       && pageSrc.includes('function homeTime(ts)') && pageSrc.includes("row.appendChild(el('span', 'bot-time', when));") && pageSrc.includes("${bot.primary ? ' is-primary' : ''}")
-      && pageSrc.includes('.sidebar.open .bot.is-primary .av { --av-size: 104px !important; }') && pageSrc.includes('class="nav-back-ico"') && pageSrc.includes('else if (isMobile()) openSidebar();'));
+      && pageSrc.includes('.sidebar.open .bot.is-primary .av { --av-size: 104px !important; }') && pageSrc.includes('class="nav-back-ico"') && pageSrc.includes('if (!target && isMobile() && dest) {') && pageSrc.includes('openSidebar();\n    selectBot(dest.id, { keepHome: true })'));
     check('M10 iPhone home-screen app: header below the clock, a page that never scrolls up, no second home-bar gap, 16px text boxes so typing does not zoom', pageSrc.includes("if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');") && /position: fixed; top: 0; left: 0; right: 0;\s+height: var\(--app-height, 100dvh\);/.test(pageSrc) && pageSrc.includes('html.ios-standalone, html.ios-standalone body { overflow: hidden; }') && pageSrc.includes('html.ios-short-vp { --safe-b: 0px; }') && pageSrc.includes('html.ios textarea, html.ios select {') && pageSrc.includes('font-size: 16px !important;') && pageSrc.includes('.chat-head { padding: calc(var(--s2) + var(--safe-t)) var(--s4) var(--s2);'));
     check('M10 iPhone: another machine opened from the home-screen app (iOS in-app browser, its own bars) is laid out as a browser page, not under the clock', pageSrc.includes('const gap = (window.screen?.height || 0) - window.innerHeight;') && pageSrc.includes('const standalone = flagged && gap < 100;') && pageSrc.includes("if (isIphone && standalone && gap >= 40) document.documentElement.classList.add('ios-short-vp');"));
     check('M10 iPhone: full-screen settings and the page viewer start below the clock; the status bar height is known per screen size', /\.settings-modal \{\s+width: 100%; height: 100%; max-height: none;\s+border: 0; border-radius: 0;[\s\S]{0,120}padding-top: var\(--safe-t\);/.test(pageSrc) && pageSrc.includes('.page-viewer { padding-top: var(--safe-t); }') && pageSrc.includes('({ 956: 62, 932: 59, 926: 47, 896: 48, 874: 62, 852: 59, 844: 47, 812: 50 })[h]'));

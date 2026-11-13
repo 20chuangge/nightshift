@@ -6088,22 +6088,25 @@ async function boot() {
   $('app').classList.remove('is-hidden');
   applyShellConfig();
 
-  try { await loadSettings(); } catch { /* settings are optional */ }
-  // Before the chat renders: whether replies get a "read aloud" button.
-  try { await loadVoice(); } catch { /* older server: no voice */ }
-
+  // Settings, the voice list and the groups do not wait for each other: on a
+  // phone over a slow link every round trip is most of a second.
+  // (The voice list is in before the chat renders: whether replies get "read aloud".)
   const target = approvalTarget();
   renderBots();
-  await loadGroups();
+  await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);
   const primary = state.bots.find((b) => b.primary) || state.bots[0];
   // A notification tap names the bot it came from: the approval card lives in
   // that transcript, so landing on the primary bot would hide the destination.
   const dest = (target && target.botId && state.bots.find((b) => b.id === target.botId)) || primary;
-  if (dest) await selectBot(dest.id);
+  if (!target && isMobile() && dest) {
+    // A phone opens on the home page (the list of bots) at once; the chat
+    // behind it loads meanwhile, instead of holding the home page back.
+    openSidebar();
+    selectBot(dest.id, { keepHome: true }).catch(() => {});
+  } else if (dest) await selectBot(dest.id);
   else renderMessages();
   if (target) focusApprovalFromLink(target);
-  // A phone opens on the home page (the list of bots), unless a notification named a chat.
-  else if (isMobile()) openSidebar();
+  else if (isMobile() && !dest) openSidebar();
 
   await Promise.allSettled([loadSkills(), loadRoutines(), loadActivity()]);
   state.ready = true;
@@ -6372,7 +6375,7 @@ function renderBots() {
   if ($('perm-summary')) renderPermOverview();
 }
 
-async function selectBot(id) {
+async function selectBot(id, { keepHome = false } = {}) {
   if (id !== state.botId) stopSpeaking();
   // A different bot means a different screen: always start in preview.
   const card = $('pc-screen-wrap');
@@ -6384,9 +6387,9 @@ async function selectBot(id) {
     state.groupMessages = [];
     renderGroups();
   }
-  // Picking a teammate always dismisses the drawers, on any width.
-  closeSidebar();
-  closePanel();
+  // Picking a teammate always dismisses the drawers, on any width (not the
+  // chat a phone loads behind its home page at start).
+  if (!keepHome) { closeSidebar(); closePanel(); }
   const bot = state.bots.find((b) => b.id === id);
   renderBots();
   if (!bot) return;
@@ -6414,7 +6417,8 @@ async function loadMessages() {
   const botId = state.botId;
   let messages;
   try {
-    messages = await api(`/api/bots/${botId}/messages?limit=200`);
+    // Steps hidden: their long output stays on the machine (a phone loads the chat in a fraction).
+    messages = await api(`/api/bots/${botId}/messages?limit=200${state.showProcess ? '' : '&compact=1'}`);
   } catch (err) {
     if (err.status === 401) return;
     if (state.botId === botId && !isGroupMode()) toast(`无法加载对话：${err.message}`, true);
@@ -13603,6 +13607,8 @@ function wireChrome() {
     state.showProcess = Boolean(event.target.checked);
     try { localStorage.setItem('desk.showProcess', state.showProcess ? '1' : '0'); } catch { /* private mode */ }
     renderMessages();
+    // Shown steps want their whole output, which the compact chat left on the machine.
+    if (state.showProcess && !isGroupMode()) loadMessages();
   });
   $('panel-close').addEventListener('click', closePanel);
   $('panel-scrim').addEventListener('click', closePanel);

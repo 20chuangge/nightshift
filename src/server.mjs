@@ -2079,8 +2079,31 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${params.id}"`);
   const records = await readJsonl(sessionFile(bot.id));
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
-  return records.slice(-limit).map((record, index) => toMessageItem(record, index));
+  const items = records.slice(-limit).map((record, index) => toMessageItem(record, index));
+  // compact=1: the chat with its steps hidden. Long tool output and arguments
+  // only start there; the page asks for everything when steps are shown. On a
+  // phone over a slow link the full list (392 KB for a long chat) took 4 s.
+  // Steps the chat does not show (every tool row but the two cards the human
+  // acts on) are left out altogether: they were most of the bytes.
+  return query.get('compact') === '1'
+    ? items.filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name)).map(compactToolItem)
+    : items;
 });
+
+/** Tool rows the chat shows even with its steps hidden: the human acts on them. */
+const ACTION_CARD_TOOLS = new Set(['request_takeover', 'request_login']);
+
+/** A tool row with its long parts cut to a preview (the steps the chat does not show). */
+export function compactToolItem(item) {
+  if (item.role !== 'tool') return item;
+  const long = (v) => typeof v === 'string' && v.length > 600;
+  const args = item.args && typeof item.args === 'object' && !Array.isArray(item.args)
+    ? Object.fromEntries(Object.entries(item.args).map(([k, v]) => [k, long(v) ? `${v.slice(0, 600)}…（共 ${v.length} 字）` : v]))
+    : item.args;
+  const text = typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? null);
+  const output = text && text.length > 1500 ? { preview: text.slice(0, 1500), length: text.length, cut: true } : item.output;
+  return { ...item, args, output };
+}
 
 route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params, body, state }) => {
   const bot = await getBot(params.id);
