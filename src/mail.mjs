@@ -386,6 +386,24 @@ export class Imap {
     }
     // 网易邮箱 (163 / 126 / yeah) refuse SELECT ("Unsafe Login") until the client says who it is.
     await this.cmd('ID ("name" "Nightshift" "version" "1.0" "vendor" "Nightshift")').catch(() => {});
+    const cap = await this.cmd('CAPABILITY').catch(() => ({ untagged: [] }));
+    this.caps = new Set((cap.untagged.find((x) => /^\* CAPABILITY/i.test(x.text))?.text || '').toUpperCase().split(/\s+/));
+  }
+
+  /** Move mail (UID set) to another folder: MOVE where the server has it, else copy then remove. */
+  async move(set, target) {
+    const to = quote(utf7Encode(target));
+    if (this.caps?.has('MOVE')) { await this.cmd(`UID MOVE ${set} ${to}`); return; }
+    await this.cmd(`UID COPY ${set} ${to}`);
+    await this.remove(set);
+  }
+
+  /** Remove mail (UID set) from the open folder for good. */
+  async remove(set) {
+    await this.cmd(`UID STORE ${set} +FLAGS.SILENT (\\Deleted)`);
+    // UID EXPUNGE takes out only these; a plain EXPUNGE would also take mail someone else flagged.
+    if (this.caps?.has('UIDPLUS')) await this.cmd(`UID EXPUNGE ${set}`);
+    else await this.cmd('EXPUNGE');
   }
 
   async folders() {
@@ -573,7 +591,8 @@ const TOOLS = [
         account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' },
         folder: { type: 'string' }, from: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string', description: 'Words anywhere in the mail.' },
         since: { type: 'string', description: 'On or after this date, YYYY-MM-DD.' }, before: { type: 'string', description: 'Before this date, YYYY-MM-DD.' },
-        unread_only: { type: 'boolean' }, limit: { type: 'integer' },
+        unread_only: { type: 'boolean' }, limit: { type: 'integer', description: 'Default 20, at most 200.' },
+        uids_only: { type: 'boolean', description: 'Only the count and the uids (for moving or deleting many at once).' },
       },
     },
     annotations: { readOnlyHint: true },
@@ -597,6 +616,18 @@ const TOOLS = [
       required: ['to', 'body'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    name: 'mail_move',
+    description: 'Move mail to another folder, e.g. to: "垃圾邮件" (spam), "已删除" (trash), "归档" (archive) or any folder mail_folders lists. folder = where it is now (default INBOX). Up to 500 uids at once.',
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string' }, to: { type: 'string' } }, required: ['uids', 'to'] },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    name: 'mail_delete',
+    description: 'Delete mail: it goes to the trash folder (已删除), where it can still be restored. permanent=true removes it for good - only when the human explicitly asked for permanent deletion; mail already in the trash is always removed for good. Up to 500 uids at once.',
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string', description: 'Where the mail is now, default INBOX.' }, permanent: { type: 'boolean' } }, required: ['uids'] },
+    annotations: { readOnlyHint: false, destructiveHint: true },
   },
   {
     name: 'mail_mark',
@@ -672,6 +703,13 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
     return parts.join('\n\n');
   };
 
+  const uidList = (uids) => {
+    const list = [...new Set((Array.isArray(uids) ? uids : String(uids || '').split(/[,\s]+/)).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (!list.length) throw mailError('MAIL_BAD_UID', '没有 uid');
+    if (list.length > 500) throw mailError('MAIL_TOO_MANY', `一次最多 500 封，这次有 ${list.length} 封：分几次做`);
+    return list;
+  };
+
   const folderFor = async (c, wanted) => {
     const f = String(wanted || 'INBOX').trim();
     if (/^inbox$/i.test(f) || f === '收件箱') return 'INBOX';
@@ -679,7 +717,9 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
     const hit = list.find((x) => x.name === f || x.path === f)
       || list.find((x) => x.name.toLowerCase() === f.toLowerCase())
       || (/^(sent|已发送|发件箱)$/i.test(f) && list.find((x) => x.flags.some((y) => /\\Sent/i.test(y)) || /sent|已发送/i.test(x.name)))
-      || (/^(spam|junk|垃圾)/i.test(f) && list.find((x) => x.flags.some((y) => /\\Junk/i.test(y)) || /junk|spam|垃圾/i.test(x.name)));
+      || (/^(spam|junk|垃圾邮件)/i.test(f) && list.find((x) => x.flags.some((y) => /\\Junk/i.test(y)) || /junk|spam|垃圾邮件/i.test(x.name)))
+      || (/^(trash|deleted|已删除|删除|废纸篓|垃圾箱)/i.test(f) && list.find((x) => x.flags.some((y) => /\\Trash/i.test(y)) || /trash|deleted|已删除|废纸篓/i.test(x.name)))
+      || (/^(archive|归档)/i.test(f) && list.find((x) => x.flags.some((y) => /\\(Archive|All)/i.test(y)) || /archive|归档/i.test(x.name)));
     if (!hit) throw mailError('MAIL_NO_FOLDER', `没有文件夹「${f}」，有：${list.map((x) => x.name).join('、')}`);
     return hit.name;
   };
@@ -706,8 +746,8 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         return rows.length ? `「${name}」最新 ${rows.length} 封（共 ${exists} 封）：\n${rows.map(line).join('\n')}` : `「${name}」里没有${unread_only ? '未读' : ''}邮件。`;
       }));
     },
-    async mail_search({ account, folder, from, subject, text, since, before, unread_only, limit = 20 } = {}) {
-      const n = Math.min(Math.max(Number(limit) || 20, 1), 50);
+    async mail_search({ account, folder, from, subject, text, since, before, unread_only, limit = 20, uids_only = false } = {}) {
+      const n = Math.min(Math.max(Number(limit) || 20, 1), uids_only ? 500 : 200);
       return eachBox(pick(account), (a) => withImap(a, async (c) => {
         const name = await folderFor(c, folder);
         await c.open_(name);
@@ -719,8 +759,10 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         if (unread_only) parts.push(' UNSEEN');
         if (!parts.length) parts.push(' ALL');
         const utf8 = parts.some((p) => Buffer.isBuffer(p));
-        const uids = (await c.search([`UID SEARCH${utf8 ? ' CHARSET UTF-8' : ''}`, ...parts])).slice(-n);
+        const all = await c.search([`UID SEARCH${utf8 ? ' CHARSET UTF-8' : ''}`, ...parts]);
+        const uids = all.slice(-n);
         if (!uids.length) return `「${name}」里没有找到。`;
+        if (uids_only) return `「${name}」里共找到 ${all.length} 封${all.length > uids.length ? `（这里给出最新的 ${uids.length} 封）` : ''}，uid：${[...uids].reverse().join(',')}`;
         return `找到 ${uids.length} 封（「${name}」）：\n${(await c.summaries(uids.join(','), { uid: true })).map(line).join('\n')}`;
       }));
     },
@@ -790,6 +832,35 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         await s.mail(a.email, [...rcptTo, ...rcptCc], data);
       } finally { await s.quit(); }
       return `已发出：${a.email} → ${[...rcptTo, ...rcptCc].join('、')}，主题「${subj || '（无主题）'}」${files.length ? `，附件 ${files.map((f) => f.filename).join('、')}` : ''}。`;
+    },
+    async mail_move({ account, uids = [], folder, to } = {}) {
+      const list = uidList(uids);
+      const [a] = pick(account, { one: true });
+      return withImap(a, async (c) => {
+        const from = await folderFor(c, folder);
+        const target = await folderFor(c, to);
+        if (target === from) return `已经在「${from}」里了。`;
+        await c.open_(from, false);
+        await c.move(list.join(','), target);
+        return `已把 ${list.length} 封从「${from}」移到「${target}」。`;
+      });
+    },
+    async mail_delete({ account, uids = [], folder, permanent = false } = {}) {
+      const list = uidList(uids);
+      const [a] = pick(account, { one: true });
+      return withImap(a, async (c) => {
+        const from = await folderFor(c, folder);
+        let trash = '';
+        try { trash = await folderFor(c, 'trash'); } catch { /* none */ }
+        await c.open_(from, false);
+        if (permanent || (trash && trash === from)) {
+          await c.remove(list.join(','));
+          return `已永久删除 ${list.length} 封（「${from}」），不能恢复。`;
+        }
+        if (!trash) throw mailError('MAIL_NO_TRASH', '这个邮箱没有「已删除」文件夹；要永久删除，得明确说永久删除（permanent）');
+        await c.move(list.join(','), trash);
+        return `已删除 ${list.length} 封：移到了「${trash}」，需要的话还能从那里恢复。`;
+      });
     },
     async mail_mark({ account, uids = [], folder, read = true } = {}) {
       const list = (Array.isArray(uids) ? uids : [uids]).map(Number).filter(Boolean);

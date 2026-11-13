@@ -3712,6 +3712,33 @@ ${Buffer.from('%PDF-fake').toString('base64')}
         && synced.length === 2 && synced[0].PASS === 'code123' && !savedCfg.includes('code163') && !JSON.stringify(listed).includes('code163')
         && afterOne.mailboxes.join() === 'me@163.com' && last.removed === true && !gone, JSON.stringify({ probes, badMsg, listed: listed?.mailboxes, afterOne: afterOne?.mailboxes }));
     }
+    // Clean-up: move to spam, delete to the trash (restorable), remove from the trash or permanently; with and without IMAP MOVE.
+    for (const caps of ['IMAP4rev1 MOVE UIDPLUS', 'IMAP4rev1']) {
+      const mk3 = () => [201, 202, 203].map((uid) => ({ uid, raw: m2, subject: 'Weekly deals', from: 'news@shop.com', seen: true }));
+      const box = await F.fakeImap({ user: 'me@qq.com', pass: 'code123', messages: mk3(), caps });
+      const app3 = M.createMailServer({ env: { EMAIL: 'me@qq.com', PASS: 'code123' }, workspaceDir: ws,
+        imapImpl: () => new M.Imap({ host: '127.0.0.1', port: box.port, connect: () => net.connect(box.port, '127.0.0.1') }) });
+      const c3 = async (name, args = {}) => (await app3.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result;
+      const found3 = (await c3('mail_search', { from: 'news@shop.com', uids_only: true })).content[0].text;
+      const moved = (await c3('mail_move', { uids: [201], to: '垃圾邮件' })).content[0].text;
+      const deleted = (await c3('mail_delete', { uids: [202] })).content[0].text;
+      const inTrash = box.folders['&XfJSIJZk-'].map((m) => m.uid).join();
+      const gone = (await c3('mail_delete', { uids: [202], folder: '已删除' })).content[0].text;
+      const perm = (await c3('mail_delete', { uids: [203], permanent: true })).content[0].text;
+      const tooMany = await c3('mail_delete', { uids: Array.from({ length: 501 }, (_, i) => i + 1) });
+      const ok = /共找到 3 封.*uid：203,202,201/.test(found3) && /从「INBOX」移到「垃圾邮件」/.test(moved) && box.folders['&V4NXPpCuTvY-'].map((m) => m.uid).join() === '201'
+        && /移到了「已删除」.*还能/.test(deleted) && inTrash === '202' && /已永久删除 1 封（「已删除」）/.test(gone) && box.folders['&XfJSIJZk-'].length === 0
+        && /已永久删除 1 封（「INBOX」）/.test(perm) && box.folders.INBOX.length === 0 && tooMany.isError && /最多 500 封/.test(tooMany.content[0].text)
+        && (caps.includes('MOVE') ? box.log.some((x) => /^UID MOVE/.test(x)) && box.log.some((x) => /^UID EXPUNGE/.test(x))
+          : box.log.some((x) => /^UID COPY/.test(x)) && box.log.some((x) => /^EXPUNGE/.test(x)) && !box.log.some((x) => /^UID (MOVE|EXPUNGE)/.test(x)));
+      check(`M27 mail clean-up (${caps.includes('MOVE') ? 'server with MOVE' : 'server without MOVE: copy, then remove'}): find all from a sender as uids, move to 垃圾邮件, delete to 已删除 (restorable), delete from 已删除 or permanently removes; at most 500 at once`,
+        ok, JSON.stringify({ found3, moved, deleted, inTrash, gone, perm, log: box.log.slice(-8) }));
+      box.close();
+    }
+    const tl3 = (await app.handle({ jsonrpc: '2.0', id: 9, method: 'tools/list' })).result.tools;
+    const del = tl3.find((t) => t.name === 'mail_delete');
+    check('M27 mail_delete is marked destructive (it asks every time unless the app is set to 始终允许); permanent only when asked for',
+      del && del.annotations.destructiveHint === true && del.annotations.readOnlyHint === false && /only when the human explicitly asked/.test(del.description) && tl3.some((t) => t.name === 'mail_move'));
     imap.close(); smtp.close();
     fsx.rmSync(path.join(ws, 'mail'), { recursive: true, force: true });
     fsx.rmSync(path.join(ws, 'mail-plan.txt'), { force: true });
