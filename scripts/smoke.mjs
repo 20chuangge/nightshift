@@ -198,7 +198,9 @@ function pointEnvAt(target) {
 }
 
 async function startServerChild(target, extraEnv = {}) {
-  const env = { ...process.env, ASSIST_HOME: target, PORT: '0', ...extraEnv };
+  // DESK_VNC_PORT: a port nothing listens on, so a VNC server the human runs
+  // on this machine (TightVNC on 5900) is never mistaken for a bot desktop.
+  const env = { ...process.env, ASSIST_HOME: target, PORT: '0', DESK_VNC_PORT: '1', ...extraEnv };
   const proc = spawn(process.execPath, [path.join(REPO, 'src', 'server.mjs')], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -3251,7 +3253,7 @@ async function scenarioCliAgents({ toolsMod, home }) {
   try {
     const cli = await import('../src/cliagents.mjs');
     const found = await cli.detectCliAgents();
-    check('L cli: both tools found and reported logged in by their own status command', found.length === 2 && found.every((a) => a.installed && a.loggedIn));
+    check('L cli: both tools found and reported logged in by their own status command', ['claude', 'codex'].every((id) => found.some((a) => a.id === id && a.installed && a.loggedIn)));
     // A folder with a space in its name: the Windows .cmd path must quote it.
     const ws = path.join(home, 'cli ws');
     await fsp.mkdir(ws, { recursive: true });
@@ -3298,12 +3300,108 @@ async function scenarioCliAgents({ toolsMod, home }) {
     const botsSrc = await readText('../src/bots.mjs');
     const pageSrc = await readText('../public/index.html');
     check('L approval: every call asks, after levels, rules and the trust switch (a deny still denies)', agentSrc.includes("if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {") && agentSrc.indexOf("name === 'cli_agent_run'") > agentSrc.indexOf('const fence = checkBoundary('));
-    check('L grants and settings: main assistant has it by default, each bot has a switch, settings show installed / logged in', botsSrc.includes("'cli_agent_run',") && botsSrc.includes('version: 6,') && pageSrc.includes("{ id: 'codecli', label: '交给 Claude Code / Codex'") && pageSrc.includes('id="cliagents-list"'));
+    check('L grants and settings: main assistant has it by default, each bot has a switch, settings show installed / logged in', botsSrc.includes("'cli_agent_run',") && botsSrc.includes('version: 6,') && pageSrc.includes("{ id: 'codecli', label: '交给编程助手（Claude Code / Codex / Cursor / Qoder）'") && pageSrc.includes('id="cliagents-list"'));
     const listed = await api('/api/cliagents');
-    check('L api: GET /api/cliagents answers with both tools', listed.status === 200 && Array.isArray(listed.json?.agents) && listed.json.agents.map((a) => a.id).join(',') === 'claude,codex');
+    check('L api: GET /api/cliagents answers with all four tools', listed.status === 200 && Array.isArray(listed.json?.agents) && listed.json.agents.map((a) => a.id).join(',') === 'claude,codex,cursor,qoder');
+
+    // M31: Cursor and Qoder on their subscriptions, and a model per tool.
+    process.env.DESK_CLI_CURSOR = fake;
+    process.env.DESK_CLI_QODER = fake;
+    const found4 = await cli.detectCliAgents();
+    const cur = found4.find((a) => a.id === 'cursor');
+    const qo = found4.find((a) => a.id === 'qoder');
+    check('M31 cli: Cursor and Qoder found, logged in by their own "status", their models listed by their own list command',
+      cur?.installed && cur.loggedIn && qo?.installed && qo.loggedIn
+      && ['auto', 'gpt-5', 'claude-4.5-sonnet', 'Qwen3.8-Max'].every((m) => cur.models.includes(m)) && !cur.models.includes('Available') && !cur.models.includes('Tip'), JSON.stringify(cur?.models));
+    process.env.FAKE_CLI_LOGGED_OUT = '1';
+    const out4 = await cli.detectCliAgents();
+    delete process.env.FAKE_CLI_LOGGED_OUT;
+    check('M31 cli: "Not logged in" from status reads as not logged in', out4.find((a) => a.id === 'cursor')?.loggedIn === false && out4.find((a) => a.id === 'qoder')?.loggedIn === false);
+    check('M31 cli: model list parsing keeps names, drops headings and prose', cli.parseModelList('Models:\n- gpt-5.1 (default)\n- sonnet-4.5\nUse --model to pick\n').join(',') === 'gpt-5.1,sonnet-4.5');
+    const task4 = '做一个 todo 网页，"引号" & 符号 | 原样';
+    const dir6 = path.join(ws, 'cli-tasks', 'f');
+    const r6 = await cli.runCliAgent({ agent: 'cursor', task: task4, dir: dir6, model: 'gpt-5' });
+    const call6 = JSON.parse(await fsp.readFile(path.join(dir6, 'cli-call.json'), 'utf8'));
+    const a6 = call6.argv.join(' ');
+    check('M31 cli: Cursor runs -p, JSON, trusted workspace = its folder, the model asked for, no --force without allowShell; the task is in TASK.md, never on the command line',
+      a6.includes('-p --output-format json --trust --workspace') && path.resolve(call6.argv[call6.argv.indexOf('--workspace') + 1]) === path.resolve(dir6)
+      && a6.includes('--model gpt-5') && !a6.includes('--force') && !a6.includes('todo')
+      && (await fsp.readFile(path.join(dir6, 'TASK.md'), 'utf8')).trim() === task4 && r6.summary === 'wrote hello.py' && r6.model === 'gpt-5' && !r6.files.includes('TASK.md'), a6);
+    const dir7 = path.join(ws, 'cli-tasks', 'g');
+    await cli.runCliAgent({ agent: 'cursor', task: 'x', dir: dir7, allowShell: true });
+    check('M31 cli: allowShell gives Cursor --force (commands), nothing else changes', JSON.parse(await fsp.readFile(path.join(dir7, 'cli-call.json'), 'utf8')).argv.includes('--force'));
+    const put = await api('/api/cliagents', { method: 'PUT', body: { agent: 'qoder', model: 'Qwen3.8-Max' } });
+    const bad = await api('/api/cliagents', { method: 'PUT', body: { agent: 'qoder', model: 'x; rm -rf /' } });
+    const unknown = await api('/api/cliagents', { method: 'PUT', body: { agent: 'nope', model: 'a' } });
+    check('M31 api: PUT /api/cliagents saves a default model per tool; a name with odd characters or an unknown tool is refused', put.status === 200 && put.json?.models?.qoder === 'Qwen3.8-Max' && bad.status === 400 && unknown.status === 400);
+    const dir8 = path.join(ws, 'cli-tasks', 'h');
+    const r8 = await cli.runCliAgent({ agent: 'qoder', task: 'x', dir: dir8 });
+    const a8 = JSON.parse(await fsp.readFile(path.join(dir8, 'cli-call.json'), 'utf8')).argv;
+    check('M31 cli: Qoder runs -p -o json -w <folder>, accept_edits, and the human\'s default model when the bot names none',
+      a8.slice(0, 3).join(' ') === '-p -o json' && path.resolve(a8[a8.indexOf('-w') + 1]) === path.resolve(dir8)
+      && a8.join(' ').includes('--permission-mode accept_edits') && a8.join(' ').includes('-m Qwen3.8-Max') && r8.model === 'Qwen3.8-Max');
+    const dir9 = path.join(ws, 'cli-tasks', 'i');
+    await cli.runCliAgent({ agent: 'qoder', task: 'x', dir: dir9, allowShell: true, model: 'auto' });
+    const a9 = JSON.parse(await fsp.readFile(path.join(dir9, 'cli-call.json'), 'utf8')).argv.join(' ');
+    check('M31 cli: a model the bot names wins over the default; allowShell lets Qoder run commands', a9.includes('-m auto') && !a9.includes('Qwen3.8-Max') && a9.includes('--permission-mode bypass_permissions'));
+    const dir10 = path.join(ws, 'cli-tasks', 'j');
+    await cli.runCliAgent({ agent: 'claude', task: 'x', dir: dir10, model: 'opus' });
+    const dir11 = path.join(ws, 'cli-tasks', 'k');
+    await cli.runCliAgent({ agent: 'codex', task: 'x', dir: dir11, model: 'bad name!' });
+    const a10 = JSON.parse(await fsp.readFile(path.join(dir10, 'cli-call.json'), 'utf8')).argv;
+    const a11 = JSON.parse(await fsp.readFile(path.join(dir11, 'cli-call.json'), 'utf8')).argv;
+    check('M31 cli: Claude Code takes --model too; a model name that is not one is dropped (the tool\'s own default runs)', a10.join(' ').includes('--model opus') && !a11.includes('--model') && a11.at(-1) === '-');
+    const viaTool2 = await tool.run({ agent: 'cursor', task: 'y', model: 'claude-4.5-sonnet' }, { workspaceDir: ws });
+    check('M31 tool: cli_agent_run takes cursor / qoder and a model', tool.parameters.properties.agent.enum.join(',') === 'claude,codex,cursor,qoder' && Boolean(tool.parameters.properties.model) && viaTool2.model === 'claude-4.5-sonnet');
+    const qPlaces = cli.CLI_AGENTS.qoder.places('H').map((p) => p.replace(/\\/g, '/'));
+    check('M33 qoder: the Qoder CN program is looked for where its installer puts it (qoderclicn first, then the qodercn dispatcher)',
+      cli.CLI_AGENTS.qoder.bins[0] === 'qoderclicn' && qPlaces[0].startsWith('H/.qoder-cn/bin/qoderclicn/qoderclicn') && qPlaces[1].startsWith('H/.qoder-cn/entry/qodercn'));
+
+    // M33: a shell command that starts something in the background still finishes.
+    {
+      const sh = registry.get('shell');
+      const bg = process.platform === 'win32'
+        ? `start "bg" /b "${process.execPath}" -e "setTimeout(()=>{},20000)" & echo started`
+        : `("${process.execPath}" -e "setTimeout(()=>{},20000)" &) ; echo started`;
+      let t1 = Date.now();
+      const r1 = await sh.run({ command: bg, timeoutMs: 30000 }, { workspaceDir: ws });
+      const took1 = Date.now() - t1;
+      check('M33 shell: a command that leaves a program running in the background returns in seconds, says so, keeps its output', r1.ok && /started/.test(r1.stdout) && took1 < 8000 && /still running in the background/.test(r1.note || ''), `${took1} ms`);
+      t1 = Date.now();
+      const r2 = await sh.run({ command: `"${process.execPath}" -e "setTimeout(()=>{},60000)"`, timeoutMs: 2000 }, { workspaceDir: ws });
+      const took2 = Date.now() - t1;
+      check('M33 shell: past its time limit a command ends, with everything it started, and returns', r2.timedOut && !r2.ok && took2 < 9000, `${took2} ms`);
+      const r3 = await sh.run({ command: 'echo 你好' }, { workspaceDir: ws });
+      check('M33 shell: an ordinary command is unchanged (no note)', r3.ok && r3.stdout.includes('你好') && r3.note === undefined);
+    }
+
+    // M33: this Windows computer's own screen, owned by Nightshift.
+    {
+      const lv = await import('../src/localvnc.mjs');
+      const mainSrc = await readText('../desktop/main.mjs');
+      const remoteSrc = await readText('../src/remote.mjs');
+      const settings = Object.fromEntries(lv.SAFE_SETTINGS);
+      check('M33 screen: loopback only, no password, no web page, no tray icon, port 5900',
+        settings.LoopbackOnly === 1 && settings.AllowLoopback === 1 && settings.UseVncAuthentication === 0 && settings.AcceptHttpConnections === 0 && settings.RfbPort === 5900 && settings.RunControlInterface === 0);
+      check('M33 screen: only a hand-made copy in a bot workspace is retired',
+        lv.isLegacyCopy('C:\\Users\\a\\AppData\\Roaming\\Desk\\workspace\\tools\\tightvnc\\PFiles\\TightVNC\\tvnserver.exe') && !lv.isLegacyCopy('C:\\Program Files\\TightVNC\\tvnserver.exe') && !lv.isLegacyCopy('C:\\Users\\a\\AppData\\Roaming\\Desk\\vnc\\PFiles\\TightVNC\\tvnserver.exe'));
+      const prev = process.env.DESK_LOCAL_VNC;
+      process.env.DESK_LOCAL_VNC = '0';
+      const off = await lv.ensureLocalVnc({ dir: path.join(ws, 'vnc') });
+      if (prev === undefined) delete process.env.DESK_LOCAL_VNC; else process.env.DESK_LOCAL_VNC = prev;
+      check('M33 screen: switched off (or not Windows) it does nothing, and stopping something it did not start does nothing', off.mode === 'off' && lv.stopLocalVnc(off) === false && lv.stopLocalVnc({ mode: 'service' }) === false && lv.stopLocalVnc({ mode: 'other' }) === false);
+      check('M33 screen: the desktop app starts it at launch and stops it on every quit path; the MSI must be signed by GlavSoft and is shared with machine installs',
+        mainSrc.includes("path.join(SERVER_DIR, 'src', 'localvnc.mjs')") && mainSrc.includes("m.ensureLocalVnc({ dir: path.join(HOME, 'vnc') })")
+        && (mainSrc.match(/stopLocalScreen\(\);/g) || []).length >= 2
+        && remoteSrc.includes("import { tightVncInstaller } from './localvnc.mjs';") && !remoteSrc.includes('async function tightVncInstaller'));
+    }
+    check('M31 settings: each installed tool gets a model box with its list; the page says all four tools', pageSrc.includes('list.id = `cliagent-models-${a.id}`') && pageSrc.includes("api('/api/cliagents', { method: 'PUT'") && pageSrc.includes('Claude Code、Codex、Cursor 或 Qoder'));
+    await api('/api/cliagents', { method: 'PUT', body: { agent: 'qoder', model: '' } });
   } finally {
     if (saved.claude === undefined) delete process.env.DESK_CLI_CLAUDE; else process.env.DESK_CLI_CLAUDE = saved.claude;
     if (saved.codex === undefined) delete process.env.DESK_CLI_CODEX; else process.env.DESK_CLI_CODEX = saved.codex;
+    delete process.env.DESK_CLI_CURSOR;
+    delete process.env.DESK_CLI_QODER;
   }
 }
 
@@ -4337,6 +4435,86 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const ark = await MD.generateVideo(MD.resolveMedia({ video: { service: 'ark', apiKey: 'ark-key' } }, 'video', {}), { prompt: '海浪', imageDataUrl: 'data:image/png;base64,AA' }, { workspaceDir: ws, fetchImpl: fakeFetch, pollMs: 5 });
     const arkBody = calls.find((c) => c[1].endsWith('/contents/generations/tasks'))[2];
     check('generation: Ark Seedance task with a first frame', /\.mp4$/.test(ark.path) && arkBody.content.some((c) => c.type === 'image_url'));
+
+    // M32: mainstream picture and video services (Bailian, MiniMax, Zhipu, Imagen) and model lists.
+    {
+      const seen = [];
+      let dashPolls = 0;
+      const json = (o) => ({ ok: true, status: 200, headers: new Map(), text: async () => JSON.stringify(o) });
+      const f2 = async (url, init = {}) => {
+        seen.push({ method: init.method || 'GET', url, headers: init.headers || {}, body: init.body ? JSON.parse(init.body) : null });
+        if (url.endsWith('/services/aigc/text2image/image-synthesis')) return json({ output: { task_id: 'd1', task_status: 'PENDING' }, request_id: 'q' });
+        if (url.endsWith('/services/aigc/video-generation/video-synthesis')) return json({ output: { task_id: 'd2', task_status: 'PENDING' }, request_id: 'q' });
+        if (url.endsWith('/tasks/d1')) { dashPolls += 1; return json({ output: dashPolls < 2 ? { task_status: 'RUNNING' } : { task_status: 'SUCCEEDED', results: [{ url: 'https://cdn.test/d.png' }] } }); }
+        if (url.endsWith('/tasks/d2')) return json({ output: { task_status: 'SUCCEEDED', video_url: 'https://cdn.test/d.mp4' } });
+        if (url.endsWith('/image_generation')) return json({ data: { image_urls: ['https://cdn.test/m1.png', 'https://cdn.test/m2.png'] }, base_resp: { status_code: 0 } });
+        if (url.endsWith('/video_generation')) return json({ task_id: 'mm1', base_resp: { status_code: 0 } });
+        if (url.includes('/query/video_generation?task_id=mm1')) return json({ status: 'Success', file_id: 'f9', base_resp: { status_code: 0 } });
+        if (url.includes('/files/retrieve?file_id=f9')) return json({ file: { download_url: 'https://cdn.test/mm.mp4' }, base_resp: { status_code: 0 } });
+        if (url.endsWith('/videos/generations')) return json({ id: 'z1', task_status: 'PROCESSING' });
+        if (url.endsWith('/async-result/z1')) return json({ task_status: 'SUCCESS', video_result: [{ url: 'https://cdn.test/z.mp4' }] });
+        if (url.endsWith('/images/generations')) return json({ data: [{ b64_json: PNG.toString('base64') }] });
+        return fakeFetch(url, init);
+      };
+      const own = (kind, service, model = '') => MD.resolveMedia({ [kind]: { service, apiKey: 'k-test', baseUrl: '', model } }, kind, {});
+      const ids = (list) => list.map((s) => s.id).join(',');
+      check('M32 lists: pictures from SiliconFlow, Doubao, Bailian, Zhipu, MiniMax, OpenAI, Google and any OpenAI-compatible; videos from SiliconFlow, Doubao, Bailian, MiniMax Hailuo, Zhipu',
+        ids(MD.IMAGE_SERVICES) === 'siliconflow,ark,dashscope,zhipu,minimax,openai,google,custom' && ids(MD.VIDEO_SERVICES) === 'siliconflow,ark,dashscope,minimax,zhipu'
+        && MD.IMAGE_SERVICES.find((s) => s.id === 'ark').models.includes('doubao-seedream-4-5-251128') && MD.VIDEO_SERVICES.find((s) => s.id === 'ark').models.length >= 4
+        && [...MD.IMAGE_SERVICES, ...MD.VIDEO_SERVICES].filter((s) => s.id !== 'custom').every((s) => s.models.includes(s.model) && s.keyUrl));
+      check('M32 custom: an OpenAI-compatible picture service with no address or model is not used yet', MD.resolveMedia({ image: { service: 'custom', apiKey: 'k' } }, 'image', {}) === null
+        && MD.resolveMedia({ image: { service: 'custom', apiKey: 'k', baseUrl: 'https://img.test/v1', model: 'm1' } }, 'image', {})?.baseUrl === 'https://img.test/v1');
+      const d = await MD.generateImages({ ...own('image', 'dashscope'), pollMs: 5 }, { prompt: '江南水乡', size: '1280x720', count: 1, negativePrompt: '模糊' }, { workspaceDir: ws, fetchImpl: f2 });
+      const dSub = seen.find((c) => c.url.endsWith('/image-synthesis'));
+      check('M32 Bailian picture: async task (X-DashScope-Async), size as W*H, polled until it succeeds, saved',
+        dSub.headers['X-DashScope-Async'] === 'enable' && dSub.body.model === 'wan2.5-t2i-preview' && dSub.body.parameters.size === '1280*720' && dSub.body.input.negative_prompt === '模糊'
+        && dashPolls === 2 && d.paths.length === 1 && fsx.existsSync(path.join(ws, d.paths[0])));
+      seen.length = 0;
+      dashPolls = 0;
+      await MD.generateImages({ ...own('image', 'dashscope', 'qwen-image-plus'), pollMs: 5 }, { prompt: 'x', size: '720x1280' }, { workspaceDir: ws, fetchImpl: f2 });
+      check('M32 Bailian picture: Qwen-Image gets one of its own sizes', seen[0].body.parameters.size === '928*1664');
+      seen.length = 0;
+      const m = await MD.generateImages(own('image', 'minimax'), { prompt: 'x', size: '1280x720', count: 2 }, { workspaceDir: ws, fetchImpl: f2 });
+      check('M32 MiniMax picture: image-01 with an aspect ratio, every picture saved', seen[0].url.endsWith('/v1/image_generation') && seen[0].body.aspect_ratio === '16:9' && seen[0].body.n === 2 && m.paths.length === 2);
+      seen.length = 0;
+      await MD.generateImages(own('image', 'zhipu'), { prompt: 'x', size: '1280x720' }, { workspaceDir: ws, fetchImpl: f2 });
+      check('M32 Zhipu picture: CogView through the OpenAI shape at open.bigmodel.cn', seen[0].url === 'https://open.bigmodel.cn/api/paas/v4/images/generations' && seen[0].body.model === 'cogview-4-250304' && seen[0].body.size === '1280x720');
+      seen.length = 0;
+      await MD.generateImages(own('image', 'google'), { prompt: 'x' }, { workspaceDir: ws, fetchImpl: f2 });
+      check('M32 Google Imagen: Gemini\'s OpenAI-compatible address, base64 back, no size sent', seen[0].url.startsWith('https://generativelanguage.googleapis.com/v1beta/openai/') && seen[0].body.response_format === 'b64_json' && seen[0].body.size === undefined);
+      check('M32 sizes: gpt-image and dall-e-3 get sizes they take; Seedream 4.5 is scaled up to its minimum, same shape; MiniMax ratios',
+        MD.openAiSize('gpt-image-1', '1280x720') === '1536x1024' && MD.openAiSize('gpt-image-1-mini', '720x1280') === '1024x1536' && MD.openAiSize('dall-e-3', '1280x720') === '1792x1024'
+        && MD.openAiSize('doubao-seedream-4-5-251128', '1280x720') === '2560x1440' && MD.openAiSize('doubao-seedream-4-0-250828', '1280x720') === '1280x720'
+        && MD.aspectOf('720x1280') === '9:16' && MD.aspectOf('1024x768') === '4:3' && MD.aspectOf('1024x1024') === '1:1');
+      seen.length = 0;
+      const dv = await MD.generateVideo(own('video', 'dashscope'), { prompt: '海浪' }, { workspaceDir: ws, fetchImpl: f2, pollMs: 5 });
+      const dvi = await MD.submitVideo(own('video', 'dashscope'), { prompt: '海浪', imageDataUrl: 'data:image/png;base64,AA' }, { fetchImpl: f2 });
+      const dvBodies = seen.filter((c) => c.url.endsWith('/video-synthesis')).map((c) => c.body);
+      check('M32 Bailian video: text-to-video with a size, a first frame goes to the image-to-video model, saved as mp4',
+        /\.mp4$/.test(dv.path) && dvBodies[0].model === 'wan2.5-t2v-preview' && dvBodies[0].parameters.size === '1280*720'
+        && dvi.model === 'wan2.5-i2v-preview' && dvBodies[1].input.img_url.startsWith('data:image/png') && dvBodies[1].parameters.resolution === '720P');
+      seen.length = 0;
+      const mv = await MD.generateVideo(own('video', 'minimax'), { prompt: '海浪', imageDataUrl: 'data:image/png;base64,AA' }, { workspaceDir: ws, fetchImpl: f2, pollMs: 5 });
+      check('M32 MiniMax Hailuo video: submit, query, look up the file, download',
+        /\.mp4$/.test(mv.path) && seen[0].body.model === 'MiniMax-Hailuo-02' && seen[0].body.first_frame_image.startsWith('data:') && seen.some((c) => c.url.includes('/files/retrieve?file_id=f9')));
+      seen.length = 0;
+      const zv = await MD.generateVideo(own('video', 'zhipu', 'cogvideox-flash'), { prompt: '海浪' }, { workspaceDir: ws, fetchImpl: f2, pollMs: 5 });
+      check('M32 Zhipu CogVideoX video: the model picked, polled at async-result, saved', /\.mp4$/.test(zv.path) && seen[0].body.model === 'cogvideox-flash' && seen.some((c) => c.url.endsWith('/async-result/z1')));
+      const badKey = async () => json({ base_resp: { status_code: 1004, status_msg: 'login fail' } });
+      let mmErr = null;
+      try { await MD.generateImages(own('image', 'minimax'), { prompt: 'x' }, { workspaceDir: ws, fetchImpl: badKey }); } catch (err) { mmErr = err; }
+      check('M32 MiniMax: its "200 but status 1004" reads as a bad key', mmErr?.code === 'MEDIA_BAD_KEY');
+      const picked = MD.resolveMedia({ video: { service: 'dashscope', apiKey: 'k', model: 'wan2.2-t2v-plus' } }, 'video', {});
+      check('M32 a text-to-video model the human picked is kept; its first-frame partner is not forced in', picked.model === 'wan2.2-t2v-plus' && picked.imageModel === undefined);
+      const VC = await import('../src/voice.mjs');
+      check('M32 voice: each dictation service lists its models (OpenAI gpt-4o transcribe and Whisper, Groq, SiliconFlow); more OpenAI read-aloud voices',
+        VC.VOICE_PROVIDERS.find((p) => p.id === 'openai').models.join(',') === 'gpt-4o-mini-transcribe,gpt-4o-transcribe,whisper-1'
+        && VC.VOICE_PROVIDERS.filter((p) => p.id !== 'custom').every((p) => p.models.includes(p.model))
+        && VC.TTS_BY_HOST.find((t) => /openai/.test(String(t.match))).voices.length >= 10);
+      const page = await readText('../public/index.html');
+      check('M32 settings: a model box shows the whole list when clicked (the current model becomes the hint), voice has a model list too',
+        page.includes("document.addEventListener('focusin', (e) => {") && page.includes('el.dataset.kept = el.value;') && page.includes('list="voice-models"'));
+    }
     // Background video jobs: survive a restart, report back when done or failed.
     {
       const { createVideoJobs } = await import('../src/videojobs.mjs');
@@ -5670,6 +5848,37 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     await rt2.afterTaskTurn('tb2', 'cancelled');
     await new Promise((r) => setTimeout(r, 20));
     check('M20 not on top of the human: while the bot is in a turn nothing extra starts; the stop button stops the task', c2.length === 0 && rt2.tasks.get('tb2').status === 'stopped');
+
+    // M34: "停下" stops for real; a reply that only talks parks the task.
+    {
+      const { isStopWords } = await import('../src/agent.mjs');
+      check('M34 stop words: short "stop" messages count; longer instructions do not',
+        ['停下', '停下。', '别做了', '不要做了', '取消', '算了吧', '先停一下', 'stop', '请停止', '别继续了'].every(isStopWords)
+        && !['为什嘛卡住了', '停下来先告诉我做到哪了', '取消订单的邮件帮我找一下', '算了，换个方法做', '停止服务器然后重启', '不要删文件'].some(isStopWords));
+      const rt5 = mk();
+      const c5 = [];
+      rt5.runTurn = async (o) => { c5.push(o); };
+      rt5.tasks = new Map([['tb5', PL.makeTask({ botId: 'tb5', request: 'y', goal: '两屏切换', steps: ['a', 'b'] }).plan]]);
+      await rt5.afterTaskTurn('tb5', 'success', null, { fromHuman: true, toolsRun: 0 });
+      await new Promise((r) => setTimeout(r, 20));
+      const parked = rt5.tasks.get('tb5').status;
+      await rt5.afterTaskTurn('tb5', 'success', null, { fromHuman: true, toolsRun: 3 });
+      for (let i = 0; i < 20 && !c5.length; i += 1) await new Promise((r) => setTimeout(r, 10));
+      check('M34 a reply to the human that did no work parks the task (no turn of its own); when the human answers and the bot works again it goes on by itself',
+        parked === 'waiting' && c5.length === 1 && c5[0].source === 'task' && rt5.tasks.get('tb5').status === 'running', JSON.stringify({ parked, n: c5.length }));
+      // While it works: "停下" ends the turn and the task at once, without asking the model.
+      const rt6 = mk();
+      rt6.tasks = new Map([['tb6', PL.makeTask({ botId: 'tb6', request: 'y', goal: '两屏切换', steps: ['a', 'b'] }).plan]]);
+      const ctl = new AbortController();
+      rt6.active.set('t6', { controller: ctl, botId: 'tb6', task: '两屏切换', startedAt: Date.now(), steps: 3, step: { name: 'shell', args: {}, startedAt: Date.now() }, last: '', inbox: [] });
+      rt6.model = { complete: async () => { throw new Error('the model must not be asked'); } };
+      const r6 = await rt6.aside({ botId: 'tb6', text: '停下' });
+      check('M34 "停下" while it works: the turn is aborted, the task stopped, and it says so plainly',
+        ctl.signal.aborted && rt6.tasks.get('tb6').status === 'stopped' && r6.stopped === true && /停下了/.test(r6.text) && /不会再自动接着做/.test(r6.text));
+      const srcA = await readText('../src/agent.mjs');
+      check('M34 a new message that says stop closes the open task before the bot answers, and the bot is told not to go on',
+        srcA.includes("if (task && source !== 'task' && isStopWords(text)) {") && srcA.includes('你手上的任务已经按用户的话停止了'));
+    }
 
     // After a restart: an open task from the last day goes on; an old one stays put.
     const fresh = PL.makeTask({ botId: 'tb3', request: 'z', goal: '重启后继续', steps: ['a', 'b'] }).plan;

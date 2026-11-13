@@ -12,7 +12,18 @@
  *   ark          Volcano Engine Ark (Doubao Seedream / Seedance):
  *                images: POST /images/generations (OpenAI shape)
  *                videos: POST /contents/generations/tasks; GET .../tasks/:id
- *   openai       any OpenAI-compatible /images/generations (no video)
+ *   openai       any OpenAI-compatible /images/generations (no video); Zhipu
+ *                CogView and Google Imagen speak it too
+ *   dashscope    Alibaba Bailian (Wanxiang, Qwen-Image), asynchronous:
+ *                POST /services/aigc/text2image/image-synthesis or
+ *                /services/aigc/video-generation/video-synthesis with
+ *                X-DashScope-Async: enable -> output.task_id; GET /tasks/:id
+ *   zhipu        Zhipu CogVideoX videos: POST /videos/generations -> id;
+ *                GET /async-result/:id
+ *   minimax      MiniMax: images POST /image_generation (data.image_urls);
+ *                videos POST /video_generation -> task_id;
+ *                GET /query/video_generation?task_id= -> file_id;
+ *                GET /files/retrieve?file_id= -> file.download_url
  * Results are downloaded into the workspace, so they stay after the provider's
  * temporary URL expires and the chat can show them.
  */
@@ -24,13 +35,21 @@ import { P, readJson, writeJsonAtomic } from './store.mjs';
 const MEDIA_FILE = path.join(P.dataDir, 'media.json');
 
 export const IMAGE_SERVICES = [
-  { id: 'siliconflow', label: '硅基流动（Kolors / FLUX / Qwen-Image）', kind: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Kwai-Kolors/Kolors', models: ['Kwai-Kolors/Kolors', 'Qwen/Qwen-Image', 'black-forest-labs/FLUX.1-schnell'], keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
-  { id: 'ark', label: '火山方舟 豆包 Seedream', kind: 'ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedream-4-0-250828', models: ['doubao-seedream-4-0-250828'], keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey' },
-  { id: 'openai', label: 'OpenAI 兼容（gpt-image-1 等）', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', models: ['gpt-image-1', 'dall-e-3'], keyUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'siliconflow', label: '硅基流动（Kolors / Qwen-Image / FLUX）', kind: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Kwai-Kolors/Kolors', models: ['Kwai-Kolors/Kolors', 'Qwen/Qwen-Image', 'black-forest-labs/FLUX.1-dev', 'black-forest-labs/FLUX.1-schnell'], keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
+  { id: 'ark', label: '火山方舟 豆包 Seedream', kind: 'ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedream-4-0-250828', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828', 'doubao-seedream-3-0-t2i-250415'], keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey' },
+  { id: 'dashscope', label: '阿里云百炼（通义万相 / Qwen-Image）', kind: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'wan2.5-t2i-preview', models: ['wan2.5-t2i-preview', 'wan2.2-t2i-plus', 'wan2.2-t2i-flash', 'qwen-image-plus', 'qwen-image'], keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1' },
+  { id: 'zhipu', label: '智谱 CogView（cogview-3-flash 免费）', kind: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'cogview-4-250304', models: ['cogview-4-250304', 'cogview-3-flash'], keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+  { id: 'minimax', label: 'MiniMax 海螺 image-01', kind: 'minimax', baseUrl: 'https://api.minimaxi.com/v1', model: 'image-01', models: ['image-01'], keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key' },
+  { id: 'openai', label: 'OpenAI（gpt-image-1 等）', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', models: ['gpt-image-1', 'gpt-image-1-mini', 'dall-e-3'], keyUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'google', label: 'Google Imagen（Gemini API）', kind: 'openai', noSize: true, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'imagen-4.0-generate-001', models: ['imagen-4.0-generate-001', 'imagen-4.0-fast-generate-001', 'imagen-4.0-ultra-generate-001'], keyUrl: 'https://aistudio.google.com/apikey' },
+  { id: 'custom', label: '自定义（OpenAI 兼容）', kind: 'openai', baseUrl: '', model: '', models: [], keyUrl: '' },
 ];
 export const VIDEO_SERVICES = [
   { id: 'siliconflow', label: '硅基流动（通义万相 Wan2.2）', kind: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Wan-AI/Wan2.2-T2V-A14B', imageModel: 'Wan-AI/Wan2.2-I2V-A14B', models: ['Wan-AI/Wan2.2-T2V-A14B', 'Wan-AI/Wan2.2-I2V-A14B'], keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
-  { id: 'ark', label: '火山方舟 豆包 Seedance', kind: 'ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedance-1-0-pro-250528', models: ['doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-lite-t2v-250428'], keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey' },
+  { id: 'ark', label: '火山方舟 豆包 Seedance', kind: 'ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seedance-1-0-pro-250528', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-lite-i2v-250428'], keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey' },
+  { id: 'dashscope', label: '阿里云百炼（通义万相 Wan）', kind: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com/api/v1', model: 'wan2.5-t2v-preview', imageModel: 'wan2.5-i2v-preview', models: ['wan2.5-t2v-preview', 'wan2.2-t2v-plus', 'wan2.5-i2v-preview', 'wan2.2-i2v-flash', 'wan2.2-i2v-plus'], keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1' },
+  { id: 'minimax', label: 'MiniMax 海螺 Hailuo', kind: 'minimax', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-Hailuo-02', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-02', 'T2V-01-Director', 'I2V-01'], keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key' },
+  { id: 'zhipu', label: '智谱 CogVideoX（cogvideox-flash 免费）', kind: 'zhipu', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'cogvideox-3', models: ['cogvideox-3', 'cogvideox-flash'], keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
 ];
 
 function mediaError(status, code, message) {
@@ -82,7 +101,14 @@ export function resolveMedia(media, kind, { voice } = {}) {
   const own = media?.[kind] || emptyOne();
   const preset = list.find((s) => s.id === own.service) || list[0];
   if (own.apiKey) {
-    return { source: 'own', kind: preset.kind, service: preset.id, baseUrl: own.baseUrl || preset.baseUrl, model: own.model || preset.model, imageModel: preset.imageModel, apiKey: own.apiKey };
+    const baseUrl = own.baseUrl || preset.baseUrl;
+    const model = own.model || preset.model;
+    // "Custom" has no address or model of its own: nothing to call until both are filled in.
+    if (!baseUrl || !model) return null;
+    // A first-frame model is used for a picture only when the human kept the
+    // service's default text model (a model they picked is used as it is).
+    const imageModel = own.model && own.model !== preset.model ? (/i2v|I2V/.test(own.model) ? own.model : undefined) : preset.imageModel;
+    return { source: 'own', kind: preset.kind, service: preset.id, baseUrl, model, imageModel, noSize: preset.noSize, apiKey: own.apiKey };
   }
   // A SiliconFlow voice key works for SiliconFlow generation too.
   const voiceBase = trimUrl(voice?.baseUrl || 'https://api.siliconflow.cn/v1');
@@ -113,12 +139,12 @@ export function publicMedia(media, ctx) {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-async function callJson(url, { method = 'POST', apiKey, body, timeoutMs = 120000, fetchImpl = fetch } = {}) {
+async function callJson(url, { method = 'POST', apiKey, body, headers = {}, timeoutMs = 120000, fetchImpl = fetch } = {}) {
   let res;
   try {
     res = await fetchImpl(url, {
       method,
-      headers: { authorization: `Bearer ${apiKey}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+      headers: { authorization: `Bearer ${apiKey}`, ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -131,6 +157,17 @@ async function callJson(url, { method = 'POST', apiKey, body, timeoutMs = 120000
   if (!res.ok) {
     const msg = json?.error?.message || json?.message || text.slice(0, 300);
     throw mediaError(res.status === 401 || res.status === 403 ? 401 : 502, res.status === 401 || res.status === 403 ? 'MEDIA_BAD_KEY' : 'MEDIA_FAILED', `生成服务返回 ${res.status}：${msg}`);
+  }
+  // MiniMax answers 200 with its own status: 0 is fine, 1004 / 2049 a bad key.
+  const br = json?.base_resp;
+  if (br && Number(br.status_code) !== 0) {
+    const badKey = [1004, 2049].includes(Number(br.status_code));
+    throw mediaError(badKey ? 401 : 502, badKey ? 'MEDIA_BAD_KEY' : 'MEDIA_FAILED', `生成服务返回 ${br.status_code}：${br.status_msg || '失败'}`);
+  }
+  // Bailian puts a refusal in code / message with a 200 now and then.
+  if (json?.code && json?.output === undefined && json?.request_id && /^(InvalidApiKey|InvalidParameter|DataInspectionFailed|Throttling|AccessDenied)/.test(String(json.code))) {
+    const badKey = /InvalidApiKey|AccessDenied/.test(String(json.code));
+    throw mediaError(badKey ? 401 : 502, badKey ? 'MEDIA_BAD_KEY' : 'MEDIA_FAILED', `生成服务返回 ${json.code}：${json.message || ''}`);
   }
   return json || {};
 }
@@ -167,6 +204,73 @@ async function saveResult({ url, b64 }, { workspaceDir, folder, ext, fetchImpl =
 
 const SIZES = new Set(['1024x1024', '960x1280', '768x1024', '720x1440', '720x1280', '1280x720', '1024x768', '1280x960', '1440x720']);
 
+const dims = (sz) => sz.split('x').map(Number);
+/** "1280x720" -> "16:9" (the nearest ratio MiniMax takes). */
+export function aspectOf(sz) {
+  const [w, h] = dims(sz);
+  const ratios = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'];
+  const r = w / h;
+  return ratios.reduce((best, x) => {
+    const [a, b] = x.split(':').map(Number);
+    return Math.abs(a / b - r) < Math.abs(best.v - r) ? { x, v: a / b } : best;
+  }, { x: '1:1', v: 1 }).x;
+}
+
+/**
+ * The size a model behind an OpenAI-shaped endpoint accepts:
+ *   gpt-image-*  1024x1024, 1536x1024, 1024x1536
+ *   dall-e-3     1024x1024, 1792x1024, 1024x1792
+ *   Seedream 4.5 at least 2560x1440 worth of pixels: scaled up, same shape
+ *   others       as asked
+ */
+export function openAiSize(model, sz) {
+  const [w, h] = dims(sz);
+  const shape = w > h ? 'wide' : w < h ? 'tall' : 'square';
+  if (/^gpt-image/i.test(model)) return { wide: '1536x1024', tall: '1024x1536', square: '1024x1024' }[shape];
+  if (/^dall-e-3/i.test(model)) return { wide: '1792x1024', tall: '1024x1792', square: '1024x1024' }[shape];
+  if (/seedream-4-5/i.test(model)) {
+    const f = Math.sqrt((2560 * 1440) / (w * h));
+    if (f > 1) return `${Math.ceil((w * f) / 16) * 16}x${Math.ceil((h * f) / 16) * 16}`;
+  }
+  return sz;
+}
+
+/** Bailian sizes ("W*H"); Qwen-Image takes only its five. */
+function dashscopeSize(model, sz) {
+  const [w, h] = dims(sz);
+  if (/^qwen-image/i.test(model)) {
+    const r = w / h;
+    return r > 1.6 ? '1664*928' : r > 1.1 ? '1472*1140' : r < 0.625 ? '928*1664' : r < 0.9 ? '1140*1472' : '1328*1328';
+  }
+  return `${w}*${h}`;
+}
+
+const DASH_ASYNC = { 'X-DashScope-Async': 'enable' };
+
+/** Wait for a Bailian task. -> its output; throws when it failed or took too long */
+async function dashscopeWait(base, taskId, apiKey, { fetchImpl, pollMs = 3000, maxWaitMs = 5 * 60 * 1000 }) {
+  const started = Date.now();
+  for (;;) {
+    await sleep(pollMs);
+    const s = await callJson(`${base}/tasks/${encodeURIComponent(taskId)}`, { method: 'GET', apiKey, fetchImpl });
+    const st = String(s.output?.task_status || '').toUpperCase();
+    if (st === 'SUCCEEDED') return s.output;
+    if (st === 'FAILED' || st === 'CANCELED' || st === 'UNKNOWN') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.output?.message || s.output?.code || st}`);
+    if (Date.now() - started > maxWaitMs) throw mediaError(504, 'MEDIA_TIMEOUT', '图片 5 分钟还没生成好');
+  }
+}
+
+async function dashscopeImages(service, { text, sz, n, negativePrompt, fetchImpl, pollMs }) {
+  const base = trimUrl(service.baseUrl);
+  const body = { model: service.model, input: { prompt: text.slice(0, 2000) }, parameters: { size: dashscopeSize(service.model, sz), n } };
+  if (negativePrompt) body.input.negative_prompt = String(negativePrompt).slice(0, 500);
+  const out = await callJson(`${base}/services/aigc/text2image/image-synthesis`, { apiKey: service.apiKey, body, headers: DASH_ASYNC, fetchImpl });
+  const id = out.output?.task_id;
+  if (!id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
+  const done = await dashscopeWait(base, id, service.apiKey, { fetchImpl, pollMs: service.pollMs ?? pollMs });
+  return (done.results || []).map((r) => ({ url: r.url }));
+}
+
 /** -> {paths:[...], model, latencyMs} */
 export async function generateImages(service, { prompt, size = '1024x1024', count = 1, negativePrompt = '' } = {}, { workspaceDir, fetchImpl = fetch } = {}) {
   if (!service) throw mediaError(409, 'IMAGE_NOT_CONFIGURED', '还没有配置生图：在「设置 → 模型 → 生图」里选一个服务并填密钥（硅基流动的密钥就能用）');
@@ -182,11 +286,20 @@ export async function generateImages(service, { prompt, size = '1024x1024', coun
     if (negativePrompt) body.negative_prompt = String(negativePrompt).slice(0, 1000);
     const out = await callJson(url, { apiKey: service.apiKey, body, fetchImpl });
     items = (out.images || out.data || []).map((i) => ({ url: i.url, b64: i.b64_json }));
+  } else if (service.kind === 'dashscope') {
+    items = await dashscopeImages(service, { text, sz, n, negativePrompt, fetchImpl });
+  } else if (service.kind === 'minimax') {
+    const body = { model: service.model, prompt: text.slice(0, 1500), aspect_ratio: aspectOf(sz), response_format: 'url', n };
+    const out = await callJson(`${trimUrl(service.baseUrl)}/image_generation`, { apiKey: service.apiKey, body, fetchImpl });
+    items = (out.data?.image_urls || []).map((u) => ({ url: u }));
   } else {
-    // OpenAI shape (OpenAI, Ark Seedream). One call per image keeps old models happy.
+    // OpenAI shape (OpenAI, Ark Seedream, Zhipu CogView, Google Imagen). One
+    // call per image keeps old models happy.
     for (let i = 0; i < n; i += 1) {
-      const body = { model: service.model, prompt: text.slice(0, 4000), size: sz, n: 1 };
+      const body = { model: service.model, prompt: text.slice(0, 4000), n: 1 };
+      if (!service.noSize) body.size = openAiSize(service.model, sz);
       if (service.kind === 'ark') body.response_format = 'url';
+      if (service.noSize) body.response_format = 'b64_json';
       const out = await callJson(url, { apiKey: service.apiKey, body, fetchImpl });
       items.push(...(out.data || []).map((d) => ({ url: d.url, b64: d.b64_json })));
     }
@@ -227,6 +340,31 @@ export async function submitVideo(service, { prompt, size = '1280x720', imageDat
     if (!out.id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
     return { kind: 'ark', baseUrl: base, model: service.model, taskId: String(out.id) };
   }
+  const model = imageDataUrl && service.imageModel ? service.imageModel : service.model;
+  if (service.kind === 'dashscope') {
+    const [w, h] = dims(/^\d+x\d+$/.test(size) ? size : '1280x720');
+    const body = imageDataUrl
+      ? { model, input: { prompt: text.slice(0, 1500), img_url: imageDataUrl }, parameters: { resolution: '720P' } }
+      : { model, input: { prompt: text.slice(0, 1500) }, parameters: { size: `${w}*${h}` } };
+    const out = await callJson(`${base}/services/aigc/video-generation/video-synthesis`, { apiKey: service.apiKey, body, headers: DASH_ASYNC, fetchImpl });
+    const id = out.output?.task_id;
+    if (!id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
+    return { kind: 'dashscope', baseUrl: base, model, taskId: String(id) };
+  }
+  if (service.kind === 'minimax') {
+    const body = { model, prompt: text.slice(0, 2000) };
+    if (imageDataUrl) body.first_frame_image = imageDataUrl;
+    const out = await callJson(`${base}/video_generation`, { apiKey: service.apiKey, body, fetchImpl });
+    if (!out.task_id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
+    return { kind: 'minimax', baseUrl: base, model, taskId: String(out.task_id) };
+  }
+  if (service.kind === 'zhipu') {
+    const body = { model, prompt: text.slice(0, 1500) };
+    if (imageDataUrl) body.image_url = imageDataUrl;
+    const out = await callJson(`${base}/videos/generations`, { apiKey: service.apiKey, body, fetchImpl });
+    if (!out.id) throw mediaError(502, 'MEDIA_FAILED', '生成服务没有返回任务编号');
+    return { kind: 'zhipu', baseUrl: base, model, taskId: String(out.id) };
+  }
   throw mediaError(400, 'VIDEO_UNSUPPORTED', '这个服务不支持生成视频');
 }
 
@@ -237,6 +375,29 @@ export async function checkVideo(task, apiKey, { fetchImpl = fetch } = {}) {
     const st = String(s.status || '').toLowerCase();
     if (st === 'succeed' || st === 'succeeded') return { done: true, url: s.results?.videos?.[0]?.url, status: st };
     if (st === 'failed') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.reason || '未知原因'}`);
+    return { done: false, status: st };
+  }
+  if (task.kind === 'dashscope') {
+    const s = await callJson(`${task.baseUrl}/tasks/${encodeURIComponent(task.taskId)}`, { method: 'GET', apiKey, fetchImpl });
+    const st = String(s.output?.task_status || '').toLowerCase();
+    if (st === 'succeeded') return { done: true, url: s.output?.video_url, status: st };
+    if (st === 'failed' || st === 'canceled' || st === 'unknown') throw mediaError(502, 'MEDIA_FAILED', `生成失败：${s.output?.message || s.output?.code || st}`);
+    return { done: false, status: st };
+  }
+  if (task.kind === 'minimax') {
+    const s = await callJson(`${task.baseUrl}/query/video_generation?task_id=${encodeURIComponent(task.taskId)}`, { method: 'GET', apiKey, fetchImpl });
+    const st = String(s.status || '').toLowerCase();
+    if (st === 'fail') throw mediaError(502, 'MEDIA_FAILED', '生成失败');
+    if (st !== 'success') return { done: false, status: st };
+    // Done: the video is a file to look up for its download address.
+    const f = await callJson(`${task.baseUrl}/files/retrieve?file_id=${encodeURIComponent(s.file_id)}`, { method: 'GET', apiKey, fetchImpl });
+    return { done: true, url: f.file?.download_url, status: st };
+  }
+  if (task.kind === 'zhipu') {
+    const s = await callJson(`${task.baseUrl}/async-result/${encodeURIComponent(task.taskId)}`, { method: 'GET', apiKey, fetchImpl });
+    const st = String(s.task_status || '').toLowerCase();
+    if (st === 'success') return { done: true, url: s.video_result?.[0]?.url, status: st };
+    if (st === 'fail') throw mediaError(502, 'MEDIA_FAILED', '生成失败');
     return { done: false, status: st };
   }
   const s = await callJson(`${task.baseUrl}/contents/generations/tasks/${encodeURIComponent(task.taskId)}`, { method: 'GET', apiKey, fetchImpl });

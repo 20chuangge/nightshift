@@ -32,7 +32,7 @@ const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
-import { CLI_AGENTS, newTaskDir, runCliAgent } from './cliagents.mjs';
+import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
 /** Same site: equal hosts, or one is a subdomain of the other's registrable part (passport.jd.com ~ www.jd.com). */
@@ -179,6 +179,8 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
       cwd,
       windowsHide: true,
       env,
+      // Its own process group on Linux/macOS, so a timeout ends everything it started.
+      detached: process.platform !== 'win32',
     });
 
     // maxOutput is in characters; 4 bytes per character is the UTF-8 worst case.
@@ -200,22 +202,50 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     child.stdout.on('data', (c) => append('stdout', c));
     child.stderr.on('data', (c) => append('stderr', c));
 
+    // The whole tree: the shell and whatever it started (seen: "start ... node
+    // proxy.mjs" kept running after a timeout killed only cmd.exe).
     const kill = () => {
       try {
-        child.kill();
+        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
+        else process.kill(-child.pid, 'SIGKILL');
       } catch {
-        /* already gone */
+        try { child.kill(); } catch { /* already gone */ }
       }
+    };
+
+    let exitCode = null;
+    let exitSignal = null;
+    let exited = false;
+    let lingering = false;
+    const done = () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      finish({
+        ok: exitCode === 0 && !timedOut,
+        exitCode,
+        signal: exitSignal || null,
+        timedOut,
+        stdout: truncate(text('stdout'), maxOutput).text,
+        stderr: truncate(text('stderr'), maxOutput).text,
+        truncated,
+        ...(lingering ? { note: 'The command ended but a program it started is still running in the background (it kept the output open). Its later output is not shown; if it is a server, check it with another command (a port, a log file) instead of waiting on it.' } : {}),
+        command,
+        cwd,
+      });
     };
 
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
+      // Whatever still holds the output open must not keep the turn waiting.
+      setTimeout(() => { exitCode = exitCode ?? null; done(); }, 3000).unref?.();
     }, Math.max(1000, Number(timeoutMs) || 30000));
 
-    const onAbort = () => kill();
+    const onAbort = () => {
+      kill();
+      setTimeout(done, 3000).unref?.();
+    };
     if (signal) {
-      if (signal.aborted) kill();
+      if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
@@ -223,19 +253,24 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
       finish({ ok: false, error: { code: 'SHELL_SPAWN_FAILED', message: err.message }, stdout: text('stdout'), stderr: text('stderr'), timedOut });
     });
 
+    // Normally the output closes with the command. When something it started
+    // in the background keeps the output open, the command still counts as
+    // finished a moment after it exits.
+    child.on('exit', (code, sig) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = sig;
+      setTimeout(() => {
+        if (settled) return;
+        lingering = true;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        done();
+      }, 1500).unref?.();
+    });
     child.on('close', (code, sig) => {
-      if (signal) signal.removeEventListener('abort', onAbort);
-      finish({
-        ok: code === 0 && !timedOut,
-        exitCode: code,
-        signal: sig || null,
-        timedOut,
-        stdout: truncate(text('stdout'), maxOutput).text,
-        stderr: truncate(text('stderr'), maxOutput).text,
-        truncated,
-        command,
-        cwd,
-      });
+      if (!exited) { exitCode = code; exitSignal = sig; }
+      done();
     });
   });
 }
@@ -652,11 +687,12 @@ export function createRegistry(deps) {
     },
   });
 
-  // --- coding CLIs on the human's own subscription (Claude Code, Codex) ----
+  // --- coding CLIs on the human's own subscription (Claude Code, Codex, Cursor, Qoder)
   add({
     name: 'cli_agent_run',
     description:
-      'Hand a programming task to an official coding assistant installed and logged in on this machine - Claude Code (agent "claude", the human\'s Claude Pro/Max plan) or Codex CLI (agent "codex", their ChatGPT plan) - so the work uses that subscription instead of paid API calls. ' +
+      'Hand a programming task to an official coding assistant installed and logged in on this machine - Claude Code (agent "claude", the human\'s Claude Pro/Max plan), Codex CLI (agent "codex", their ChatGPT plan), Cursor (agent "cursor", their Cursor plan) or Qoder (agent "qoder", their Qoder plan) - so the work uses that subscription instead of paid API calls. ' +
+      'model picks one of that tool\'s models (e.g. "opus" for Claude Code); leave it out to use the one the human chose in settings. Name a model only when the human asked for one or the task clearly needs a stronger or cheaper one. ' +
       'It works in its own folder inside the workspace (default cli-tasks/<date>-<id>/) and may create and edit files there. Set allowShell when it must run commands (run tests, execute a script); the human sees that on the approval card. ' +
       'Every call asks the human first. It can take up to 20 minutes; the stop button ends it. You get its summary, the last part of its output (the full log is output.log in the folder) and the files it left. ' +
       'Write the task completely: what to build, in which language, how to check it works. Use it for code; do small edits yourself.',
@@ -664,7 +700,8 @@ export function createRegistry(deps) {
     parameters: {
       type: 'object',
       properties: {
-        agent: { type: 'string', enum: ['claude', 'codex'], description: 'claude = Claude Code, codex = Codex CLI.' },
+        agent: { type: 'string', enum: CLI_AGENT_IDS, description: 'claude = Claude Code, codex = Codex CLI, cursor = Cursor CLI, qoder = Qoder CLI.' },
+        model: { type: 'string', description: 'Optional model name for that tool (default: the human\'s choice in settings).' },
         task: { type: 'string', description: 'The whole task, in plain words (Chinese is fine).' },
         dir: { type: 'string', description: 'Folder in the workspace to work in (optional; default a new cli-tasks/<date>-<id>/).' },
         allowShell: { type: 'boolean', description: 'Let it run commands (tests, scripts). Default false: it only reads and edits files in the folder.' },
@@ -675,7 +712,7 @@ export function createRegistry(deps) {
     async run(args, ctx) {
       const agent = String(args?.agent || '');
       const task = String(args?.task || '').trim();
-      if (!CLI_AGENTS[agent]) throw toolError('CLI_BAD_ARGS', 'agent must be "claude" or "codex"');
+      if (!CLI_AGENTS[agent]) throw toolError('CLI_BAD_ARGS', `agent must be one of: ${CLI_AGENT_IDS.join(', ')}`);
       if (!task) throw toolError('CLI_BAD_ARGS', 'cli_agent_run needs a task');
       let dir;
       if (args?.dir) {
@@ -687,7 +724,7 @@ export function createRegistry(deps) {
         dir = newTaskDir(ctx.workspaceDir);
       }
       try {
-        const res = await runCliAgent({ agent, task, dir, allowShell: Boolean(args?.allowShell), signal: ctx.signal });
+        const res = await runCliAgent({ agent, task, dir, allowShell: Boolean(args?.allowShell), model: args?.model, signal: ctx.signal });
         return { ...res, dir: path.relative(ctx.workspaceDir, res.dir), outputFile: path.relative(ctx.workspaceDir, res.outputFile) };
       } catch (err) {
         throw toolError(err.code || 'CLI_FAILED', err.message);

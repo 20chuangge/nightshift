@@ -12,6 +12,8 @@
  */
 
 import net from 'node:net';
+// The TightVNC MSI (cached here, uploaded to new Windows machines; also this computer's own screen).
+import { tightVncInstaller } from './localvnc.mjs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -276,41 +278,6 @@ async function shareModel(hubUrl, pairCode, model, voice = null, vision = null) 
     });
     if (!v.ok) throw new Error(`vision HTTP ${v.status}`);
   }
-}
-
-/**
- * The TightVNC MSI for Windows targets, downloaded once on this computer and
- * cached in the temp dir. DESK_VNC_MSI points at a file to use instead (tests,
- * offline installs). Returns {file, bytes} or null when it cannot be had; the
- * target then tries to download it itself.
- */
-async function tightVncInstaller() {
-  const override = process.env.DESK_VNC_MSI;
-  if (override) {
-    const st = await fsp.stat(override).catch(() => null);
-    return st?.isFile() ? { file: override, bytes: st.size } : null;
-  }
-  const dir = path.join(os.tmpdir(), 'nightshift-cache');
-  await fsp.mkdir(dir, { recursive: true });
-  const cached = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^tightvnc-[\d.]+-gpl-setup-64bit\.msi$/.test(n)).sort().pop();
-  if (cached) {
-    const st = await fsp.stat(path.join(dir, cached));
-    if (st.size > 1024 * 1024) return { file: path.join(dir, cached), bytes: st.size };
-  }
-  let url = 'https://www.tightvnc.com/download/2.8.90/tightvnc-2.8.90-gpl-setup-64bit.msi';
-  try {
-    const page = await (await fetch('https://www.tightvnc.com/download.php', { signal: AbortSignal.timeout(15000) })).text();
-    const m = /\/download\/([0-9.]+)\/tightvnc-[0-9.]+-gpl-setup-64bit\.msi/.exec(page);
-    if (m) url = `https://www.tightvnc.com${m[0]}`;
-  } catch { /* keep the known version */ }
-  const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const bytes = Buffer.from(await res.arrayBuffer());
-  if (bytes.length < 1024 * 1024) throw new Error('installer too small');
-  const file = path.join(dir, path.basename(new URL(url).pathname));
-  await fsp.writeFile(`${file}.part`, bytes);
-  await fsp.rename(`${file}.part`, file);
-  return { file, bytes: bytes.length };
 }
 
 /**

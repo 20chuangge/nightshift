@@ -12,6 +12,15 @@ if ((argv[0] === 'auth' && argv[1] === 'status') || (argv[0] === 'login' && argv
   process.stdout.write(argv[0] === 'auth' ? '{"loggedIn": true, "authMethod": "claude.ai"}\n' : 'Logged in using ChatGPT\n');
   process.exit(0);
 }
+// Cursor / Qoder: "status" says who is logged in; "models" / "--list-models" list some.
+if (argv[0] === 'status') {
+  process.stdout.write(process.env.FAKE_CLI_LOGGED_OUT ? 'Not logged in. Run login first.\n' : 'Logged in as someone@example.com\n');
+  process.exit(0);
+}
+if (argv[0] === 'models' || argv[0] === '--list-models') {
+  process.stdout.write('Available models\n\n  auto - picks for you\n  gpt-5 (current)\n  claude-4.5-sonnet\n* Qwen3.8-Max\n\nTip: use --model <name>\n');
+  process.exit(0);
+}
 let stdin = '';
 process.stdin.on('data', (c) => { stdin += c; });
 process.stdin.on('end', () => {

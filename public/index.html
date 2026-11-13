@@ -3569,7 +3569,8 @@
           <label class="lbl" for="voice-baseurl">接口地址</label>
           <input class="field" id="voice-baseurl" placeholder="https://api.siliconflow.cn/v1" autocomplete="off" spellcheck="false" inputmode="url" />
           <label class="lbl" for="voice-model">模型</label>
-          <input class="field" id="voice-model" placeholder="FunAudioLLM/SenseVoiceSmall" autocomplete="off" spellcheck="false" />
+          <input class="field" id="voice-model" placeholder="FunAudioLLM/SenseVoiceSmall" autocomplete="off" spellcheck="false" list="voice-models" />
+          <datalist id="voice-models"></datalist>
           <label class="lbl" for="voice-apikey">API 密钥</label>
           <input class="field" id="voice-apikey" type="password" placeholder="sk-…" autocomplete="new-password" spellcheck="false" />
           <a class="row-note key-link" id="voice-keyurl" href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noreferrer">获取密钥</a>
@@ -3606,7 +3607,7 @@
         </div>
         <div class="voice-set" id="cliagents-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">用订阅额度的编程助手</div>
-          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code 或 Codex，用的是你自己的 Claude / ChatGPT 订阅，不按次花 API 费用。需要你在这台机器上自己装好、用官方方式登录一次；夜班不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
+          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；夜班不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
           <div id="cliagents-list" class="row-note">正在检查…</div>
           <div class="btn-row"><button class="btn tiny" id="cliagents-refresh" type="button">重新检查</button></div>
         </div>
@@ -5560,7 +5561,7 @@ const ABILITIES = [
   { id: 'team', label: '建机器人和群、派活', note: '', tools: ['bot_list', 'bot_message', 'bot_create', 'bot_update', 'bot_delete', 'group_create', 'group_post', 'group_list', 'group_update', 'group_delete'] },
   { id: 'settings', label: '改设置', note: '模型、主题等', tools: ['settings_get', 'settings_update', 'ui_get', 'ui_set'] },
   { id: 'machines', label: '切换机器', note: '把任务交给另一台机器', tools: ['machine_list', 'machine_switch'] },
-  { id: 'codecli', label: '交给 Claude Code / Codex', note: '用你的订阅额度写代码，每次都先问你', tools: ['cli_agent_run'] },
+  { id: 'codecli', label: '交给编程助手（Claude Code / Codex / Cursor / Qoder）', note: '用你的订阅额度写代码，每次都先问你', tools: ['cli_agent_run'] },
 ];
 
 function renderAbilities(bot) {
@@ -7182,6 +7183,7 @@ function applyVoiceProvider(fill = true) {
   const custom = p.id === 'custom';
   $('voice-baseurl').placeholder = p.baseUrl || 'https://…/v1';
   $('voice-model').placeholder = p.model || 'whisper-1';
+  $('voice-models').innerHTML = (p.models || [p.model].filter(Boolean)).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
   if (fill) {
     $('voice-baseurl').value = custom ? '' : p.baseUrl;
     $('voice-model').value = custom ? '' : p.model;
@@ -7222,6 +7224,27 @@ async function saveVoice(clear = false) {
 /* --- vision (image_view) settings ------------------------------------------ */
 const vision = { status: null, providers: [] };
 
+/* A model box with a list: a browser shows only the options that match what
+   is typed, so with the current model filled in the list looked like one
+   choice. While the box has focus it is empty (the current model shows as
+   the hint) and every option shows; leaving it without a pick puts it back. */
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement) || !el.getAttribute('list') || !el.value) return;
+  el.dataset.kept = el.value;
+  el.dataset.hint = el.placeholder;
+  el.placeholder = el.value;
+  el.value = '';
+});
+document.addEventListener('focusout', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement) || el.dataset.kept === undefined) return;
+  if (!el.value) el.value = el.dataset.kept;
+  el.placeholder = el.dataset.hint || '';
+  delete el.dataset.kept;
+  delete el.dataset.hint;
+});
+
 /** Settings → 模型 → 用订阅额度的编程助手: what this machine has. */
 async function loadCliAgents(refresh = false) {
   const box = $('cliagents-list');
@@ -7242,6 +7265,43 @@ async function loadCliAgents(refresh = false) {
     how.style.fontSize = '12px';
     how.textContent = !a.installed ? `安装：${a.install}` : !a.loggedIn ? `登录：在这台机器的终端里运行 ${a.login}` : '';
     if (how.textContent) row.appendChild(how);
+    // Which model it uses by default: its own list when it gives one, any name typed in.
+    if (a.installed) {
+      const pick = document.createElement('div');
+      pick.className = 'btn-row';
+      pick.style.margin = '4px 0 0';
+      const input = document.createElement('input');
+      input.className = 'field';
+      input.style.flex = '1';
+      input.style.minWidth = '0';
+      input.placeholder = '默认模型（留空用它自己的默认）';
+      input.value = a.model || '';
+      input.setAttribute('list', `cliagent-models-${a.id}`);
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      const list = document.createElement('datalist');
+      list.id = `cliagent-models-${a.id}`;
+      list.innerHTML = (a.models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+      const save = document.createElement('button');
+      save.className = 'btn tiny';
+      save.type = 'button';
+      save.textContent = '保存模型';
+      save.addEventListener('click', async () => {
+        try {
+          await api('/api/cliagents', { method: 'PUT', body: { agent: a.id, model: input.value.trim() } });
+          toast(input.value.trim() ? `${a.label} 默认用 ${input.value.trim()}` : `${a.label} 用它自己的默认模型`);
+        } catch (err) { toast(`保存失败：${err.message}`, true); }
+      });
+      pick.append(input, list, save);
+      row.appendChild(pick);
+      if ((a.models || []).length) {
+        const note = document.createElement('div');
+        note.className = 'row-note';
+        note.style.fontSize = '12px';
+        note.textContent = `可选 ${a.models.length} 个：点输入框选，或直接填模型名。机器人交活时也可以临时换模型。`;
+        row.appendChild(note);
+      }
+    }
     box.appendChild(row);
   }
 }
@@ -7799,7 +7859,7 @@ const TOOL_TEXT = {
   browser_fill_secret: { label: '填入登录信息', title: '想把保险箱里的登录信息填进网页', impact: '机器人看不到密码本身。' },
   request_takeover: { label: '请你接管屏幕', title: '需要你接管屏幕', impact: '你来操作这一步。' },
   image_view: { label: '看图片', title: '想看一张图片', impact: '只读取，不改动。' },
-  cli_agent_run: { label: '交给编程助手', title: '想把写代码的活交给 Claude Code / Codex', impact: '用你的订阅额度，在工作区的一个文件夹里写文件；勾了「运行命令」时还会运行命令。' },
+  cli_agent_run: { label: '交给编程助手', title: '想把写代码的活交给 Claude Code / Codex / Cursor / Qoder', impact: '用你的订阅额度，在工作区的一个文件夹里写文件；勾了「运行命令」时还会运行命令。' },
   briefing_collect: { label: '汇总近况', title: '想汇总各台机器的近况', impact: '只读取，不改动。' },
   page_save: { label: '做页面', title: '想把结果做成一个页面', impact: '页面存进工作区的页面库。' },
   file_send: { label: '发文件到另一台机器', title: '想把一个文件发到另一台机器', impact: '那台机器的工作区里会多一个文件。' },

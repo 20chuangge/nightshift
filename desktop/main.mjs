@@ -18,7 +18,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import readline from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
@@ -1266,12 +1266,24 @@ ipcMain.handle('desk:remove-machine', async (_event, url) => {
  * Quit for real, even when a page is frozen: app.quit() waits for every page
  * to agree to unload, and a hung page never answers.
  */
+/** This computer's screen server, when Nightshift started it ({mod, state}). */
+let localVnc = null;
+/** Stop it, once (quit by any path). */
+function stopLocalScreen() {
+  const v = localVnc;
+  localVnc = null;
+  if (v?.state) {
+    try { if (v.mod.stopLocalVnc(v.state)) bootLog('local screen: stopped'); } catch { /* gone */ }
+  }
+}
+
 function quitNow() {
   quitting = true;
   bootLog('quit');
   if (child && !child.killed) {
     try { child.kill(); } catch { /* already gone */ }
   }
+  stopLocalScreen();
   for (const w of BrowserWindow.getAllWindows()) {
     try { w.destroy(); } catch { /* already gone */ }
   }
@@ -1287,7 +1299,21 @@ if (!gotLock) {
   // Windows only shows toasts for an app with an AppUserModelID (the installer's shortcut uses this one).
   if (process.platform === 'win32') app.setAppUserModelId('com.desk.assistant');
 
+  // This computer's own screen (TightVNC, loopback only), started with
+  // Nightshift and stopped when it quits; machines with the TightVNC service
+  // keep theirs. In the background: a first run unpacks it (a 2 MB download).
+  const startLocalVnc = () => {
+    if (process.platform !== 'win32') return;
+    import(pathToFileURL(path.join(SERVER_DIR, 'src', 'localvnc.mjs')).href)
+      .then(async (m) => {
+        localVnc = { mod: m, state: await m.ensureLocalVnc({ dir: path.join(HOME, 'vnc') }) };
+        bootLog(`local screen: ${localVnc.state.mode}${localVnc.state.error ? ` (${localVnc.state.error})` : ''}${localVnc.state.retired?.length ? ` [${localVnc.state.retired.join(', ')}]` : ''}`);
+      })
+      .catch((err) => bootLog(`local screen: failed (${err.message})`));
+  };
+
   app.whenReady().then(async () => {
+    startLocalVnc();
     try {
       // Hub mode: no window, bind the network, stay in the tray. This is what
       // runs on the idle PC / VM; the other devices connect to it.
@@ -1351,6 +1377,8 @@ if (!gotLock) {
     if (child && !child.killed) {
       try { child.kill(); } catch { /* already gone */ }
     }
+    // The screen server goes with Nightshift (only the copy it started).
+    stopLocalScreen();
   });
 
   app.on('activate', showWindow);

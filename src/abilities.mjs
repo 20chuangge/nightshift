@@ -47,7 +47,7 @@ export function isRequestable(name) {
 /** Human words for the card ("给「编剧」加上：命令行"). */
 const LABELS = {
   fs_list: '查看文件', fs_read: '读文件', fs_write: '写文件', fs_mkdir: '建文件夹', fs_delete: '删除文件',
-  shell: '命令行', cli_agent_run: 'Claude Code / Codex', http_fetch: '抓取网页', browser_open: '浏览器',
+  shell: '命令行', cli_agent_run: '编程助手（Claude Code / Codex / Cursor / Qoder）', http_fetch: '抓取网页', browser_open: '浏览器',
   memory_read: '读笔记', memory_write: '记笔记', skill_list: '查看技能', skill_read: '读技能', skill_save: '保存技能',
   routine_create: '建定时任务', routine_list: '查看定时任务', routine_run: '运行定时任务',
   bot_list: '查看成员', bot_message: '找其他机器人帮忙', file_send: '发文件到别的机器', file_fetch: '从别的机器取文件',
@@ -70,7 +70,7 @@ export function abilitySummary(tools) {
   if (has.has('shell')) parts.push('命令行');
   if (has.has('browser_open')) parts.push('浏览器');
   if (has.has('http_fetch')) parts.push('抓网页');
-  if (has.has('cli_agent_run')) parts.push('Claude Code/Codex');
+  if (has.has('cli_agent_run')) parts.push('编程助手（Claude Code/Codex/Cursor/Qoder）');
   if (has.has('desktop_ui')) parts.push('操作桌面');
   return parts.length ? parts.join('、') : '还没有工具';
 }

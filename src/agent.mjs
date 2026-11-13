@@ -385,6 +385,18 @@ export function reachesSecrets(name, args = {}) {
   return '';
 }
 
+/**
+ * A message that only says "stop" ("停下", "别做了", "取消", "stop"): the work
+ * stops for real, instead of the bot promising to (seen: "停下" -> "收到，我不会
+ * 再往下做", and the task carried on). Short messages only; anything longer is
+ * an instruction the bot reads.
+ */
+export function isStopWords(text) {
+  const t = String(text || '').trim().replace(/[。！!.~～，,\s]+$/u, '');
+  if (!t || t.length > 12) return false;
+  return /^(请|你)?(先|快)?(停|停下|停下来|停止|停掉|停一下|停手|别(再)?(做|弄|搞|干|继续)了?|不要(再)?(做|弄|搞|干|继续)了?|不(做|弄|搞|干)了|取消(吧|任务|这个任务)?|算了|stop|cancel|abort)(吧|了|一下|吧别做了)?$/iu.test(t);
+}
+
 export class AgentRuntime {
   constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
     this.config = config;
@@ -452,6 +464,21 @@ export class AgentRuntime {
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
     const turnId = providedTurnId || uid('turn');
     const said = String(text);
+    // "停下" while it works: stop the turn and its task now, like the stop button.
+    if (busy && !busy.remote && !group?.id && isStopWords(said)) {
+      const running = this.active.get(busy.turnId);
+      const task = this.activeTask(bot.id);
+      if (task) { task.status = 'stopped'; task.endNote = '用户让停下'; await this.taskChanged(task); }
+      running?.controller?.abort();
+      const answer = `好，停下了${task ? `，任务「${task.goal}」不会再自动接着做` : ''}。已经做好的文件都还在；要接着做就跟我说。`;
+      const ev = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true };
+      await this.record(bot.id, { kind: 'user', text: said, turnId, source });
+      this.bus.emit({ type: 'turn.start', ...ev, text: said });
+      this.bus.emit({ type: 'message', ...ev, text: answer, final: true });
+      await this.record(bot.id, { kind: 'assistant', text: answer, turnId, source, final: true });
+      this.bus.emit({ type: 'turn.end', ...ev, status: 'success', summary: answer, steps: 0 });
+      return { turnId, text: answer, stopped: true };
+    }
     if (busy) this.active.get(busy.turnId)?.inbox.push(said);
     const now = Date.now();
     const secs = (ms) => `${Math.max(1, Math.round(ms / 1000))} 秒`;
@@ -791,12 +818,22 @@ export class AgentRuntime {
     let status = 'success';
     let summary = '';
     let steps = 0;
+    let toolsRun = 0;
     let finished = false;
     let waitingFor = null;
+    // "停下" from the human: the open task ends now, whatever the bot replies.
+    let stoppedByHuman = false;
 
     try {
       // The human's words come in while a task waits on them: they are the answer.
-      const task = direct ? this.activeTask(bot.id) : null;
+      let task = direct ? this.activeTask(bot.id) : null;
+      if (task && source !== 'task' && isStopWords(text)) {
+        task.status = 'stopped';
+        task.endNote = '用户让停下';
+        await this.taskChanged(task);
+        task = null;
+        stoppedByHuman = true;
+      }
       if (task && source !== 'task') {
         const waiting = task.tasks.find((t) => t.status === 'waiting_human');
         if (waiting && !waiting.answer) { waiting.answer = String(text).slice(0, 1000); await this.taskChanged(task); }
@@ -812,7 +849,8 @@ export class AgentRuntime {
       const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
-        { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '') },
+        { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '')
+          + (stoppedByHuman ? '\n\n（系统：你手上的任务已经按用户的话停止了，不会再自动接着做。用一句话确认已经停下，说清做到了哪一步、留下了什么；不要再调用工具。）' : '') },
       ];
 
       if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });
@@ -1023,6 +1061,7 @@ export class AgentRuntime {
         });
 
         for (const call of response.toolCalls) {
+          toolsRun += 1;
           live.step = { name: call.name, args: call.arguments || call.args || {}, startedAt: Date.now() };
           const outcome = boardTools.includes(call.name)
             ? await this.boardToolCall({ call, ctx, bot, group: groupContext, messages, baseEvent, turnId, request: String(text) })
@@ -1186,7 +1225,7 @@ export class AgentRuntime {
         ...(waitingFor ? { waitingFor } : {}),
       });
       this.groupTurns.delete(turnId);
-      if (direct) this.afterTaskTurn(bot.id, status, waitingFor).catch(() => {});
+      if (direct) this.afterTaskTurn(bot.id, status, waitingFor, { fromHuman: source !== 'task', toolsRun }).catch(() => {});
       // Cut off by the step limit with no open checklist: the next turn starts
       // by itself. The bot decides - finished: say the result; not: go on.
       if (autoContinue) {
@@ -1364,12 +1403,22 @@ export class AgentRuntime {
   }
 
   /** A direct turn ended: keep an open task going, park it, or stop it. */
-  async afterTaskTurn(botId, status, waitingFor) {
+  async afterTaskTurn(botId, status, waitingFor, { fromHuman = false, toolsRun = 1 } = {}) {
     const plan = this.activeTask(botId);
     if (!plan) return;
     if (status === 'cancelled') { plan.status = 'stopped'; await this.taskChanged(plan); return; }
+    // The human answered a parked task and the bot got back to work: it goes on by itself again.
+    if (fromHuman && toolsRun && !waitingFor && (plan.status === 'waiting' || plan.status === 'stalled') && status === 'success') {
+      plan.status = 'running'; plan.stalls = 0; plan.continuations = 0; plan.lastDone = doneSteps(plan);
+      await this.taskChanged(plan);
+    }
     if (plan.status !== 'running') return;
     if (waitingFor) { plan.status = 'waiting'; await this.taskChanged(plan); return; }
+    // The human said something and the bot only talked (a question, "why so
+    // slow", "wait"): the task waits for them instead of carrying on by itself
+    // (seen: after "停下" it answered "I will stop" and went on anyway). Their
+    // next message, or a step marked done, sets it going again.
+    if (fromHuman && !toolsRun) { plan.status = 'waiting'; await this.taskChanged(plan); return; }
     if (status === 'failed') return; // a model error: the next message (or a restart) picks it up
     const timer = setTimeout(() => this.continueTask(botId).catch((err) => this.bus.emit({ type: 'error', botId, message: err.message })), this.taskDelayMs ?? 1500);
     timer.unref?.();

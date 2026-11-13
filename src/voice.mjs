@@ -30,10 +30,10 @@ export const STT_FROM_PROVIDER = {
 
 /** Services with an OpenAI-compatible /audio/transcriptions. Any other one works through "custom". */
 export const VOICE_PROVIDERS = [
-  { id: 'siliconflow', label: '硅基流动 SenseVoice（免费，中文好）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
-  { id: 'openai', label: 'OpenAI Whisper', baseUrl: 'https://api.openai.com/v1', model: 'whisper-1', keyUrl: 'https://platform.openai.com/api-keys' },
-  { id: 'groq', label: 'Groq Whisper（快，有免费额度）', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', keyUrl: 'https://console.groq.com/keys' },
-  { id: 'custom', label: '自定义（OpenAI 兼容）', baseUrl: '', model: '', keyUrl: '' },
+  { id: 'siliconflow', label: '硅基流动 SenseVoice（免费，中文好）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', models: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR'], keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
+  { id: 'openai', label: 'OpenAI（gpt-4o 转写 / Whisper）', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'], keyUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'groq', label: 'Groq Whisper（快，有免费额度）', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', models: ['whisper-large-v3-turbo', 'whisper-large-v3'], keyUrl: 'https://console.groq.com/keys' },
+  { id: 'custom', label: '自定义（OpenAI 兼容）', baseUrl: '', model: '', models: [], keyUrl: '' },
 ];
 
 export const VOICE_PRESET = VOICE_PROVIDERS[0];
@@ -127,7 +127,7 @@ export const TTS_BY_HOST = [
   {
     match: /api\.openai\.com/i,
     model: 'gpt-4o-mini-tts',
-    voices: ['alloy', 'nova', 'shimmer', 'echo', 'onyx', 'fable'].map((v) => ({ id: v, label: v })),
+    voices: ['alloy', 'nova', 'shimmer', 'coral', 'sage', 'ash', 'ballad', 'verse', 'echo', 'onyx', 'fable'].map((v) => ({ id: v, label: v })),
   },
 ];
 

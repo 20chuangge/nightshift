@@ -1411,7 +1411,8 @@ const visionCtx = (state) => ({ settings: state.settings, chatKey: state.apiKey,
 
 // Coding CLIs on the human's subscription (cli_agent_run): installed? logged in?
 // Only each tool's own status command is asked; their login files are never read.
-//   GET /api/cliagents -> {agents:[{id, label, installed, loggedIn, install, login}]}
+//   GET /api/cliagents -> {agents:[{id, label, plan, installed, loggedIn, install, login, model, models}]}
+//   PUT /api/cliagents {agent, model} -> the human's default model for that tool ('' = the tool's own)
 let cliAgentsCache = { at: 0, agents: null };
 route('GET', /^\/api\/cliagents$/, async (_req, _res, { query }) => {
   if (!cliAgentsCache.agents || query.get('refresh') || Date.now() - cliAgentsCache.at > 60000) {
@@ -1419,6 +1420,12 @@ route('GET', /^\/api\/cliagents$/, async (_req, _res, { query }) => {
     cliAgentsCache = { at: Date.now(), agents: await detectCliAgents() };
   }
   return { agents: cliAgentsCache.agents };
+});
+route('PUT', /^\/api\/cliagents$/, async (_req, _res, { body }) => {
+  const { saveCliModel } = await import('./cliagents.mjs');
+  const config = await saveCliModel(String(body?.agent || ''), body?.model);
+  if (cliAgentsCache.agents) cliAgentsCache.agents = cliAgentsCache.agents.map((a) => ({ ...a, model: config.models[a.id] || '' }));
+  return { ok: true, models: config.models };
 });
 
 // Connected apps (MCP). Secret values go in as {secrets:{名字: 值}} and land in
