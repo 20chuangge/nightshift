@@ -3626,7 +3626,7 @@ ${Buffer.from('%PDF-fake').toString('base64')}
       && /uid 102 \|[\s\S]*uid 101 ·未读 \|.*张三 <zhang@corp\.cn> \| 周报/.test(list) && /找到 1 封[\s\S]*uid 101/.test(found)
       && /主题：周报/.test(read) && /\n\n周报$/.test(read) && /附件：报告\.pdf（1 KB） → mail\/[\d-]+\/101\/报告\.pdf/.test(read)
       && /Big sale[\s\S]*50% off/.test(html) && !/<p>/.test(html)
-      && tl.filter((t) => t.annotations.readOnlyHint).map((t) => t.name).join() === 'mail_folders,mail_list,mail_search,mail_read'
+      && tl.filter((t) => t.annotations.readOnlyHint).map((t) => t.name).join() === 'mail_accounts,mail_folders,mail_list,mail_search,mail_read'
       && imap.log.some((c) => /^ID \(/.test(c)), JSON.stringify({ list, found, read: read.slice(0, 200) }));
     const sent = (await call('mail_send', { to: ['张三 <zhang@corp.cn>'], body: '收到，谢谢。', attachments: ['mail-plan.txt'], reply_to_uid: 101 })).content[0].text;
     const back = M.parseMessage(Buffer.from(smtp.sent[0]?.data || ''));
@@ -3637,6 +3637,57 @@ ${Buffer.from('%PDF-fake').toString('base64')}
       /^已发出/.test(sent) && smtp.sent[0]?.to.join() === 'zhang@corp.cn' && M.decodeWords(back.headers.subject) === 'Re: 周报' && back.headers['in-reply-to'] === '<m1@corp.cn>'
       && back.text === '收到，谢谢。' && back.attachments[0]?.filename === 'mail-plan.txt' && back.attachments[0]?.data.toString() === '计划'
       && outside.isError && /工作区/.test(outside.content[0].text) && /已读/.test(mark) && /授权码/.test(bad.error?.message || ''), JSON.stringify({ sent, bad: bad.error }));
+    // Two mailboxes, each on its own server: listing covers both; reading, marking and sending must say which one.
+    const imap2 = await F.fakeImap({ user: 'me@163.com', pass: 'code163', messages: [{ uid: 7, raw: m2, subject: 'Weekly deals', from: 'news@shop.com', seen: false }] });
+    const ports = { 'me@qq.com': imap.port, 'me@163.com': imap2.port };
+    const two = M.createMailServer({
+      env: { MAILBOXES: JSON.stringify([{ EMAIL: 'me@qq.com', PASS: 'code123' }, { EMAIL: 'me@163.com', PASS: 'code163' }]) }, workspaceDir: ws,
+      imapImpl: (a) => new M.Imap({ host: '127.0.0.1', port: ports[a.email], connect: () => net.connect(ports[a.email], '127.0.0.1') }),
+      smtpImpl: () => new M.Smtp({ host: '127.0.0.1', port: smtp.port, connect: () => net.connect(smtp.port, '127.0.0.1') }),
+    });
+    const call2 = async (name, args = {}) => (await two.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result;
+    const init2 = await two.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    const accts = (await call2('mail_accounts')).content[0].text;
+    const both = (await call2('mail_list', { limit: 5 })).content[0].text;
+    const which = await call2('mail_read', { uid: 7 });
+    const by163 = (await call2('mail_read', { account: '163', uid: 7 })).content[0].text;
+    const sendWhich = await call2('mail_send', { to: 'a@b.com', body: 'x' });
+    const before2 = smtp.sent.length;
+    const fromQq = (await call2('mail_send', { account: 'me@qq.com', to: 'a@b.com', body: '你好' })).content[0].text;
+    const nobody = await call2('mail_list', { account: 'gmail' });
+    check('M24 two mailboxes: both sign in; the list shows each (默认 first); listing covers both; reading or sending without saying which mailbox asks which; by address or part of it, it works; an unknown one names the connected ones',
+      !init2.error && /me@qq\.com（QQ 邮箱） · 默认\nme@163\.com/.test(accts) && /【me@qq\.com】[\s\S]*uid 101[\s\S]*【me@163\.com】[\s\S]*uid 7/.test(both)
+      && which.isError && /连了 2 个邮箱.*account/.test(which.content[0].text) && /Big sale/.test(by163)
+      && sendWhich.isError && /^已发出：me@qq\.com/.test(fromQq) && smtp.sent.length === before2 + 1 && smtp.sent[before2].from === 'me@qq.com'
+      && nobody.isError && /没有连「gmail」.*me@qq\.com、me@163\.com/.test(nobody.content[0].text), JSON.stringify({ accts, both: both.slice(0, 200), which: which.content[0].text }));
+    imap2.close();
+    // The manager: add a mailbox (checked first), add a second, a wrong code is refused and changes nothing, remove one, remove the last.
+    {
+      const reg2 = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+      const probes = [];
+      const mm = mcp.createMcpManager({
+        registry: reg2, workspaceDir: ws,
+        makeClient: () => ({ connect: async () => ({}), listTools: async () => [], close() {}, serverInfo: null }),
+        checkMailbox: async (b) => { probes.push(b.EMAIL); return b.PASS === 'bad' ? { ok: false, message: '登录被拒绝：wrong（授权码）' } : { ok: true }; },
+      });
+      await mm.load();
+      const a1 = await mm.connectCatalog('email', { fields: { EMAIL: 'me@qq.com', PASS: 'code 123' } });
+      await mm.connectCatalog('email', { fields: { EMAIL: 'me@163.com', PASS: 'code163' } });
+      let badMsg = '';
+      try { await mm.connectCatalog('email', { fields: { EMAIL: 'other@126.com', PASS: 'bad' } }); } catch (e) { badMsg = e.message; }
+      const listed = mm.catalog().find((x) => x.id === 'email').server;
+      const payload = await mm.syncPayload('email');
+      const synced = JSON.parse(payload.fields.MAILBOXES);
+      const savedCfg = await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8');
+      await mm.removeMailbox('me@qq.com');
+      const afterOne = mm.catalog().find((x) => x.id === 'email').server;
+      const last = await mm.removeMailbox('me@163.com');
+      const gone = mm.catalog().find((x) => x.id === 'email').server;
+      check('M24 add / remove mailboxes: each is signed in before it is kept; a wrong code is refused and the others stay; the addresses show, the codes stay in the vault (spaces in the code are dropped); another machine gets the whole list; removing one keeps the rest, the last one disconnects',
+        a1.server && probes.join() === 'me@qq.com,me@163.com,other@126.com' && /授权码/.test(badMsg) && listed.mailboxes.join() === 'me@qq.com,me@163.com'
+        && synced.length === 2 && synced[0].PASS === 'code123' && !savedCfg.includes('code163') && !JSON.stringify(listed).includes('code163')
+        && afterOne.mailboxes.join() === 'me@163.com' && last.removed === true && !gone, JSON.stringify({ probes, badMsg, listed: listed?.mailboxes, afterOne: afterOne?.mailboxes }));
+    }
     imap.close(); smtp.close();
     fsx.rmSync(path.join(ws, 'mail'), { recursive: true, force: true });
     fsx.rmSync(path.join(ws, 'mail-plan.txt'), { force: true });
@@ -3648,7 +3699,7 @@ ${Buffer.from('%PDF-fake').toString('base64')}
     const conn = await api('/api/mcp/catalog/email/connect', { method: 'POST', body: { fields: { EMAIL: 'x@outlook.com', PASS: 'p' } } });
     const cat = mcp.MCP_CATALOG.find((e) => e.id === 'email');
     check('M23 mail app: runs inside the hub as a connected app (unknown mailbox asks for its servers); 连接 checks the address before saving (Outlook says why it cannot); the catalog lists 邮箱 with the code fields',
-      /不认识「unknown-mail\.org」/.test(cErr) && conn.status === 400 && /Outlook/.test(conn.json?.message || conn.text || '') && cat?.auth === 'mail' && cat.transport === 'internal' && cat.env.PASS === '${PASS}',
+      /不认识「unknown-mail\.org」/.test(cErr) && conn.status === 400 && /Outlook/.test(conn.json?.message || conn.text || '') && cat?.auth === 'mail' && cat.transport === 'internal' && cat.env.MAILBOXES === '${MAILBOXES}',
       JSON.stringify({ cErr, st: conn.status, msg: conn.json?.message }));
   }
   // The API on the running hub: add, list without values, bad input, delete.

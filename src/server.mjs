@@ -1487,7 +1487,8 @@ async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
       const cat = await state.peers.json(peer, 'GET', '/api/mcp/catalog', { timeoutMs: 8000 });
       const there = (cat.apps || []).find((a) => a.id === catalogId);
       if (!there) return { machine: p.name, ok: false, message: '那台机器的夜班版本较旧，更新后再同步' };
-      if (there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
+      // 邮箱 always gets the whole list: a mailbox added here must reach a machine that is already connected.
+      if (catalogId !== 'email' && there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
       const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret, ...(payload.fields ? { fields: payload.fields } : {}) };
       const out = await state.peers.json(peer, 'POST', `/api/mcp/catalog/${encodeURIComponent(catalogId)}/connect`, { body, timeoutMs: 60000 });
       return { machine: p.name, ok: true, authorizeUrl: out.authorizeUrl || '' };
@@ -1498,6 +1499,20 @@ async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
 }
 
 route('GET', /^\/api\/mcp\/catalog$/, async (_req, _res, { state }) => ({ apps: state.mcp.catalog() }));
+//   POST /api/mcp/mailbox/remove {email, everywhere?}   take one mailbox out of 邮箱 (here, and on the other machines)
+route('POST', /^\/api\/mcp\/mailbox\/remove$/, async (_req, _res, { state, body }) => {
+  const out = await state.mcp.removeMailbox(body?.email);
+  state.bus.emit({ type: 'settings.changed', section: 'mcp' });
+  if (body?.everywhere) {
+    out.peers = await Promise.all(state.peers.list().map(async (p) => {
+      try {
+        await state.peers.json(state.peers.find(p.name), 'POST', '/api/mcp/mailbox/remove', { body: { email: body.email }, timeoutMs: 20000 });
+        return { machine: p.name, ok: true };
+      } catch (err) { return { machine: p.name, ok: false, message: err.message }; }
+    }));
+  }
+  return out;
+});
 route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/connect$/, async (_req, _res, { state, body, params }) => {
   const out = await state.mcp.connectCatalog(params.id, { ...(body || {}), relay: mcpRelay(body) });
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });

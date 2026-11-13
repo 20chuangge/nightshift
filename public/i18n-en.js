@@ -1663,4 +1663,12 @@ window.DESK_I18N_EN = {
   "去获取 token ↗": "Get a token ↗",
   "收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码）": "Check, search, read and send mail (QQ, 163, 126, Gmail and more, with an authorization code)",
   "填邮箱地址和「授权码」（不是登录密码）。QQ 邮箱：设置 → 账号 → 开启 IMAP/SMTP 服务，按提示生成授权码。163 / 126：设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，按提示设置授权码。Gmail：先开两步验证，再到 Google 账号的「应用专用密码」生成一个。夜班自己连邮箱服务器，不经过别的服务；授权码加密存在这台机器的保险箱里。发信每次都会先问你。": "Enter the address and its authorization code (not the login password). QQ Mail: Settings → Account → turn on IMAP/SMTP and generate a code. 163 / 126: Settings → POP3/SMTP/IMAP → turn on IMAP/SMTP and set a code. Gmail: turn on 2-step verification, then create an app password in your Google account. Nightshift talks to the mail servers itself, through no other service; the code is stored encrypted in this machine's vault. Sending always asks you first.",
+  "已连接的邮箱（{0} 个）": "Connected mailboxes ({0})",
+  "（默认）": " (default)",
+  "再点一次移除": "Click again to remove",
+  "已移除 {0}；{1}": "Removed {0}; {1}",
+  "已移除 {0}": "Removed {0}",
+  "移除失败：{0}": "Could not remove: {0}",
+  "再加一个邮箱": "Add another mailbox",
+  "收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码，可以连多个邮箱）": "Check, search, read and send mail (QQ, 163, 126, Gmail and more, with an authorization code; several mailboxes)",
 };

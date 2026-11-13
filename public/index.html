@@ -2788,6 +2788,10 @@
   .mcp-warn { color: var(--amber); }
   .mcp-app-body { margin-top: 10px; }
   .mcp-app-body .field { margin-top: 6px; }
+  .mcp-mailboxes { margin-top: 10px; }
+  .mcp-mailbox { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .mcp-mailbox span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-more summary { cursor: pointer; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
   .vault-head { display: flex; align-items: center; gap: 8px; }
   .vault-title { flex: 1; min-width: 0; }
   .vault-title b { display: block; }
@@ -10815,7 +10819,8 @@ function mcpServerPanel(s) {
   who.value = s.bots === 'all' ? 'all' : (Array.isArray(s.bots) && s.bots[0]) || 'all';
   who.addEventListener('change', () => patchMcp(s.id, { bots: who.value === 'all' ? 'all' : [who.value] }, '已保存'));
   box.append(onLbl, el('label', 'lbl', '要不要先问你'), trust, el('label', 'lbl', '哪些机器人能用'), who);
-  if (s.secrets.length) {
+  if (s.catalogId === 'email') box.appendChild(mailboxList(s));
+  else if (s.secrets.length) {
     const sec = el('details', 'vault-add');
     sec.appendChild(el('summary', '', '更新密钥'));
     const inputs = s.secrets.map((name) => {
@@ -10967,6 +10972,66 @@ async function connectMcpApp(app, extra = {}, btn = null, { here = false } = {})
   await loadMcp();
 }
 
+/** The 邮箱 form: address, code, and (for mailboxes Nightshift does not know) servers. `go` adds it. */
+function mailboxFields(box, app, go) {
+  const field = (ph, type = 'text') => {
+    const i = document.createElement('input');
+    i.className = 'field';
+    i.type = type;
+    i.placeholder = ph;
+    i.autocomplete = type === 'password' ? 'new-password' : 'off';
+    return i;
+  };
+  const email = field('邮箱地址，比如 name@qq.com', 'email');
+  const pass = field('授权码（不是登录密码）', 'password');
+  box.append(email, pass);
+  const more = document.createElement('details');
+  more.className = 'mcp-more';
+  more.appendChild(el('summary', '', '其他邮箱：填收发信服务器'));
+  const imap = field('收信 IMAP，比如 imap.example.com:993');
+  const smtp = field('发信 SMTP，比如 smtp.example.com:465');
+  more.append(imap, smtp);
+  box.appendChild(more);
+  go.addEventListener('click', () => {
+    if (!email.value.trim() || !pass.value.trim()) { toast('先填邮箱地址和授权码', true); return; }
+    connectMcpApp(app, { fields: { EMAIL: email.value.trim(), PASS: pass.value.trim(), IMAP: imap.value.trim(), SMTP: smtp.value.trim() } }, go);
+  });
+}
+
+/** 邮箱 once connected: its mailboxes (each can go), and room for one more. */
+function mailboxList(s) {
+  const wrap = el('div', 'mcp-mailboxes');
+  wrap.appendChild(el('label', 'lbl', `已连接的邮箱（${(s.mailboxes || []).length} 个）`));
+  (s.mailboxes || []).forEach((addr, i) => {
+    const row = el('div', 'mcp-mailbox');
+    row.appendChild(el('span', '', `${addr}${i === 0 ? '（默认）' : ''}`));
+    const rm = el('button', 'btn tiny danger', '移除');
+    rm.type = 'button';
+    rm.addEventListener('click', async () => {
+      if (!rm.dataset.armed) { rm.dataset.armed = '1'; rm.textContent = '再点一次移除'; return; }
+      try {
+        const out = await api('/api/mcp/mailbox/remove', { method: 'POST', body: { email: addr, everywhere: true } });
+        const failed = (out.peers || []).filter((p) => !p.ok);
+        toast(failed.length ? `已移除 ${addr}；${failed.map((p) => `${p.machine}：${p.message}`).join('；')}` : `已移除 ${addr}`, Boolean(failed.length));
+      } catch (err) { toast(`移除失败：${err.message}`, true); }
+      loadMcp();
+    });
+    row.appendChild(rm);
+    wrap.appendChild(row);
+  });
+  const add = el('details', 'vault-add');
+  add.appendChild(el('summary', '', '再加一个邮箱'));
+  const app = (mcpUi.apps || []).find((a) => a.id === 'email') || { id: 'email', name: '邮箱', auth: 'mail' };
+  const go = el('button', 'btn primary tiny', '添加');
+  go.type = 'button';
+  mailboxFields(add, app, go);
+  const row = el('div', 'btn-row');
+  row.appendChild(go);
+  add.appendChild(row);
+  wrap.appendChild(add);
+  return wrap;
+}
+
 /** Under an app that is not connected yet: what 「连接」 needs. */
 function mcpConnectForm(app) {
   const box = el('div', 'mcp-app-body');
@@ -10992,29 +11057,7 @@ function mcpConnectForm(app) {
       connectMcpApp(app, { token: tok.value.trim() }, go);
     });
   } else if (app.auth === 'mail') {
-    const field = (ph, type = 'text') => {
-      const i = document.createElement('input');
-      i.className = 'field';
-      i.type = type;
-      i.placeholder = ph;
-      i.autocomplete = type === 'password' ? 'new-password' : 'off';
-      return i;
-    };
-    const email = field('邮箱地址，比如 name@qq.com', 'email');
-    const pass = field('授权码（不是登录密码）', 'password');
-    box.append(email, pass);
-    // Only for mailboxes Nightshift does not know: their servers.
-    const more = document.createElement('details');
-    more.className = 'mcp-more';
-    more.appendChild(el('summary', '', '其他邮箱：填收发信服务器'));
-    const imap = field('收信 IMAP，比如 imap.example.com:993');
-    const smtp = field('发信 SMTP，比如 smtp.example.com:465');
-    more.append(imap, smtp);
-    box.appendChild(more);
-    go.addEventListener('click', () => {
-      if (!email.value.trim() || !pass.value.trim()) { toast('先填邮箱地址和授权码', true); return; }
-      connectMcpApp(app, { fields: { EMAIL: email.value.trim(), PASS: pass.value.trim(), IMAP: imap.value.trim(), SMTP: smtp.value.trim() } }, go);
-    });
+    mailboxFields(box, app, go);
   } else if (app.auth === 'feishu') {
     const id = document.createElement('input');
     id.className = 'field';

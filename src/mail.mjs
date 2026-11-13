@@ -547,23 +547,30 @@ export class Smtp {
 
 const TOOLS = [
   {
-    name: 'mail_folders',
-    description: 'List the mailbox folders (收件箱, 已发送, 垃圾邮件 ...).',
+    name: 'mail_accounts',
+    description: 'The mailboxes connected here (addresses).',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
+    name: 'mail_folders',
+    description: 'List the mailbox folders (收件箱, 已发送, 垃圾邮件 ...).',
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' } } },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: 'mail_list',
-    description: 'The newest mail in a folder: uid, from, subject, date, unread. Use mail_read with the uid for the content.',
-    inputSchema: { type: 'object', properties: { folder: { type: 'string', description: 'Folder, default INBOX.' }, limit: { type: 'integer', description: 'How many, default 20, at most 50.' }, unread_only: { type: 'boolean' } } },
+    description: 'The newest mail in a folder: uid, from, subject, date, unread. Use mail_read with the uid (and the account it is in) for the content. Without account, every mailbox is listed.',
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, folder: { type: 'string', description: 'Folder, default INBOX.' }, limit: { type: 'integer', description: 'How many, default 20, at most 50.' }, unread_only: { type: 'boolean' } } },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'mail_search',
-    description: 'Find mail by sender, subject, words in the text, or date (YYYY-MM-DD). Newest first.',
+    description: 'Find mail by sender, subject, words in the text, or date (YYYY-MM-DD). Newest first. Without account, every mailbox is searched.',
     inputSchema: {
       type: 'object',
       properties: {
+        account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' },
         folder: { type: 'string' }, from: { type: 'string' }, subject: { type: 'string' }, text: { type: 'string', description: 'Words anywhere in the mail.' },
         since: { type: 'string', description: 'On or after this date, YYYY-MM-DD.' }, before: { type: 'string', description: 'Before this date, YYYY-MM-DD.' },
         unread_only: { type: 'boolean' }, limit: { type: 'integer' },
@@ -574,15 +581,16 @@ const TOOLS = [
   {
     name: 'mail_read',
     description: 'Read one mail by uid: headers, the text, and its attachments (names and sizes). save_attachments=true saves them to the workspace and returns the paths. Reading does not mark it as read.',
-    inputSchema: { type: 'object', properties: { uid: { type: 'integer' }, folder: { type: 'string' }, save_attachments: { type: 'boolean' }, max_chars: { type: 'integer', description: 'Cut the text after this many characters, default 8000.' } }, required: ['uid'] },
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uid: { type: 'integer' }, folder: { type: 'string' }, save_attachments: { type: 'boolean' }, max_chars: { type: 'integer', description: 'Cut the text after this many characters, default 8000.' } }, required: ['uid'] },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'mail_send',
-    description: 'Send a mail from this mailbox. to/cc: addresses (list or comma separated). attachments: workspace file paths. To reply, pass reply_to_uid (and folder) of the mail you answer: the subject gets "Re:" and the thread headers are set.',
+    description: 'Send a mail. account = the mailbox it is sent from (needed when there are several). to/cc: addresses (list or comma separated). attachments: workspace file paths. To reply, pass reply_to_uid (and folder) of the mail you answer: the subject gets "Re:" and the thread headers are set.',
     inputSchema: {
       type: 'object',
       properties: {
+        account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' },
         to: { type: 'array', items: { type: 'string' } }, cc: { type: 'array', items: { type: 'string' } }, subject: { type: 'string' }, body: { type: 'string', description: 'Plain text.' },
         attachments: { type: 'array', items: { type: 'string' } }, reply_to_uid: { type: 'integer' }, folder: { type: 'string' },
       },
@@ -593,7 +601,7 @@ const TOOLS = [
   {
     name: 'mail_mark',
     description: 'Mark mail as read or unread.',
-    inputSchema: { type: 'object', properties: { uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string' }, read: { type: 'boolean' } }, required: ['uids', 'read'] },
+    inputSchema: { type: 'object', properties: { account: { type: 'string', description: 'Which mailbox (its address, or part of it such as qq or 163). Omit when there is only one.' }, uids: { type: 'array', items: { type: 'integer' } }, folder: { type: 'string' }, read: { type: 'boolean' } }, required: ['uids', 'read'] },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
 ];
@@ -619,17 +627,49 @@ function line(m) {
  * The mailbox as an app. env: {EMAIL, PASS, IMAP, SMTP} (servers optional for
  * known mailboxes). -> {handle(jsonRpcMessage) -> response | null}
  */
-export function createMailServer({ env = {}, workspaceDir = '', version = '0', imapImpl = null, smtpImpl = null } = {}) {
-  const account = () => resolveAccount({ email: env.EMAIL, pass: env.PASS, imap: env.IMAP, smtp: env.SMTP });
+/** The mailboxes in a connection: MAILBOXES (a JSON list), or the single EMAIL / PASS of 1.2.130. */
+export function mailboxesFrom(env = {}) {
+  let list = [];
+  try { list = JSON.parse(env.MAILBOXES || '[]'); } catch { list = []; }
+  if (!Array.isArray(list) || !list.length) list = env.EMAIL ? [{ EMAIL: env.EMAIL, PASS: env.PASS, IMAP: env.IMAP, SMTP: env.SMTP }] : [];
+  return list.filter((b) => b && b.EMAIL);
+}
 
-  const withImap = async (fn) => {
-    const a = account();
+export function createMailServer({ env = {}, workspaceDir = '', version = '0', imapImpl = null, smtpImpl = null } = {}) {
+  const all = () => {
+    const list = mailboxesFrom(env).map((b) => resolveAccount({ email: b.EMAIL, pass: b.PASS, imap: b.IMAP, smtp: b.SMTP }));
+    if (!list.length) throw mailError('MAIL_NO_ACCOUNT', '还没有连邮箱');
+    return list;
+  };
+  /** The mailboxes a call means. `one`: it must be a single one (read, mark, send). */
+  const pick = (want, { one = false } = {}) => {
+    const list = all();
+    const w = String(want || '').trim().toLowerCase();
+    if (!w) {
+      if (list.length === 1 || !one) return list;
+      throw mailError('MAIL_WHICH', `连了 ${list.length} 个邮箱（${list.map((a) => a.email).join('、')}），用 account 说是哪一个`);
+    }
+    const exact = list.filter((a) => a.email.toLowerCase() === w);
+    const hits = exact.length ? exact : list.filter((a) => a.email.toLowerCase().includes(w) || a.name.toLowerCase().includes(w));
+    if (hits.length === 1) return hits;
+    throw mailError('MAIL_WHICH', hits.length ? `「${want}」对得上好几个邮箱（${hits.map((a) => a.email).join('、')}），写完整地址` : `没有连「${want}」这个邮箱，连了的是：${list.map((a) => a.email).join('、')}`);
+  };
+
+  const withImap = async (a, fn) => {
     const c = imapImpl ? imapImpl(a) : new Imap(a.imap);
     await c.open();
     try {
       await c.login(a.email, a.pass);
       return await fn(c, a);
     } finally { await c.logout(); }
+  };
+
+  const eachBox = async (boxes, fn) => {
+    if (boxes.length === 1) return fn(boxes[0]);
+    const parts = await Promise.all(boxes.map(async (a) => {
+      try { return `【${a.email}】\n${await fn(a)}`; } catch (err) { return `【${a.email}】没查成：${err.message}`; }
+    }));
+    return parts.join('\n\n');
   };
 
   const folderFor = async (c, wanted) => {
@@ -645,12 +685,16 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
   };
 
   const tools = {
-    async mail_folders() {
-      return withImap(async (c) => (await c.folders()).map((f) => `${f.name}${f.flags.filter((x) => /\\(Sent|Junk|Trash|Drafts|Archive)/i.test(x)).map((x) => ` (${x.slice(1)})`).join('')}`).join('\n'));
+    async mail_accounts() {
+      return all().map((a, i) => `${a.email}（${a.name}）${i === 0 ? ' · 默认' : ''}`).join('\n');
     },
-    async mail_list({ folder, limit = 20, unread_only = false } = {}) {
+    async mail_folders({ account } = {}) {
+      const [a] = pick(account, { one: true });
+      return withImap(a, async (c) => (await c.folders()).map((f) => `${f.name}${f.flags.filter((x) => /\\(Sent|Junk|Trash|Drafts|Archive)/i.test(x)).map((x) => ` (${x.slice(1)})`).join('')}`).join('\n'));
+    },
+    async mail_list({ account, folder, limit = 20, unread_only = false } = {}) {
       const n = Math.min(Math.max(Number(limit) || 20, 1), 50);
-      return withImap(async (c, a) => {
+      return eachBox(pick(account), (a) => withImap(a, async (c) => {
         const name = await folderFor(c, folder);
         const { exists } = await c.open_(name);
         if (!exists) return `${a.email} 的「${name}」是空的。`;
@@ -660,11 +704,11 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
           rows = uids.length ? await c.summaries(uids.join(','), { uid: true }) : [];
         } else rows = await c.summaries(`${Math.max(1, exists - n + 1)}:${exists}`);
         return rows.length ? `「${name}」最新 ${rows.length} 封（共 ${exists} 封）：\n${rows.map(line).join('\n')}` : `「${name}」里没有${unread_only ? '未读' : ''}邮件。`;
-      });
+      }));
     },
-    async mail_search({ folder, from, subject, text, since, before, unread_only, limit = 20 } = {}) {
+    async mail_search({ account, folder, from, subject, text, since, before, unread_only, limit = 20 } = {}) {
       const n = Math.min(Math.max(Number(limit) || 20, 1), 50);
-      return withImap(async (c) => {
+      return eachBox(pick(account), (a) => withImap(a, async (c) => {
         const name = await folderFor(c, folder);
         await c.open_(name);
         const parts = [];
@@ -678,11 +722,12 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         const uids = (await c.search([`UID SEARCH${utf8 ? ' CHARSET UTF-8' : ''}`, ...parts])).slice(-n);
         if (!uids.length) return `「${name}」里没有找到。`;
         return `找到 ${uids.length} 封（「${name}」）：\n${(await c.summaries(uids.join(','), { uid: true })).map(line).join('\n')}`;
-      });
+      }));
     },
-    async mail_read({ uid, folder, save_attachments = false, max_chars = 8000 } = {}) {
+    async mail_read({ account, uid, folder, save_attachments = false, max_chars = 8000 } = {}) {
       if (!Number(uid)) throw mailError('MAIL_BAD_UID', 'uid 不对');
-      return withImap(async (c) => {
+      const [a] = pick(account, { one: true });
+      return withImap(a, async (c) => {
         const name = await folderFor(c, folder);
         await c.open_(name);
         const { raw } = await c.fetchRaw(Number(uid));
@@ -714,8 +759,8 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         ].join('\n');
       });
     },
-    async mail_send({ to, cc = [], subject = '', body = '', attachments = [], reply_to_uid, folder } = {}) {
-      const a = account();
+    async mail_send({ account, to, cc = [], subject = '', body = '', attachments = [], reply_to_uid, folder } = {}) {
+      const [a] = pick(account, { one: true });
       const rcptTo = addressList(to);
       const rcptCc = addressList(cc);
       if (!rcptTo.length) throw mailError('MAIL_NO_TO', '收件人地址不对');
@@ -731,7 +776,7 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
       let inReplyTo = '';
       let references = '';
       if (reply_to_uid) {
-        const orig = await withImap(async (c) => { await c.open_(await folderFor(c, folder)); return parseMessage((await c.fetchRaw(Number(reply_to_uid))).raw).headers; });
+        const orig = await withImap(a, async (c) => { await c.open_(await folderFor(c, folder)); return parseMessage((await c.fetchRaw(Number(reply_to_uid))).raw).headers; });
         inReplyTo = orig['message-id'] || '';
         references = orig.references || '';
         if (!subj) subj = decodeWords(orig.subject || '');
@@ -746,10 +791,11 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
       } finally { await s.quit(); }
       return `已发出：${a.email} → ${[...rcptTo, ...rcptCc].join('、')}，主题「${subj || '（无主题）'}」${files.length ? `，附件 ${files.map((f) => f.filename).join('、')}` : ''}。`;
     },
-    async mail_mark({ uids = [], folder, read = true } = {}) {
+    async mail_mark({ account, uids = [], folder, read = true } = {}) {
       const list = (Array.isArray(uids) ? uids : [uids]).map(Number).filter(Boolean);
       if (!list.length) throw mailError('MAIL_BAD_UID', '没有 uid');
-      return withImap(async (c) => {
+      const [a] = pick(account, { one: true });
+      return withImap(a, async (c) => {
         await c.open_(await folderFor(c, folder), false);
         await c.cmd(`UID STORE ${list.join(',')} ${read ? '+' : '-'}FLAGS.SILENT (\\Seen)`);
         return `已标成${read ? '已读' : '未读'}：${list.length} 封。`;
@@ -764,7 +810,9 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
       try {
         if (msg.method === 'initialize') {
           // Connecting checks the address and the code right away, so a wrong one shows in Settings.
-          await withImap(async () => {});
+          for (const a of all()) {
+            await withImap(a, async () => {}).catch((err) => { throw mailError(err.code || 'MAIL_AUTH', all().length > 1 ? `${a.email}：${err.message}` : err.message); });
+          }
           return reply({ protocolVersion: msg.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'nightshift-mail', version } });
         }
         if (msg.method === 'tools/list') return reply({ tools: TOOLS });
@@ -784,4 +832,11 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
       }
     },
   };
+}
+
+/** Can this one mailbox sign in? (Checked before it is added.) -> {ok} or {ok:false, message} */
+export async function checkMailbox(box, { imapImpl = null } = {}) {
+  const app = createMailServer({ env: { MAILBOXES: JSON.stringify([box]) }, imapImpl });
+  const r = await app.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  return r.error ? { ok: false, message: r.error.message } : { ok: true };
 }

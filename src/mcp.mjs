@@ -102,8 +102,8 @@ export const MCP_CATALOG = [
   },
   {
     id: 'email', name: '邮箱', category: '通信', badge: '邮', color: '#0f9d58',
-    desc: '收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码）', auth: 'mail', transport: 'internal', module: 'mail',
-    env: { EMAIL: '${EMAIL}', PASS: '${PASS}', IMAP: '${IMAP}', SMTP: '${SMTP}' },
+    desc: '收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码，可以连多个邮箱）', auth: 'mail', transport: 'internal', module: 'mail',
+    env: { MAILBOXES: '${MAILBOXES}' },
     help: '填邮箱地址和「授权码」（不是登录密码）。QQ 邮箱：设置 → 账号 → 开启 IMAP/SMTP 服务，按提示生成授权码。163 / 126：设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，按提示设置授权码。Gmail：先开两步验证，再到 Google 账号的「应用专用密码」生成一个。夜班自己连邮箱服务器，不经过别的服务；授权码加密存在这台机器的保险箱里。发信每次都会先问你。',
   },
   {
@@ -507,7 +507,10 @@ export function createMcpManager({
   catalog = MCP_CATALOG, // tests pass their own
   fetchImpl = fetch,
   publicUrl = () => null, // this hub's https address on the internet (Funnel), if on
+  checkMailbox = null, // tests pass their own sign-in check for 邮箱
 } = {}) {
+  /** A config as update() input (what it is now, so only the secrets change). */
+  const publicInput = (cfg) => ({ name: cfg.name, transport: cfg.transport, command: cfg.command, args: cfg.args, env: cfg.env, url: cfg.url, headers: cfg.headers, module: cfg.module });
   /** OAuth sign-ins waiting for their callback: state -> {...}. Ten minutes, used once. */
   const pendingAuth = new Map();
   /** id -> {cfg, client, state, error, tools:[], retries, timer} */
@@ -524,6 +527,7 @@ export function createMcpManager({
       secrets: cfg.oauth || cfg.secretSource === 'feishu' ? [] : secretNames(cfg), hasSecrets: Boolean(cfg.secretRef || cfg.secretSource),
       enabled: cfg.enabled !== false, trust: cfg.trust === 'always' ? 'always' : 'ask', bots: cfg.bots || 'all',
       catalogId: cfg.catalogId || '', oauth: Boolean(cfg.oauth),
+      ...(cfg.mailboxes ? { mailboxes: cfg.mailboxes } : {}),
       state: l?.state || (cfg.enabled === false ? 'off' : cfg.oauth && !cfg.secretRef ? 'needs_auth' : 'idle'),
       error: l?.error || (cfg.oauth && !cfg.secretRef ? '还没授权：点「连接」去那个应用的页面登录' : ''),
       tools: (l?.tools || []).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 200), readOnly: Boolean(t.annotations?.readOnlyHint) })),
@@ -703,7 +707,7 @@ export function createMcpManager({
     const urlIn = String(input.url ?? old.url ?? '');
     // A web address ending in /sse is the older HTTP+SSE form (百度网盘 and others).
     const transport = wanted === 'internal' ? 'internal' : wanted === 'sse' || (wanted === 'http' && /\/sse\/?(\?|$)/i.test(urlIn)) ? 'sse' : wanted === 'http' ? 'http' : 'stdio';
-    const web = transport !== 'stdio';
+    const web = transport === 'http' || transport === 'sse';
     const strMap = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).map(([k, v]) => [String(k).trim(), String(v ?? '')]).filter(([k]) => k).slice(0, 30));
     const cfg = {
       ...old,
@@ -736,6 +740,7 @@ export function createMcpManager({
     const out = {};
     if (input.catalogId && catalog.some((e) => e.id === input.catalogId)) out.catalogId = input.catalogId;
     if (input.secretSource !== undefined) out.secretSource = input.secretSource === 'feishu' ? 'feishu' : '';
+    if (Array.isArray(input.mailboxes)) out.mailboxes = input.mailboxes.map(String).slice(0, 20);
     return out;
   }
 
@@ -843,16 +848,28 @@ export function createMcpManager({
       let cfg = configs.find((c) => c.catalogId === e.id);
       const base = { name: e.name, transport: e.transport, command: e.command, args: e.args, env: e.env, url: e.url, headers: e.headers, module: e.module };
       if (e.auth === 'mail') {
+        // Several mailboxes in one connection: MAILBOXES (a JSON list) in the vault,
+        // only the addresses in the config (for the list in Settings).
         const f = fields && typeof fields === 'object' ? fields : {};
-        const typed = { EMAIL: String(f.EMAIL || '').trim(), PASS: String(f.PASS || '').replace(/\s+/g, ''), IMAP: String(f.IMAP || '').trim(), SMTP: String(f.SMTP || '').trim() };
-        if (!typed.EMAIL && cfg?.secretRef) {
-          const server = await api.update(cfg.id, { ...base, enabled: true });
-          return { server };
+        const mail = await import('./mail.mjs');
+        let boxes = cfg?.secretRef ? mail.mailboxesFrom(await secretsFor(cfg)) : [];
+        if (f.MAILBOXES) {
+          // From another machine of the human's: the whole list, as it is there.
+          boxes = mail.mailboxesFrom({ MAILBOXES: String(f.MAILBOXES) });
+        } else {
+          const typed = { EMAIL: String(f.EMAIL || '').trim(), PASS: String(f.PASS || '').replace(/\s+/g, ''), IMAP: String(f.IMAP || '').trim(), SMTP: String(f.SMTP || '').trim() };
+          if (typed.EMAIL) {
+            // Checked before anything is saved: a wrong address, an unknown mailbox
+            // or a wrong code says so at once, and the mailboxes already there stay.
+            mail.resolveAccount({ email: typed.EMAIL, pass: typed.PASS, imap: typed.IMAP, smtp: typed.SMTP });
+            const probe = await (checkMailbox || mail.checkMailbox)(typed);
+            if (!probe.ok) throw Object.assign(new Error(probe.message), { status: 400, code: 'MAIL_AUTH' });
+            boxes = [...boxes.filter((b) => b.EMAIL.toLowerCase() !== typed.EMAIL.toLowerCase()), typed];
+          }
         }
-        // Checked before anything is saved: a wrong address or an unknown mailbox says so at once.
-        const { resolveAccount } = await import('./mail.mjs');
-        resolveAccount({ email: typed.EMAIL, pass: typed.PASS, imap: typed.IMAP, smtp: typed.SMTP });
-        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, secrets: typed }) : await api.add({ ...base, secrets: typed, catalogId: e.id });
+        if (!boxes.length) throw Object.assign(new Error('先填邮箱地址和授权码'), { status: 400, code: 'MAIL_NO_ACCOUNT' });
+        const input = { ...base, enabled: true, secrets: { MAILBOXES: JSON.stringify(boxes) }, mailboxes: boxes.map((b) => b.EMAIL) };
+        const server = cfg ? await api.update(cfg.id, input) : await api.add({ ...input, catalogId: e.id });
         return { server };
       }
       if (e.auth === 'token') {
@@ -904,6 +921,19 @@ export function createMcpManager({
       };
     },
 
+    /** Take one mailbox out of the 邮箱 connection; the last one out disconnects it. -> {server} or {removed:true} */
+    async removeMailbox(address) {
+      const cfg = configs.find((c) => c.catalogId === 'email');
+      if (!cfg) throw Object.assign(new Error('还没有连邮箱'), { status: 404, code: 'MAIL_NO_ACCOUNT' });
+      const { mailboxesFrom } = await import('./mail.mjs');
+      const all = mailboxesFrom(await secretsFor(cfg));
+      const left = all.filter((b) => b.EMAIL.toLowerCase() !== String(address || '').trim().toLowerCase());
+      if (left.length === all.length) throw Object.assign(new Error(`没有连「${address}」`), { status: 404, code: 'MAIL_NOT_FOUND' });
+      if (!left.length) { await api.remove(cfg.id); return { removed: true }; }
+      const server = await api.update(cfg.id, { ...publicInput(cfg), secrets: { MAILBOXES: JSON.stringify(left) }, mailboxes: left.map((b) => b.EMAIL) });
+      return { server };
+    },
+
     /** Is this sign-in one this hub started? (Otherwise the callback is passed on to the other machines.) */
     hasPending(state) {
       const p = pendingAuth.get(String(state || ''));
@@ -925,8 +955,9 @@ export function createMcpManager({
         return token ? { catalogId: e.id, auth: e.auth, token } : null;
       }
       if (e.auth === 'mail') {
-        const s = await secretsFor(cfg);
-        return s.EMAIL && s.PASS ? { catalogId: e.id, auth: e.auth, fields: { EMAIL: s.EMAIL, PASS: s.PASS, IMAP: s.IMAP || '', SMTP: s.SMTP || '' } } : null;
+        const { mailboxesFrom } = await import('./mail.mjs');
+        const boxes = mailboxesFrom(await secretsFor(cfg));
+        return boxes.length ? { catalogId: e.id, auth: e.auth, fields: { MAILBOXES: JSON.stringify(boxes) } } : null;
       }
       if (e.auth === 'feishu') {
         const s = await secretsFor(cfg);
