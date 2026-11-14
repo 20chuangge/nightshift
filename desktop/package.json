@@ -1,7 +1,7 @@
 {
   "name": "desk-desktop",
   "productName": "Lamplit",
-  "version": "1.2.154",
+  "version": "1.2.155",
   "description": "Lamplit - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
