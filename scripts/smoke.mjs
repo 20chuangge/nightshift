@@ -2680,7 +2680,10 @@ async function scenarioPairingLink() {
       list.text.slice(0, 240),
     );
 
-    const onDisk = JSON.parse(await fsp.readFile(path.join(remoteHome, 'data', 'devices.json'), 'utf8'));
+    // The device list is saved in the background: wait for the file (a slow CI disk lags behind the API).
+    const devicesFile = path.join(remoteHome, 'data', 'devices.json');
+    await waitUntil(() => fsp.access(devicesFile).then(() => true, () => false), 5000, 'devices.json on disk');
+    const onDisk = JSON.parse(await fsp.readFile(devicesFile, 'utf8'));
     check(
       'devices.json stores only a hash of the session token',
       Array.isArray(onDisk?.devices) && onDisk.devices.length === 1 && /^[0-9a-f]{64}$/.test(onDisk.devices[0].tokenHash || '') && !('sessionToken' in onDisk.devices[0]),
