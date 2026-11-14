@@ -19,6 +19,7 @@ import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { RISK } from './approvals.mjs';
+import { childEnv } from './childenv.mjs';
 import { describeImage, imageMime } from './vision.mjs';
 import { fitForVision } from './imagefit.mjs';
 import { generateImages, generateVideo, submitVideo } from './media.mjs';
@@ -170,9 +171,8 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
       resolve(payload);
     };
 
-    // Never hand the model's API key to a shell command.
-    const env = { ...process.env };
-    delete env.ASSIST_API_KEY;
+    // Never hand the hub's settings, keys or the user's secrets to a command (SEC-12).
+    const env = childEnv();
 
     const child = spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
       shell: true,

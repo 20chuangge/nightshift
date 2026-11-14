@@ -1656,6 +1656,8 @@ window.DESK_I18N_EN = {
   "更改并重启": "Change and restart",
   "给这台机器改名": "Rename this machine",
   "这个名字会显示在机器列表和左上角。": "This name shows in the machine list and at the top left.",
+  "只看不问": "Looks only",
+  "列出、查看类命令直接做；会改东西的命令先问你": "Commands that only list or look run directly; commands that change things ask you first",
   "交给编程助手": "Hand off to a coding assistant",
   "机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；长明不读也不碰它们的登录信息。每次交出去之前都会先问你。": "Bots can hand programming work to Claude Code, Codex, Cursor or Qoder on this machine. It runs on your own subscription, not per-call API fees, and each one can have a default model. Install the command-line version on this machine and sign in once the official way; Evenlight never reads or touches their sign-in data. You are asked before every hand-off.",
   "交给编程助手（Claude Code / Codex / Cursor / Qoder）": "Hand off to a coding assistant (Claude Code / Codex / Cursor / Qoder)",

@@ -54,11 +54,12 @@ import {
   migrateSeedGrants,
   migrateBaseGrants,
   migrateBuiltinNames,
+  migrateAppName,
   writeAssistantConfig,
 } from './bots.mjs';
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
-import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern } from './approvals.mjs';
+import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, invalidDenyPatterns } from './approvals.mjs';
 import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
@@ -92,6 +93,7 @@ import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersio
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
   evaluateAuth,
+  isSameOriginRequest,
   isAuthExemptPath,
   isPublicShellPath,
   isLoopbackHost,
@@ -178,6 +180,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // additive migration (config seeds are copy-if-missing).
   const renamed = await migrateBuiltinNames();
   if (renamed) console.log(`[assistant] renamed ${renamed} built-in bot(s)`);
+  if (await migrateAppName().catch(() => false)) console.log('[assistant] app name updated to 长明');
   await migrateBaseGrants().catch((err) => console.error('[bots] base grants:', err.message));
   const migrated = await migrateSeedGrants();
   if (migrated) console.log(`[assistant] migrated seed grants for ${migrated} bot(s)`);
@@ -194,6 +197,11 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const vision = await visionModule.loadVision();
   const media = await mediaModule.loadMedia();
   const security = await loadOrCreateSecurity();
+  // A danger rule that does not compile never matches: say so instead of
+  // silently skipping it (SEC-07).
+  const brokenRules = invalidDenyPatterns(effectivePolicy(config.policy || {}).denyPatterns);
+  for (const bad of brokenRules) console.error(`[assistant] danger rule does not compile, it never matches: ${bad.pattern} (${bad.error})`);
+  if (brokenRules.length) void audit({ kind: 'policy.invalid-deny', patterns: brokenRules.map((b) => b.pattern) }).catch(() => {});
   // Phones that paired with this hub, and the single-use links a QR code carries.
   const devices = await loadDeviceStore();
   const pairLinks = createPairLinkStore();
@@ -700,6 +708,11 @@ function attachHubUpgrade(server, state, viaPublic) {
     const match = /^\/api\/bots\/([^/]+)\/desktop\/ws$/.exec(pathname);
     if (!match) return refuse(404, 'Not Found');
     if (!evaluateAuth(req, state.security, state.devices).authorized) return refuse(401, 'Unauthorized');
+    // WebSockets ignore the browser's cross-site rules, so a viewer must prove
+    // it is the hub's own page (its Origin) or carry a token (SEC-03).
+    const hasOrigin = Boolean(String(req.headers.origin || '').trim());
+    const hasBearer = /^bearer\s+\S/i.test(String(req.headers.authorization || ''));
+    if (!hasBearer && !(hasOrigin && isSameOriginRequest(req))) return refuse(401, 'Unauthorized');
     const info = desktopInfo(safeDecode(match[1]));
     if (!info.running) return refuse(404, 'Not Found');
     // Windows: no websockify; the hub speaks WebSocket to the VNC server itself.
@@ -823,6 +836,15 @@ async function dispatchApi(req, res, state, pathname, url) {
     const params = match.groups || {};
     let body = {};
     if ((method === 'POST' || method === 'PATCH' || method === 'PUT') && !entry.rawBody) {
+      // A page can send text/plain to any address without asking first; JSON
+      // makes the browser ask (a CORS preflight), and we never say yes to
+      // another site. Every client of ours already sends application/json.
+      const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      const hasBody = Number(req.headers['content-length'] || 0) > 0 || Boolean(req.headers['transfer-encoding']);
+      if (hasBody && type !== 'application/json') {
+        req.resume();
+        return errorResponse(res, 415, 'JSON_REQUIRED', 'send the body as application/json');
+      }
       try {
         body = await readJsonBody(req);
       } catch (err) {

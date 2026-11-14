@@ -1,6 +1,6 @@
-# Nightshift 移动端打包
+# 长明 Evenlight 移动端打包
 
-桌面端是「Node 服务 + 单文件 UI」。手机端要解决的就两件事：**连上哪台电脑上的 Nightshift**，以及**把一个能装到手机上的包做出来**。
+桌面端是「Node 服务 + 单文件 UI」。手机端要解决的就两件事：**连上哪台电脑上的长明**，以及**把一个能装到手机上的包做出来**。
 
 这个仓库里 `mobile/` 是 Capacitor 外壳（Android + iOS 原生工程已生成并入库），`public/` 是那份单文件 UI。本文档把三条落地路径、签名、CI、以及上架时真正会卡住的地方写清楚。
 
@@ -31,7 +31,7 @@ Capacitor 的两种做法只有一种是能用的：
 2. Hub 的 UI 是第一方文档，`?pair=` 被它自己消费掉、落 cookie，之后就是桌面端那份界面。
 3. 想换 Hub：Android 按返回键（外壳打了原生补丁，见下）；iOS 退出 App 再打开——启动页永远是启动器。
 
-<img src="./../mobile/docs/connect-screen.png" width="300" alt="连接你的 Nightshift" /> <img src="./../mobile/docs/hub-remembered.png" width="300" alt="已记住你的 Nightshift" />
+<img src="./../mobile/docs/connect-screen.png" width="300" alt="连接你的长明" /> <img src="./../mobile/docs/hub-remembered.png" width="300" alt="已记住你的长明" />
 
 > 关于「token 存不存 Preferences」：**不存**。session token 是 `HttpOnly`，页面脚本读不到；Hub 又不发 CORS 头，启动器也无法用自己的 `fetch` 换到它。启动器只存 Hub 地址（`@capacitor/preferences`，key `desk.hubUrl`），凭证由 Hub 自己的配对页在第一方上下文里拿。这是后端鉴权模型决定的，不是省事。
 
@@ -245,7 +245,7 @@ ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 npm start
 
 ### 5.1 先说风险：Apple 4.2 "Minimum Functionality"
 
-App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网站包一层"的 App。Nightshift 的移动端**在审核员眼里就是这种情况**：它是你家电脑上一个服务的客户端，而且审核员**连不上你的 Hub**——打开就是一台空白的连接页。
+App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网站包一层"的 App。长明的移动端**在审核员眼里就是这种情况**：它是你家电脑上一个服务的客户端，而且审核员**连不上你的 Hub**——打开就是一台空白的连接页。
 
 现实一点的判断：
 
@@ -263,7 +263,7 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 - [ ] 上传 **AAB**（`bundleRelease`），不是 APK；Play 要求 target SDK 跟上当年要求（本项目 `targetSdk 35`）
 - [ ] 签名：**Play App Signing**（上传密钥用本文 §2.2 的 keystore，或让 Google 生成）
 - [ ] 隐私政策 URL（即使"数据不出本机"也要填）
-- [ ] Data safety 表单：Nightshift 会把对话/记忆存在**用户自己电脑**上；App 本身不收集——如实填写
+- [ ] Data safety 表单：长明会把对话/记忆存在**用户自己电脑**上；App 本身不收集——如实填写
 - [ ] 内容分级问卷、目标受众、截图（手机 + 平板）、图标 512×512、feature graphic 1024×500
 - [ ] **明文 HTTP**：`usesCleartextTraffic="true"` 本身不违反 Play 政策，但审核会问"为什么需要明文"。理由要写清楚：Hub 是用户局域网内自建服务，不是公网明文。能改成 https（§1.1）就应该改，并把 manifest 里这个属性删掉
 - [ ] 新个人开发者账号有 **12 名测试者 / 14 天** 的封闭测试门槛（2023 起）
@@ -318,7 +318,7 @@ App Store 审核指南 **4.2 Minimum Functionality** 明确拒绝"只是把网�
 ```
 mobile/
 ├── package.json              Capacitor 依赖 + 构建脚本
-├── capacitor.config.json     appId com.desk.assistant / appName Nightshift / webDir www
+├── capacitor.config.json     appId com.desk.assistant / appName 长明 / webDir www
 ├── scripts/sync-www.mjs      ../public -> www/ui，并写入启动器 + shell-info.json
 ├── scripts/verify-workflows.mjs  YAML 解析与结构校验（npm run verify:yaml）
 ├── shell/                    启动器源码（www 由它生成，不要直接改 www/）

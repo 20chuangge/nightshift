@@ -8,7 +8,7 @@
  * Only registered on https or localhost: LAN http:// is not a secure context.
  */
 // A new name drops every older cache once (activate below).
-const VERSION = 'evenlight-v2';
+const VERSION = 'evenlight-v3';
 const SHELL = [
   '/', '/index.html', '/manifest.json', '/offline.html',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png',

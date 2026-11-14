@@ -21,6 +21,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
+import { childEnv } from './childenv.mjs';
 import { putVault, deleteVault, revealVault, listVault } from './vault.mjs';
 import crypto from 'node:crypto';
 import { discoverOAuth, registerClient, authorizeUrl, exchangeCode, refreshAccess, pkcePair } from './mcpauth.mjs';
@@ -191,8 +192,7 @@ export class McpClient {
   startStdio() {
     const fill = (v) => fillSecrets(String(v).replace('{workspace}', this.workspaceDir), this.secrets);
     const args = (this.cfg.args || []).map(fill);
-    const env = { ...process.env };
-    delete env.ASSIST_API_KEY; // our model key is not theirs
+    const env = childEnv(); // our keys are not theirs; theirs come from the app's own settings
     for (const [k, v] of Object.entries(this.cfg.env || {})) env[k] = fill(v);
     // The hub's own Node (Linux machines get one in their runtime folder, not on
     // PATH): npx / npm / node come from next to it, so 「npx …」 apps start there too.

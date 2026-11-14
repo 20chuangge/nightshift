@@ -291,6 +291,26 @@ export async function writeAssistantConfig(config) {
   await writeJsonAtomic(P.assistantConfig, config);
 }
 
+// Names the app shipped under before. config/ is seeded copy-if-missing, so an
+// installed machine keeps the old one until this renames it (BUG-02).
+const OLD_APP_NAMES = new Set(['夜班', 'nightshift', 'desk']);
+export const APP_NAME = '长明';
+
+/** The name an installed config should now carry, or null to leave it. */
+export function renamedAppName(name) {
+  return OLD_APP_NAMES.has(String(name ?? '').trim().toLowerCase()) ? APP_NAME : null;
+}
+
+/** Rename an old app name in config/assistant.json; only that field changes. */
+export async function migrateAppName() {
+  const raw = await readJson(P.assistantConfig, null);
+  if (!raw || typeof raw !== 'object') return false;
+  const next = renamedAppName(raw.name);
+  if (!next) return false;
+  await writeJsonAtomic(P.assistantConfig, { ...raw, name: next });
+  return true;
+}
+
 function botFile(id) {
   const safe = String(id).replace(/[^a-zA-Z0-9._-]/g, '_');
   return path.join(P.botsDir, `${safe}.json`);

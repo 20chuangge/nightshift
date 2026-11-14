@@ -59,14 +59,37 @@ export function pathsInCommand(command, workspaceDir) {
 const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
 
 // Commands that only look: they list, measure or print, and change nothing.
+// Not here on purpose (SEC-08): env (runs any program), awk / sed (have their
+// own system() / e commands), less / more (a pager can open a shell).
 const LOOKERS = new Set(('ps top htop df du ls ll dir lsblk blkid free uptime uname whoami id hostname hostnamectl lscpu lsusb lspci lsmod '
-  + 'ip ss netstat ifconfig stat file find tree wc nproc date env printenv which whereis echo printf sort uniq column nl cut tr '
+  + 'ip ss netstat ifconfig stat file find tree wc nproc date printenv which whereis echo printf sort uniq column nl cut tr '
   + 'journalctl systemctl test true basename dirname realpath readlink md5sum sha256sum '
   + 'get-process get-psdrive get-childitem gci get-item get-itemproperty get-service get-ciminstance get-wmiobject get-computerinfo get-volume get-disk '
   + 'select-object select sort-object where-object where format-table ft format-list fl measure-object out-string tasklist systeminfo ipconfig '
-  + 'cat less more head tail grep egrep fgrep rg awk sed get-content gc type select-string sls').split(' '));
+  + 'cat head tail grep egrep fgrep rg get-content gc type select-string sls').split(' '));
 // Of those, the ones that read what is inside files (not just names and sizes).
-const READERS = new Set('cat less more head tail grep egrep fgrep rg awk sed get-content gc type select-string sls md5sum sha256sum'.split(' '));
+const READERS = new Set('cat head tail grep egrep fgrep rg get-content gc type select-string sls md5sum sha256sum'.split(' '));
+
+// Lookers that change things when given certain arguments: [command, test on
+// the words after it]. Any hit and the command is not "just looking".
+const nonFlags = (args) => args.filter((w) => w && !w.startsWith('-'));
+const WRITE_ARGS = [
+  ['sort', (a) => a.some((w) => /^(-o|--output|--compress-program)/.test(w))],
+  ['find', (a) => a.some((w) => /^-(fprint\w*|fls|delete|exec\w*|ok\w*)$/.test(w))],
+  ['date', (a) => a.some((w) => /^(-s|--set)/.test(w))],
+  ['hostname', (a) => nonFlags(a).length > 0],          // hostname NEWNAME
+  ['hostnamectl', (a) => a.some((w) => /^set-/.test(w))],
+  ['ip', (a) => a.some((w) => /^(set|add|del|delete|flush|change|replace|up|down|append)$/.test(w))],
+  ['ifconfig', (a) => nonFlags(a).length > 1],          // ifconfig eth0 down / ifconfig eth0 10.0.0.9
+  ['tree', (a) => a.includes('-o')],
+  ['uniq', (a) => nonFlags(a).length > 1],              // uniq IN OUT writes OUT
+  ['rg', (a) => a.some((w) => /^--pre\b/.test(w))],     // runs a program on every file
+  ['journalctl', (a) => a.some((w) => /^--(vacuum|rotate|flush|sync|relinquish|setup-keys)/.test(w))],
+];
+
+// PowerShell script blocks ({ ... } after Where-Object, Select-Object @{e={}})
+// run code. Plain comparisons ($_.CPU -gt 10) are looking; calls are not.
+const SCRIPT_CALL = /\biex\b|::|&\s*[\w$'"({]|\.\w+\s*\(/i;
 
 /**
  * Does this command only look? -> {look: true, reads: bool} | {look: false}
@@ -79,6 +102,12 @@ export function lookOnly(command) {
   // Quoted text is data ("dnf|packagekit", 'a > b'), not pipes or redirections.
   // A command substitution inside double quotes still runs, so check that first.
   if (/\$\(|`|\bsystem\s*\(|\bexec\s*\(/.test(raw)) return { look: false };
+  // A redirection hidden in quotes ("a > b.txt", awk '{print > f}') still
+  // writes: any > besides the harmless ones means not just looking.
+  if (/>/.test(raw.replace(/\d?>\s*\/dev\/null|2>&1|\d?>\s*\$null|-(gt|ge|lt|le)\b/gi, ''))) return { look: false };
+  for (const block of raw.matchAll(/\{([^{}]*)\}/g)) {
+    if (SCRIPT_CALL.test(block[1])) return { look: false };
+  }
   // (A quoted path is still a path: "C:\docs\a.txt" stays visible as one.)
   const text = raw.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (q) => (/[\\/~]|\.\w{1,5}["']$/.test(q) ? '/quoted-path' : 'Q'));
   // Writes and side doors: > file (but not >/dev/null, 2>&1), tee, in-place
@@ -92,6 +121,8 @@ export function lookOnly(command) {
     const cmd = (words[0] || '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
     if (!cmd) continue;
     if (!LOOKERS.has(cmd)) return { look: false };
+    const writes = WRITE_ARGS.find(([name]) => name === cmd);
+    if (writes && writes[1](words.slice(1))) return { look: false };
     // A reader counts only when it names a file ("grep x" on a pipe reads no file).
     if (READERS.has(cmd) && words.slice(1).some((w) => !w.startsWith('-') && /[\\/~]|^\.\.?$|\.\w{1,5}$/.test(w))) reads = true;
   }

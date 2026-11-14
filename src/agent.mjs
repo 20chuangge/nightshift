@@ -31,7 +31,7 @@ import {
   sessionFile,
   turnFile,
 } from './store.mjs';
-import { effectivePolicy, classify, DECISION, machineMode } from './approvals.mjs';
+import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary } from './boundary.mjs';
 import { noteUsage } from './usage.mjs';
@@ -646,7 +646,7 @@ export class AgentRuntime {
       '## Approval boundary',
       'Every tool call is classified before it runs:',
       '- LOW runs immediately.',
-      `- MEDIUM runs only if your policy auto-approves it (yours: ${bot.policy?.autoApproveMedium ? 'yes' : 'no'}), otherwise a human is asked.`,
+      `- MEDIUM runs only if your policy auto-approves it (yours: ${bot.policy?.autoApproveMedium ? 'yes' : 'no'}), otherwise a human is asked. Even then, a shell command that may change something asks unless this machine is set to 放手; commands that only look (ls, df, ps | grep, cat) do not.`,
       '- HIGH always asks a human. Writes outside the workspace and denylisted shell commands are HIGH.',
       unattended
         ? 'This turn is UNATTENDED (a routine fired). Nobody is watching, so a HIGH-risk action will NOT wait: the run will stop and report that it needs approval.'
@@ -1789,9 +1789,12 @@ export class AgentRuntime {
       baseRisk: riskInfo.risk,
       granted,
       // "careful" means every bot asks, including a trusted one.
-      autoApproveMedium: machine.careful ? false : (Boolean(bot.policy?.autoApproveMedium) || machine.autonomous),
+      // A trusted bot's shell command runs unasked only when it just looks (SEC-04).
+      autoApproveMedium: mediumRunsUnasked({ careful: machine.careful, autonomous: machine.autonomous, trusted: Boolean(bot.policy?.autoApproveMedium), toolName: name, args }),
       autoApproveAll: machine.autonomous,
-      denyPatterns: bot.policy?.denyPatterns?.length ? [...bot.policy.denyPatterns, ...machine.extraDeny.map((e) => e.pattern)] : machine.denyPatterns,
+      // A bot keeps a copy of the list from when it was made; it adds to the
+      // machine's list (built-in + the human's words), never replaces it.
+      denyPatterns: [...new Set([...machine.denyPatterns, ...(bot.policy?.denyPatterns || [])])],
       extraRiskReason: riskInfo.reason || '',
       unattended: ctx.unattended,
     });

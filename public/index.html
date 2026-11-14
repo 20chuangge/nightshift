@@ -11533,7 +11533,7 @@ async function savePolicy(next, okText = '') {
    The strict preset tightens the boundary only — it never strips a bot's
    tools, which would silently break work the human already delegated. */
 const PERM_CAPS = [
-  { label: '执行命令', tools: ['shell'], risk: 'high' },
+  { label: '执行命令', tools: ['shell'], risk: 'shell' },
   { label: '写文件', tools: ['fs_write', 'fs_mkdir'], risk: 'medium' },
   { label: '删文件', tools: ['fs_delete'], risk: 'high' },
   { label: '发消息', tools: ['bot_message', 'group_post'], risk: 'medium' },
@@ -11559,6 +11559,9 @@ function permDecision(cap, bot, policy) {
   if (level === 'careful') return 'ask';
   if (level === 'auto') return 'auto';
   if (cap.risk === 'high') return 'ask';
+  // Mirrors mediumRunsUnasked in src/approvals.mjs: at 标准 a trusted bot's
+  // commands that only look run unasked; ones that may change things ask.
+  if (cap.risk === 'shell') return bot.policy?.autoApproveMedium ? 'look' : 'ask';
   return bot.policy?.autoApproveMedium ? 'auto' : 'ask';
 }
 
@@ -11602,7 +11605,9 @@ function renderPermOverview() {
       const granted = cap.tools.some((name) => tools.has(name));
       if (!granted) { row.appendChild(el('td', 'off', '—')); continue; }
       const decision = permDecision(cap, bot, policy);
-      row.appendChild(el('td', decision === 'auto' ? 'on' : 'ask', decision === 'auto' ? '✓' : '问'));
+      const cell = el('td', decision === 'auto' ? 'on' : 'ask', decision === 'auto' ? '✓' : decision === 'look' ? '只看不问' : '问');
+      if (decision === 'look') cell.title = '列出、查看类命令直接做；会改东西的命令先问你';
+      row.appendChild(cell);
     }
     body.appendChild(row);
   }

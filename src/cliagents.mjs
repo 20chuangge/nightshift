@@ -40,6 +40,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
+import { childEnv } from './childenv.mjs';
 
 export const CLI_AGENT_TIMEOUT_MS = 20 * 60 * 1000;
 export const CLI_TAIL_CHARS = 8000;
@@ -217,20 +218,27 @@ function killTree(child) {
   }
 }
 
-function cleanEnv() {
-  // Our own model key must not leak into another program.
-  const env = { ...process.env };
-  delete env.ASSIST_API_KEY;
-  return env;
+// The variables each tool can sign in with instead of a subscription login.
+// Everything else that looks like a key - and all of the hub's own settings -
+// stays out of another program's environment (SEC-12).
+const CLI_KEYS = {
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+  codex: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
+  cursor: ['CURSOR_API_KEY'],
+  qoder: ['QODER_API_KEY', 'QODER_PERSONAL_ACCESS_TOKEN'],
+};
+
+function cleanEnv(id) {
+  return childEnv(process.env, { keep: CLI_KEYS[id] || [] });
 }
 
 /** Run one command with a time limit. -> {code, out} */
-function runQuick(file, args, timeoutMs = 20000) {
+function runQuick(file, args, timeoutMs = 20000, id = '') {
   return new Promise((resolve) => {
     let out = '';
     let child;
     try {
-      child = launch(file, args, { windowsHide: true, env: cleanEnv(), detached: process.platform !== 'win32' });
+      child = launch(file, args, { windowsHide: true, env: cleanEnv(id), detached: process.platform !== 'win32' });
     } catch (err) {
       resolve({ code: -1, out: String(err.message) });
       return;
@@ -271,11 +279,11 @@ export async function detectCliAgents() {
     const base = { id, label: spec.label, plan: spec.plan, install: spec.install, login: spec.login, model: config.models[id] || '' };
     const file = findCli(id);
     if (!file) { result.push({ ...base, installed: false, loggedIn: false, models: spec.models || [] }); continue; }
-    const status = await runQuick(file, spec.statusArgs);
+    const status = await runQuick(file, spec.statusArgs, 20000, id);
     const loggedIn = spec.loggedIn(status.out, status.code);
     let models = spec.models || [];
     if (spec.listArgs && loggedIn) {
-      const listed = await runQuick(file, spec.listArgs, 30000);
+      const listed = await runQuick(file, spec.listArgs, 30000, id);
       const names = listed.code === 0 ? parseModelList(listed.out) : [];
       // Its own list wins; a built-in name is kept only when it is not there in any case ("auto" vs "Auto").
       if (names.length) {
@@ -351,7 +359,7 @@ export async function runCliAgent({ agent, task, dir, allowShell = false, model 
   const child = launch(file, spec.args({ dir, allowShell, model: useModel }), {
     cwd: dir,
     windowsHide: true,
-    env: cleanEnv(),
+    env: cleanEnv(agent),
     detached: process.platform !== 'win32',
   });
   const onData = (chunk) => {

@@ -567,7 +567,7 @@ function createWindowFor(url, bounds = null) {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#0b0d12',
-    title: 'Desk',
+    title: L('长明', 'Evenlight'),
     icon: path.join(__dirname, 'build', 'icon.png'),
     autoHideMenuBar: true,
     show: false,

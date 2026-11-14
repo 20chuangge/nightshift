@@ -15,6 +15,7 @@
  */
 
 import { uid, nowIso } from './store.mjs';
+import { lookOnly } from './boundary.mjs';
 
 export const RISK = { LOW: 'LOW', MEDIUM: 'MEDIUM', HIGH: 'HIGH' };
 export const DECISION = { AUTO: 'auto', ASK: 'ask', DENY: 'deny' };
@@ -30,6 +31,12 @@ export const DECISION = { AUTO: 'auto', ASK: 'ask', DENY: 'deny' };
 export const DEFAULT_DENY_PATTERNS = [
   'rm\\s+-rf',
   'rm\\s+-fr',
+  // rm -r -f / -f -r / --recursive --force / -v -rf ... (matched case-insensitively, so -Rf too)
+  '\\brm\\s+(?:-{1,2}[a-z-]+\\s+)*-{1,2}(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r|recursive)\\b',
+  '\\brm\\s+(?:-\\S+\\s+)*-r\\S*\\s+(?:-\\S+\\s+)*-f',
+  '\\brm\\s+(?:-\\S+\\s+)*-f\\S*\\s+(?:-\\S+\\s+)*-r',
+  // download, then run what came down
+  '\\b(iwr|Invoke-WebRequest|curl|wget)\\b[^\\n]*\\s-(o|OutFile|O)\\b[^\\n]*[;&]+\\s*(\\.\\\\|\\./|sh\\s|bash\\s|start\\s|powershell)',
   '\\bdel\\s+/[sfq]\\b',
   '\\brmdir\\s+/s\\b',
   '\\bformat\\s+[a-z]:',
@@ -44,10 +51,10 @@ export const DEFAULT_DENY_PATTERNS = [
   '\\bwget\\b[^|]*\\|\\s*(ba)?sh',
   '\\biwr\\b[^|]*\\|\\s*iex',
   '\\bchmod\\s+777\\s+/',
-  '\\b:(\\)\\s*\\{',
+  '(?:^|[;&|\\s]):\\(\\)\\s*\\{', // fork bomb (no \b: a colon has no word edge)
   '\\bgit\\s+push\\s+--force\\b',
   '\\bgit\\s+reset\\s+--hard\\b',
-  '>\s*/dev/sd[a-z]',
+  '>\\s*/dev/(sd[a-z]|vd[a-z]|hd[a-z]|nvme\\d)',
   '\\bRemove-Item\\b.*-Recurse\\b',
 ];
 
@@ -77,7 +84,7 @@ export const REMOTE_DENY_PATTERNS = [
   '\\bx11vnc\\b.*\\s-listen\\s+(?!127\\.|localhost\\b)',
   '\\bwebsockify\\b.*\\b0\\.0\\.0\\.0:',
   'LoopbackOnly\\b.*\\b0\\b',
-  '\\b:\\(\\)\\s*\\{',
+  '(?:^|[;&|\\s]):\\(\\)\\s*\\{', // fork bomb
   // Windows hubs
   '\\bformat(\\.com)?\\s+[a-z]:',
   '\\b(Format-Volume|Clear-Disk|Initialize-Disk|Stop-Computer)\\b',
@@ -121,9 +128,11 @@ export function effectivePolicy(configPolicy = {}) {
   // Older configs only had the on/off switch: map it onto the levels.
   const legacyAuto = remote ? configPolicy.remoteAutonomy !== false : Boolean(configPolicy.autoApproveAll);
   const level = APPROVAL_LEVELS.includes(configPolicy.level) ? configPolicy.level : (legacyAuto ? 'auto' : 'standard');
+  // A list saved in config (older installs copied the defaults there) adds to
+  // the built-in one; it never replaces it, or fixes to the defaults never land.
   const builtin = remote
     ? REMOTE_DENY_PATTERNS
-    : (configPolicy.denyPatterns?.length ? configPolicy.denyPatterns : DEFAULT_DENY_PATTERNS);
+    : [...new Set([...DEFAULT_DENY_PATTERNS, ...(configPolicy.denyPatterns || [])])];
   // The human's own additions never replace the built-in floor.
   const extra = (configPolicy.extraDeny || []).map((e) => e?.pattern).filter(Boolean);
   return {
@@ -135,6 +144,34 @@ export function effectivePolicy(configPolicy = {}) {
     extraDeny: configPolicy.extraDeny || [],
     denyPatterns: [...builtin, ...extra],
   };
+}
+
+/**
+ * Does medium risk run without asking for this bot and this call? (SEC-04)
+ *   careful   - never
+ *   standard  - a trusted bot (autoApproveMedium) does routine work, but a
+ *               shell command runs unasked only when it just looks (ls, df,
+ *               ps | grep); one that may change things asks, as the UI says
+ *   auto      - always (the danger list still asks)
+ */
+export function mediumRunsUnasked({ careful = false, autonomous = false, trusted = false, toolName = '', args = {} } = {}) {
+  if (careful) return false;
+  if (autonomous) return true;
+  if (!trusted) return false;
+  return toolName !== 'shell' || lookOnly(String(args?.command || '')).look;
+}
+
+/** Patterns that do not compile (they would never match): checked at start. */
+export function invalidDenyPatterns(patterns = []) {
+  const bad = [];
+  for (const p of patterns) {
+    try {
+      new RegExp(p, 'i');
+    } catch (err) {
+      bad.push({ pattern: p, error: err.message });
+    }
+  }
+  return bad;
 }
 
 /** Which deny patterns match this shell command (for the audit "reason"). */

@@ -91,6 +91,56 @@ export function isSecureRequest(req, { trustProxy = TRUST_PROXY, proxySecret = P
   return Boolean(trusted) && /^https$/i.test(String(req?.headers?.['x-forwarded-proto'] || '').trim());
 }
 
+// ---------------------------------------------------------------------------
+// Browsers: loopback is not enough (SEC-01 / SEC-02)
+// ---------------------------------------------------------------------------
+//
+// Any page open in the user's browser can send requests to 127.0.0.1. So a
+// loopback request is the user only when it also
+//   - names this computer in Host (a rebound evil.example -> 127.0.0.1 does not), and
+//   - comes from the hub's own page, or from no page at all (the desktop app's
+//     main process, curl, another hub: they send no Origin).
+
+const LOCAL_HOST_NAMES = new Set(['127.0.0.1', 'localhost', '[::1]', '::1', '0.0.0.0']); // 0.0.0.0: the address a hub on every interface prints
+
+/** "localhost:4390" -> "localhost"; "[::1]:4390" -> "[::1]". */
+export function hostNameOf(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v.startsWith('[')) return v.slice(0, v.indexOf(']') + 1);
+  return v.replace(/:\d+$/, '');
+}
+
+/** Host names this computer itself (no Host header at all: not a browser). */
+export function hasLocalHostHeader(req) {
+  const host = req?.headers?.host;
+  if (host === undefined || host === '') return true;
+  return LOCAL_HOST_NAMES.has(hostNameOf(host));
+}
+
+/**
+ * Did a browser send this from the hub's own page? No Origin = not a browser
+ * page (or a same-origin GET), so it passes. A tunnel that rewrites Host may
+ * name the public address in X-Forwarded-Host; a page cannot set that header
+ * on a cross-site request without a preflight we never grant.
+ */
+export function isSameOriginRequest(req) {
+  const headers = req?.headers || {};
+  if (String(headers['sec-fetch-site'] || '').trim().toLowerCase() === 'cross-site') return false;
+  const origin = String(headers.origin || '').trim().toLowerCase();
+  if (!origin) return true;
+  if (origin === 'null') return false; // sandboxed frames, file:// pages
+  let originHost = '';
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  const hosts = [headers.host, ...String(headers['x-forwarded-host'] || '').split(',')]
+    .map((h) => String(h || '').trim().toLowerCase())
+    .filter(Boolean);
+  return hosts.includes(originHost);
+}
+
 /** Constant-time comparison. Hashing first hides the length difference too. */
 export function safeEqual(a, b) {
   const left = crypto.createHash('sha256').update(String(a ?? '')).digest();
@@ -193,7 +243,9 @@ export function evaluateAuth(req, security, devices, proxy = {}) {
   const address = clientIp(req, proxy);
   // The public port is bound to 127.0.0.1 behind a tunnel: the socket address
   // proves nothing about the caller, so that port never counts as local.
-  if (!req?.viaPublic && isLoopbackAddress(address)) {
+  // A page in the user's own browser reaches loopback too: it has to be the
+  // hub's own page (SEC-01) under this computer's own name (SEC-02).
+  if (!req?.viaPublic && isLoopbackAddress(address) && hasLocalHostHeader(req) && isSameOriginRequest(req)) {
     return { required: false, authorized: true, mode: 'local', local: true, address };
   }
 
@@ -216,7 +268,9 @@ export function evaluateAuth(req, security, devices, proxy = {}) {
     }
   }
 
-  const cookie = readCookie(req?.headers?.cookie, SESSION_COOKIE);
+  // A cookie rides along with whatever page triggers the request; SameSite=Lax
+  // stops most of that, this stops the rest (another port on the same host).
+  const cookie = isSameOriginRequest(req) ? readCookie(req?.headers?.cookie, SESSION_COOKIE) : '';
   if (cookie && security?.token && safeEqual(cookie, security.token)) {
     return { required: true, authorized: true, mode: 'cookie', local: false, address };
   }
