@@ -4,9 +4,9 @@
 
 | 文件 | 说明 | 大小 |
 |---|---|---|
-| `Evenlight-Setup-x.y.z.exe` | NSIS 安装包（可选安装目录、建桌面/开始菜单快捷方式、免管理员） | ~80 MB |
-| `Evenlight-Portable-x.y.z.exe` | 免安装单文件，双击即用 | ~80 MB |
-| `win-unpacked/` | 解包目录，用于调试（`Evenlight.exe` 直接跑） | — |
+| `Lamplit-Setup-x.y.z.exe` | NSIS 安装包（可选安装目录、建桌面/开始菜单快捷方式、免管理员） | ~80 MB |
+| `Lamplit-Portable-x.y.z.exe` | 免安装单文件，双击即用 | ~80 MB |
+| `win-unpacked/` | 解包目录，用于调试（`Lamplit.exe` 直接跑） | — |
 
 ## 一条命令
 
@@ -26,12 +26,12 @@ npx electron-builder --win --x64
 
 - Node ≥ 20
 - 首次构建会从 GitHub 下载 Electron 与 NSIS 工具链（约 120 MB），之后走本地缓存
-- **不需要** Visual Studio、不需要管理员权限（`perMachine: false`，装到 `%LOCALAPPDATA%\Programs\Evenlight`；从旧版升级时沿用原来的目录）
+- **不需要** Visual Studio、不需要管理员权限（`perMachine: false`，装到 `%LOCALAPPDATA%\Programs\Lamplit`；从旧版升级时沿用原来的目录）
 
 ## 结构：为什么不是一个 .exe 里塞满东西
 
 ```
-Evenlight.exe               ← Electron 壳（只负责开窗 + 起子进程 + 托盘）
+Lamplit.exe               ← Electron 壳（只负责开窗 + 起子进程 + 托盘）
 resources/app.asar          ← 壳代码 main.mjs
 resources/server/           ← 真正的后端（纯 Node，零依赖）
   src/*.mjs
@@ -58,7 +58,7 @@ npm run desktop:icons
 | 现象 | 原因 | 解决 |
 |---|---|---|
 | `Cannot create symbolic link ... libcrypto.dylib` | electron-builder 解压 `winCodeSign` 时含 macOS 符号链接，Windows 非管理员/未开开发者模式无法创建 | 解压产物其实已完整，把 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<随机数>` 复制成 `winCodeSign-2.6.0` 即可跳过重试 |
-| 启动白屏 | 端口被占或 server 起不来 | 看 `%APPDATA%\Desk\` 与启动日志；`Evenlight.exe` 会弹错误框并退出 |
+| 启动白屏 | 端口被占或 server 起不来 | 看 `%APPDATA%\Desk\` 与启动日志；`Lamplit.exe` 会弹错误框并退出 |
 | 想改端口 | 默认随机 | 设环境变量 `PORT=4390` 后启动 |
 | 换 Electron 版本 | — | 改 `desktop/package.json` 的 `electron`，重装后重建 |
 
@@ -72,4 +72,4 @@ npm run desktop:icons
 2. 在 `desktop/electron-builder.yml` 的 `win` 下加 `certificateFile` / `certificatePassword`（或 `signtoolOptions`）；
 3. 重新构建，`signtool` 会自动签名 exe 与安装包。
 
-无证书时，也可以在 CI 里用 `signtool` 对 `dist/Evenlight-Setup-*.exe` 做时间戳签名。
+无证书时，也可以在 CI 里用 `signtool` 对 `dist/Lamplit-Setup-*.exe` 做时间戳签名。

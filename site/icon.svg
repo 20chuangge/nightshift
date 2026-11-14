@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- 长明 · Evenlight: a window left lit through the night. One warm arch and
-       the light it spills on the floor, on a deep ink tile. No glow, no thin
-       lines: it stays a clear shape at 16 px.
+  <!-- 留灯 · Lamplit: a window left lit for you. One light arch and the light
+       it spills on the floor, on a near-black tile. Black, white and gray
+       only; no glow, no thin lines: it stays a clear shape at 16 px.
        Source of every app icon; render with: npm run desktop:icons -->
   <defs>
-    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1B1D24"/><stop offset="1" stop-color="#0C0D10"/></linearGradient>
-    <linearGradient id="lamp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7DDAE"/><stop offset=".6" stop-color="#E2B36A"/><stop offset="1" stop-color="#C98F45"/></linearGradient>
-    <linearGradient id="spill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E2B36A" stop-opacity=".38"/><stop offset="1" stop-color="#E2B36A" stop-opacity="0"/></linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1D1D20"/><stop offset="1" stop-color="#0C0C0D"/></linearGradient>
+    <linearGradient id="lamp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".6" stop-color="#E9E9E9"/><stop offset="1" stop-color="#BDBDBD"/></linearGradient>
+    <linearGradient id="spill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#D9D9D9" stop-opacity=".30"/><stop offset="1" stop-color="#D9D9D9" stop-opacity="0"/></linearGradient>
   </defs>
   <rect x="40" y="40" width="944" height="944" rx="228" fill="url(#ink)"/>
   <path d="M352 700 V452 a160 160 0 0 1 320 0 V700 Z" fill="url(#lamp)"/>

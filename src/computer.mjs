@@ -116,7 +116,7 @@ function displayAvailable() {
 export async function captureScreen(target) {
   await fsp.mkdir(path.dirname(target), { recursive: true });
   if (process.platform === 'win32' && !displayAvailable()) {
-    return { ok: false, reason: '这台 Windows 上的长明在后台运行（没人登录也能干活），没有屏幕可以截；Bot 的浏览器在后台无界面运行。' };
+    return { ok: false, reason: '这台 Windows 上的留灯在后台运行（没人登录也能干活），没有屏幕可以截；Bot 的浏览器在后台无界面运行。' };
   }
   if (process.platform === 'win32') {
     const script = [

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The approval card keeps Nightshift's own palette, so the notification
+    <!-- The approval card keeps the app's own palette, so the notification
          looks like the same card the chat shows instead of a system template. -->
-    <color name="notif_card">#10131A</color>
-    <color name="notif_panel">#151A23</color>
-    <color name="notif_border">#232A38</color>
-    <color name="notif_text">#E7E9F0</color>
-    <color name="notif_muted">#8B93A6</color>
-    <color name="notif_dim">#5E6678</color>
+    <color name="notif_card">#141414</color>
+    <color name="notif_panel">#1C1C1C</color>
+    <color name="notif_border">#2A2A2A</color>
+    <color name="notif_text">#F5F5F5</color>
+    <color name="notif_muted">#A3A3A3</color>
+    <color name="notif_dim">#737373</color>
     <color name="notif_amber">#F0A72C</color>
     <color name="notif_amber_bg">#2A2213</color>
     <color name="notif_amber_border">#4A3A18</color>

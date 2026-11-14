@@ -44,7 +44,7 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
           body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined,
           signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
-        if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`「${peer.name}」不认这台机器的凭据（需要在长明客户端里重新配对那台机器）`), { code: 'PEER_UNAUTHORIZED' });
+        if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`「${peer.name}」不认这台机器的凭据（需要在留灯客户端里重新配对那台机器）`), { code: 'PEER_UNAUTHORIZED' });
         return res;
       } catch (err) {
         if (err.code === 'PEER_UNAUTHORIZED' || signal?.aborted) throw err;

@@ -31,7 +31,7 @@ async function loadSsh2() {
     try {
       ssh2Module = await import('ssh2');
     } catch {
-      throw remoteError('REMOTE_NO_SSH2', '这台机器上没有 ssh2 依赖，无法再远程配置别的机器；请在长明客户端里操作。');
+      throw remoteError('REMOTE_NO_SSH2', '这台机器上没有 ssh2 依赖，无法再远程配置别的机器；请在留灯客户端里操作。');
     }
   }
   return ssh2Module;
@@ -481,7 +481,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       }
 
       phase(job, '打包并上传');
-      setProgress(job, '打包长明程序…');
+      setProgress(job, '打包留灯程序…');
       const packed = await packApp();
       try {
         setProgress(job, `上传程序（${Math.max(1, Math.round(packed.bytes / 1024 / 1024))} MB）…`);
@@ -538,7 +538,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         if (result.code !== 0 || value('DESK_HUB_OK') !== '1' || !job.pairCode) {
           const said = result.output.trim().split(/\r?\n/).filter((line) => line.trim() && !/^DESK_/.test(line));
           // The reason first (which check failed), then what the script said last.
-          const why = value('DESK_HUB_OK') !== '1' ? '长明服务没能启动起来或没有应答'
+          const why = value('DESK_HUB_OK') !== '1' ? '留灯服务没能启动起来或没有应答'
             : !job.pairCode ? '服务起来了，但没读到配对码'
               : `安装脚本出错（退出码 ${result.code}）`;
           const reason = said.filter((line) => /^\[desk\]/.test(line)).slice(-2).map(cleanLine);

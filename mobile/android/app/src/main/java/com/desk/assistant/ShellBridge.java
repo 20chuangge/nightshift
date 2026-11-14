@@ -105,7 +105,7 @@ public class ShellBridge {
         FutureTask<Boolean> task = new FutureTask<>(() -> {
             ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm == null) return false;
-            cm.setPrimaryClip(ClipData.newPlainText("Evenlight", text == null ? "" : text));
+            cm.setPrimaryClip(ClipData.newPlainText("Lamplit", text == null ? "" : text));
             return true;
         });
         activity.runOnUiThread(task);

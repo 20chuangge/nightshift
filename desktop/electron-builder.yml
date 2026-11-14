@@ -1,6 +1,6 @@
 appId: com.desk.assistant
-productName: Evenlight
-copyright: Copyright © 2026 Evenlight
+productName: Lamplit
+copyright: Copyright © 2026 Lamplit
 
 directories:
   output: dist
@@ -58,8 +58,8 @@ win:
     - target: portable
       arch: [x64]
   icon: build/icon.ico
-  publisherName: Evenlight
-  artifactName: Evenlight-${version}-${arch}.${ext}
+  publisherName: Lamplit
+  artifactName: Lamplit-${version}-${arch}.${ext}
 
 nsis:
   oneClick: false
@@ -68,16 +68,16 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: 长明 Evenlight
+  shortcutName: 留灯 Lamplit
   deleteAppDataOnUninstall: false
-  uninstallDisplayName: "长明 Evenlight"
+  uninstallDisplayName: "留灯 Lamplit"
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  artifactName: Evenlight-Setup-${version}.${ext}
+  artifactName: Lamplit-Setup-${version}.${ext}
 
 portable:
-  artifactName: Evenlight-Portable-${version}.${ext}
+  artifactName: Lamplit-Portable-${version}.${ext}
 
 mac:
   target: [dmg]

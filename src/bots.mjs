@@ -53,7 +53,17 @@ export const DEFAULT_ASSISTANT_CONFIG = {
   },
 };
 
-const AVATAR_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc'];
+const AVATAR_COLORS = ['#52525b', '#3f3f46', '#71717a', '#57534e', '#78716c', '#404040', '#525252', '#737373', '#4b5563', '#6b7280'];
+// Colours the hub handed out by itself before 1.2.150. The picker in the UI
+// never offered these exact values, so a bot still on one never had a colour
+// chosen by a person: it moves to the gray in the same place (see migrateDefaultAvatars).
+const OLD_AUTO_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc', '#8b5cf6'];
+
+/** The gray an automatically given old colour becomes, or null to leave it. */
+export function grayForOldColor(color) {
+  const i = OLD_AUTO_COLORS.indexOf(String(color || '').trim().toLowerCase());
+  return i === -1 ? null : AVATAR_COLORS[i % AVATAR_COLORS.length];
+}
 
 // ---------------------------------------------------------------------------
 // avatars
@@ -83,7 +93,7 @@ export const AVATAR_SHAPES = [
 ];
 
 export const DEFAULT_AVATAR_SHAPE = 'squircle';
-export const DEFAULT_AVATAR_COLOR = '#8b5cf6';
+export const DEFAULT_AVATAR_COLOR = '#52525b';
 const AVATAR_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 /** Uploaded images: what we accept in, and what we serve back out. */
@@ -293,8 +303,8 @@ export async function writeAssistantConfig(config) {
 
 // Names the app shipped under before. config/ is seeded copy-if-missing, so an
 // installed machine keeps the old one until this renames it (BUG-02).
-const OLD_APP_NAMES = new Set(['夜班', 'nightshift', 'desk']);
-export const APP_NAME = '长明';
+const OLD_APP_NAMES = new Set(['夜班', 'nightshift', 'desk', '长明', 'evenlight']);
+export const APP_NAME = '留灯';
 
 /** The name an installed config should now carry, or null to leave it. */
 export function renamedAppName(name) {
@@ -309,6 +319,34 @@ export async function migrateAppName() {
   if (!next) return false;
   await writeJsonAtomic(P.assistantConfig, { ...raw, name: next });
   return true;
+}
+
+/** Bots on an automatically given old colour move to gray; chosen colours stay. */
+export async function migrateDefaultAvatars() {
+  let changed = 0;
+  let files = [];
+  try {
+    files = (await fsp.readdir(P.botsDir)).filter((f) => f.endsWith('.json'));
+  } catch {
+    return 0;
+  }
+  for (const file of files) {
+    const full = path.join(P.botsDir, file);
+    let bot;
+    try {
+      bot = JSON.parse(await fsp.readFile(full, 'utf8'));
+    } catch {
+      continue;
+    }
+    const top = grayForOldColor(bot.avatarColor);
+    const inner = bot.avatar && typeof bot.avatar === 'object' ? grayForOldColor(bot.avatar.color) : null;
+    if (!top && !inner) continue;
+    if (top) bot.avatarColor = top;
+    if (inner) bot.avatar = { ...bot.avatar, color: inner };
+    await writeJsonAtomic(full, bot);
+    changed += 1;
+  }
+  return changed;
 }
 
 function botFile(id) {

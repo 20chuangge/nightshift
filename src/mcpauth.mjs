@@ -81,7 +81,7 @@ export async function registerClient(meta, redirectUri, { fetchImpl = fetch } = 
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({
-      client_name: 'Evenlight',
+      client_name: 'Lamplit',
       redirect_uris: [redirectUri],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

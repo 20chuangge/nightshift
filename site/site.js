@@ -1,4 +1,4 @@
-// 长明 · Evenlight site: theme switch, newest downloads, gentle reveal, docs contents.
+// 留灯 · Lamplit site: theme switch, newest downloads, gentle reveal, docs contents.
 (() => {
   const root = document.documentElement;
   const KEY = 'evenlight.theme';
@@ -10,15 +10,15 @@
   });
 
   // Point the buttons straight at the newest files; the release page stays the fallback.
-  // Installers were named Nightshift-* before 1.2.146.
+  // Installers were named Nightshift-* before 1.2.146 and Evenlight-* until 1.2.149.
   (async () => {
     try {
       const res = await fetch('https://api.github.com/repos/20chuangge/nightshift/releases/latest', { headers: { accept: 'application/vnd.github+json' } });
       if (!res.ok) return;
       const rel = await res.json();
       const find = (re) => (rel.assets || []).find((a) => re.test(a.name));
-      const setup = find(/^(Evenlight|Nightshift)-Setup-.*\.exe$/);
-      const apk = find(/^(Evenlight|Nightshift)-Android-.*\.apk$/);
+      const setup = find(/^(Lamplit|Evenlight|Nightshift)-Setup-.*\.exe$/);
+      const apk = find(/^(Lamplit|Evenlight|Nightshift)-Android-.*\.apk$/);
       const mb = (n) => `${Math.round(n / 1024 / 1024)} MB`;
       const a = document.getElementById('dl-setup');
       if (setup && a) {

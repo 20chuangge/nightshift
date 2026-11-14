@@ -1,8 +1,8 @@
 {
   "appId": "com.desk.assistant",
-  "appName": "长明",
+  "appName": "留灯",
   "webDir": "www",
-  "backgroundColor": "#08090d",
+  "backgroundColor": "#0a0a0a",
   "server": {
     "hostname": "localhost",
     "androidScheme": "http",
@@ -11,11 +11,11 @@
     "allowNavigation": ["*"]
   },
   "android": {
-    "backgroundColor": "#08090d",
+    "backgroundColor": "#0a0a0a",
     "zoomEnabled": false
   },
   "ios": {
-    "backgroundColor": "#08090d",
+    "backgroundColor": "#0a0a0a",
     "preferredContentMode": "mobile",
     "zoomEnabled": false,
     "limitsNavigationsToAppBoundDomains": false

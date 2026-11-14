@@ -3816,10 +3816,10 @@ async function scenarioMcp({ home, toolsMod }) {
     {
       const srcSrvW = await readText('../src/server.mjs');
       const cw = (p, platform = 'win32') => srvMod.checkWorkspacePath(p, { dataDir: platform === 'win32' ? 'C:\\Users\\a\\AppData\\Roaming\\Desk\\data' : '/opt/desk/data', platform });
-      const okWin = cw('D:\\长明工作区');
+      const okWin = cw('D:\\留灯工作区');
       const okQuoted = cw('"E:/工作/ai"');
       check('M38 workspace path: a full path on another drive is fine (quotes and / allowed); a relative path, a whole drive, Windows\' own folders and the app\'s data folder are refused',
-        okWin.ok && okWin.path === 'D:\\长明工作区' && okQuoted.ok && okQuoted.path === 'E:\\工作\\ai'
+        okWin.ok && okWin.path === 'D:\\留灯工作区' && okQuoted.ok && okQuoted.path === 'E:\\工作\\ai'
         && !cw('工作区').ok && !cw('D:\\').ok && !cw('C:').ok && !cw('C:\\Windows\\Temp\\x').ok && !cw('c:\\program files\\x').ok
         && !cw('C:\\Users\\a\\AppData\\Roaming\\Desk\\data\\ws').ok && !cw('C:\\Users\\a\\AppData\\Roaming\\Desk').ok, JSON.stringify([okWin, okQuoted]));
       check('M38 workspace path on Linux: /home/me/ws is fine; /, /etc, /usr/x and relative paths are refused',
@@ -3834,7 +3834,7 @@ async function scenarioMcp({ home, toolsMod }) {
       check('M40 dialogs: no window.prompt in the page (it does nothing in the desktop app); changing the workspace and renaming a machine use the page own dialog',
         !pgD.includes('window.prompt(') && pgD.includes('async function askText(') && pgD.includes("const answer = await askText({") && pgD.includes("const name = await askText({ title: '给这台机器改名'"));
       check('M39 offline cache: pictures and other files come from the network first (cache only offline), and the renamed cache drops the old one - an update shows the new icon on the first load',
-        swSrc.includes("const VERSION = 'evenlight-v3';") && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
+        swSrc.includes("const VERSION = 'lamplit-v1';") && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
       const pg2 = await readText('../public/index.html');
       check('M38 start: the chosen folder (data/workspace.json) is used at start, the test env still wins; settings has 更改位置 on the workspace row and the hub restarts after a change',
         storeSrc.includes("export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');") && storeSrc.includes('(chosenWorkspace() || DEFAULT_WORKSPACE_DIR)')
@@ -4241,7 +4241,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const relayed = await m.connectCatalog('fake-oauth', { origin: 'http://10.0.0.9:14390', relay: 'http://127.0.0.1:14390' });
     const ru = new URL(relayed.authorizeUrl);
     check('M7 sign-in on another machine: a LAN address is refused with a way out; through the computer\'s own hub it comes back on loopback',
-      lan?.code === 'MCP_NEEDS_HTTPS' && /在电脑上的长明里连接/.test(lan.message) && ru.searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/mcp/oauth/callback'
+      lan?.code === 'MCP_NEEDS_HTTPS' && /在电脑上的留灯里连接/.test(lan.message) && ru.searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/mcp/oauth/callback'
       && m.hasPending(ru.searchParams.get('state')) && !m.hasPending('nope'), lan?.message);
     check('M7 callback address: https or loopback page as is; else the relay; else the Funnel address; else none',
       mcp.callbackBase('https://a.ts.net', '', '') === 'https://a.ts.net' && mcp.callbackBase('http://127.0.0.1:5', '', '') === 'http://127.0.0.1:5'
@@ -4597,21 +4597,38 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('BUG-01: the phone connect page says the pairing code is 8 digits (not 6)', shellIndex.includes('可选 · 8 位数字') && !/6\s*位/.test(shellIndex));
     // BUG-02: one name where people see it; old installs are renamed at start.
     const botsB = await import('../src/bots.mjs');
-    check('BUG-02: an installed config still named 夜班 / Nightshift / Desk becomes 长明 at start; a name the user chose stays',
-      typeof botsB.renamedAppName === 'function' && ['夜班', 'Nightshift', 'Desk', ' 夜班 '].every((n) => botsB.renamedAppName(n) === '长明') && botsB.renamedAppName('我的助手') === null && botsB.renamedAppName('长明') === null);
+    check('BUG-02: an installed config still named 夜班 / Nightshift / Desk becomes 留灯 at start; a name the user chose stays',
+      typeof botsB.renamedAppName === 'function' && ['夜班', 'Nightshift', 'Desk', ' 夜班 '].every((n) => botsB.renamedAppName(n) === '留灯') && botsB.renamedAppName('我的助手') === null && botsB.renamedAppName('留灯') === null);
     const settingsB = await api('/api/settings');
-    check('BUG-02: GET /api/settings names the app 长明', settingsB.json?.app?.name === '长明', JSON.stringify(settingsB.json?.app));
+    check('BUG-02: GET /api/settings names the app 留灯', settingsB.json?.app?.name === '留灯', JSON.stringify(settingsB.json?.app));
     const visible = ['../config/assistant.json', '../public/index.html', '../public/manifest.json', '../mobile/shell/index.html', '../mobile/shell/app.html', '../mobile/shell/launcher.js', '../mobile/shell/chat.js',
       '../docs/BUILD-MOBILE.md', '../docs/BUILD-WINDOWS.md', '../docs/HTTPS.md', '../docs/HUB.md', '../docs/TEST-PLAN.md', '../package.json', '../desktop/package.json', '../mobile/package.json'];
     const internal = /NightshiftShell|NightshiftVoice|NightshiftWatcher|NightshiftHub|x-nightshift|X-Nightshift-Proxy|"Nightshift Hub"|ProgramData\\Nightshift|github\.com\/20chuangge\/nightshift|20chuangge\.github\.io\/nightshift/i;
     const leftovers = [];
     for (const rel of visible) {
       const text = await readText(rel).catch(() => '');
-      text.split('\n').forEach((line, i) => { if (/夜班|Nightshift/.test(line.replace(new RegExp(internal.source, 'gi'), ''))) leftovers.push(`${rel.slice(3)}:${i + 1}`); });
+      text.split('\n').forEach((line, i) => { if (/夜班|Nightshift|长明|Evenlight/.test(line.replace(new RegExp(internal.source, 'gi'), ''))) leftovers.push(`${rel.slice(3)}:${i + 1}`); });
     }
     check('BUG-02: no 夜班 / Nightshift left where people read it (internal names from report 5.2 excepted)', leftovers.length === 0, leftovers.slice(0, 8).join(' ; '));
     const mainSrcB = await readText('../desktop/main.mjs');
-    check('BUG-02: the desktop window title is 长明 / Evenlight, not Desk', !mainSrcB.includes("title: 'Desk'") && mainSrcB.includes("title: L('长明', 'Evenlight'),"));
+    check('BUG-02: the desktop window title is 留灯 / Lamplit, not Desk', !mainSrcB.includes("title: 'Desk'") && mainSrcB.includes("title: L('留灯', 'Lamplit'),"));
+    // 1.2.150: renamed to 留灯 · Lamplit, black / white / gray everywhere.
+    check('L1 name: installs named 长明 / Evenlight (and older) become 留灯 at start',
+      ['长明', 'Evenlight', '夜班', 'Nightshift'].every((n) => botsB.renamedAppName(n) === '留灯') && botsB.renamedAppName('留灯') === null);
+    const warm = /#7c5cff|#6a4cff|#9a80ff|#8b5cf6|#7c6cf0|rgba\(124, 92, 255|rgba\(106, 76, 255|#e2b36a|rgba\(226, 179, 106|#b8812f/i;
+    const colorFiles = ['../public/index.html', '../mobile/shell/index.html', '../mobile/shell/app.html', '../site/style.css', '../site/index.html', '../site/docs.html', '../desktop/build/icon.svg', '../site/icon.svg', '../config/bots/chief.json'];
+    const stillColored = [];
+    for (const rel of colorFiles) if (warm.test(await readText(rel).catch(() => ''))) stillColored.push(rel.slice(3));
+    check('L1 colors: no purple or amber left in the app, the phone pages, the site, the icon or the main assistant (black / white / gray)', stillColored.length === 0, stillColored.join(' ; '));
+    check('L1 avatars: a bot still on a colour the hub gave out by itself moves to gray; a colour picked in the UI stays',
+      botsB.grayForOldColor('#7c5cff') === '#52525b' && botsB.grayForOldColor('#22C55E') === '#3f3f46' && botsB.grayForOldColor('#7c6cf0') === null && botsB.grayForOldColor('#d65c7a') === null);
+    const srvL = await readText('../src/server.mjs');
+    check('L1 avatars: the move to gray runs at start', srvL.includes('const grayed = await migrateDefaultAvatars().catch(() => 0);'));
+    const builderL = await readText('../desktop/electron-builder.yml');
+    check('L1 packaging: Lamplit-Setup / Lamplit-Portable, shortcut 留灯 Lamplit; the data folder stays Desk',
+      builderL.includes('artifactName: Lamplit-Setup-${version}.${ext}') && builderL.includes('shortcutName: 留灯 Lamplit') && mainSrcB.includes("app.setPath('userData', path.join(app.getPath('appData'), 'Desk'));"));
+    const siteJsL = await readText('../site/site.js');
+    check('L1 site: the download buttons find Lamplit installers and still older Evenlight / Nightshift ones', siteJsL.includes('(Lamplit|Evenlight|Nightshift)-Setup-'));
     check('levels: hands-off runs high risk but the danger list still asks', decide('auto', 'HIGH') === 'auto' && decide('auto', 'MEDIUM', false, 'rm -rf /') === 'ask');
     const extra = [{ id: 'd1', text: 'git push', pattern: ap.phraseToPattern('git push') }];
     check('blocked words: a word you added stops a command even in hands-off', decide('auto', 'MEDIUM', false, 'git push origin main', extra) === 'ask' && decide('auto', 'MEDIUM', false, 'git pull', extra) === 'auto');
@@ -4820,9 +4837,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const hubStart = sh.indexOf('say "6/7');
       const bg = sh.indexOf('systemd-run --unit=desk-desktop-setup');
       check('install: desktop and browser install after the Hub is up, in their own unit', hubStart > 0 && bg > hubStart && /DESKTOP_OK=pending/.test(sh) && !/^\s*pm_install xfce4 xfce4-terminal\s*$/m.test(sh.slice(0, hubStart)));
-      check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用长明带过来的 Node/.test(sh));
+      check('install: a Node package brought by the client is used instead of downloading', /--node\)\s+NODE_TAR=/.test(sh) && /用留灯带过来的 Node/.test(sh));
       const ps1 = await readText('../hub/setup-windows.ps1');
-      check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用长明带过来的 Node/.test(ps1));
+      check('install (Windows): the same for the Node zip', /\[string\]\$NodeZip/.test(ps1) && /用留灯带过来的 Node/.test(ps1));
       const fsx = await import('node:fs');
       const setupFile = path.join(home, 'data', 'desktop-setup.json');
       fsx.writeFileSync(setupFile, JSON.stringify({ state: 'running', startedAt: new Date().toISOString(), detail: '安装 XFCE 桌面' }));
@@ -5457,7 +5474,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // Adding a Windows machine: wait for the hub, then the code; say which check failed.
     const ps1 = await readText('../hub/setup-windows.ps1');
     const rm = await readText('../src/remote.mjs');
-    check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'长明服务没能启动起来或没有应答'"));
+    check('windows add: the self-check waits for the hub (up to 4 min) before reading the pairing code, and says which check failed', ps1.indexOf('TotalSeconds -lt 240') > 0 && ps1.indexOf('TotalSeconds -lt 240') < ps1.indexOf("$code = ''") && ps1.includes('Hub 已经应答，但没读到它的配对码') && rm.includes("'服务起来了，但没读到配对码'") && rm.includes("'留灯服务没能启动起来或没有应答'"));
   }
   // Step 18: cloud hosts, Tailscale on Windows and on machines already added, Rocky 10, busy machines.
   {

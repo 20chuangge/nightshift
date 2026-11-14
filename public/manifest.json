@@ -1,14 +1,14 @@
 {
-  "name": "长明 Evenlight",
-  "short_name": "长明",
+  "name": "留灯 Lamplit",
+  "short_name": "留灯",
   "description": "让闲置的电脑替你干活的 AI 助理。",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
-  "background_color": "#16171b",
-  "theme_color": "#16171b",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
   "orientation": "any",
   "categories": ["productivity", "utilities"],
   "icons": [

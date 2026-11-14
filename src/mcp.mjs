@@ -105,7 +105,7 @@ export const MCP_CATALOG = [
     id: 'email', name: '邮箱', category: '通信', badge: '邮', color: '#0f9d58',
     desc: '收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码，可以连多个邮箱）', auth: 'mail', transport: 'internal', module: 'mail',
     env: { MAILBOXES: '${MAILBOXES}' },
-    help: '填邮箱地址和「授权码」（不是登录密码）。QQ 邮箱：设置 → 账号 → 开启 IMAP/SMTP 服务，按提示生成授权码。163 / 126：设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，按提示设置授权码。Gmail：先开两步验证，再到 Google 账号的「应用专用密码」生成一个。长明自己连邮箱服务器，不经过别的服务；授权码加密存在这台机器的保险箱里。发信每次都会先问你。',
+    help: '填邮箱地址和「授权码」（不是登录密码）。QQ 邮箱：设置 → 账号 → 开启 IMAP/SMTP 服务，按提示生成授权码。163 / 126：设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP，按提示设置授权码。Gmail：先开两步验证，再到 Google 账号的「应用专用密码」生成一个。留灯自己连邮箱服务器，不经过别的服务；授权码加密存在这台机器的保险箱里。发信每次都会先问你。',
   },
   {
     id: 'feishu', name: '飞书', category: '通信', badge: '飞', color: '#3370ff',
@@ -896,7 +896,7 @@ export function createMcpManager({
       if (!/^https?:\/\/[^/]+$/i.test(String(origin)) && !LOOPBACK.test(String(relay))) throw Object.assign(new Error('缺少页面地址（origin）'), { status: 400, code: 'MCP_ORIGIN_NEEDED' });
       const back = callbackBase(origin, relay, publicUrl());
       if (!back) {
-        throw Object.assign(new Error(`「${e.name}」只接受 https 或本机地址的登录回跳，这台机器现在是 ${origin}。在电脑上的长明里连接（会同步到这台机器），或者在「手机和外网」里打开这台机器的外网访问再试。`), { status: 400, code: 'MCP_NEEDS_HTTPS' });
+        throw Object.assign(new Error(`「${e.name}」只接受 https 或本机地址的登录回跳，这台机器现在是 ${origin}。在电脑上的留灯里连接（会同步到这台机器），或者在「手机和外网」里打开这台机器的外网访问再试。`), { status: 400, code: 'MCP_NEEDS_HTTPS' });
       }
       const redirectUri = `${back}/api/mcp/oauth/callback`;
       const found = await discoverOAuth(e.url, { fetchImpl, clientVersion: version });
@@ -969,7 +969,7 @@ export function createMcpManager({
     /** The app sent the browser back. -> {ok, name} or {ok:false, message} */
     async oauthCallback({ state, code, error, error_description: errorDescription }) {
       const p = pendingAuth.get(String(state || ''));
-      if (!p || p.at < Date.now() - 600000) return { ok: false, message: '这次授权已经过期或无效，回到长明再点一次「连接」。' };
+      if (!p || p.at < Date.now() - 600000) return { ok: false, message: '这次授权已经过期或无效，回到留灯再点一次「连接」。' };
       pendingAuth.delete(String(state));
       const cfg = configs.find((c) => c.id === p.id);
       if (!cfg) return { ok: false, message: '这个连接已经被删掉了。' };
