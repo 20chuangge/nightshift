@@ -147,6 +147,7 @@ async function main() {
     await stage('tightening (SEC-05/06/09/10/11/13/15/17/18)', () => scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, authMod }));
     await stage('team fixes (programs, continuing, steps, group mentions)', scenarioTeamFixes);
     await stage('1.2.156: settings page, sealed keys, phone hardening, Chinese demo', scenarioV156);
+    await stage('1.2.157: phone tokens sealed at start, Electron, lock file', scenarioV157);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4402,7 +4403,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         // Independent tasks overlap: the second starts before the first one ends (no timing window).
         const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') < seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
         const took = await brt.answerBoard(grp, '卡通');
-        for (let i = 0; i < 50 && plan.status !== 'done'; i++) await new Promise((r) => setTimeout(r, 20));
+        await waitUntil(() => plan.status === 'done', 8000, 'board done').catch(() => false);
         const second = calls.filter((c) => c.text?.includes('你负责的任务：画首帧'));
         const remote = calls.find((c) => c.remote);
         const summary = calls.find((c) => c.role === 'coordinator');
@@ -4419,16 +4420,18 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
           brt2.groups = { appendGroupMessage: async (gid, rec) => rec, publicGroupMessage: (m) => m };
           const order = [];
           let asked2 = false;
+          // The slow task ends only after the answered task has run (or after 8 s if it never does), so the order does not depend on timing.
+          let releaseSlow;
+          const slowGate = new Promise((r) => { releaseSlow = r; });
           brt2.runTurn = async (o) => {
-            if (/你负责的任务：慢活/.test(o.text)) { await new Promise((r) => setTimeout(r, 400)); order.push('slow-done'); return { status: 'success', summary: '慢活好了' }; }
+            if (/你负责的任务：慢活/.test(o.text)) { await Promise.race([slowGate, sleep(8000)]); order.push('slow-done'); return { status: 'success', summary: '慢活好了' }; }
             if (/你负责的任务：要问/.test(o.text) && !asked2) { asked2 = true; order.push('asked'); return { status: 'success', summary: 'x', board: { askHuman: '用哪个颜色？' } }; }
-            if (/你负责的任务：要问/.test(o.text)) { order.push(/用户的回答：蓝色/.test(o.text) ? 'answered-blue' : 'answered-?'); return { status: 'success', summary: '用蓝色画好了' }; }
+            if (/你负责的任务：要问/.test(o.text)) { order.push(/用户的回答：蓝色/.test(o.text) ? 'answered-blue' : 'answered-?'); releaseSlow(); return { status: 'success', summary: '用蓝色画好了' }; }
             order.push('summary');
             return { status: 'success', summary: '汇总' };
           };
           const run2 = brt2.runPlan(grp, plan2);
-          for (let i = 0; i < 50 && !asked2; i++) await new Promise((r) => setTimeout(r, 10));
-          await new Promise((r) => setTimeout(r, 30));
+          await waitUntil(() => asked2 && plan2.tasks.find((t) => t.title === '要问')?.status === 'waiting_human', 8000, 'task asks').catch(() => false);
           const took2 = await brt2.answerBoard(grp, '蓝色');
           await run2;
           check('M15 task board: an answer to a waiting task is taken at once, even while another task still runs; the board then finishes',
@@ -4821,6 +4824,32 @@ async function scenarioTeamFixes() {
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
   }
+}
+
+/**
+ * 1.2.157: every plain token on the phone is sealed at start (not only the ones
+ * still read), Electron on a supported release, the desktop lock file kept in git.
+ */
+async function scenarioV157() {
+  const launcher = await readText('../mobile/shell/launcher.js');
+  const boot = (launcher.match(/async function boot\(\) \{[\s\S]*?\n  \}\n/) || [''])[0];
+  const sealFn = (launcher.match(/async function sealPlainTokens\(\) \{[\s\S]*?\n  \}\n/) || [''])[0];
+  check('P1 phone: at start every saved token still in plain text is sealed (all keys, not only machines in the list), each checked to open back before it replaces the plain one',
+    sealFn.includes('prefs.keys()') && sealFn.includes('keys.filter(isTokenKey)') && sealFn.includes("value.startsWith('tb1:')")
+    && sealFn.includes('openToken(sealed) !== value') && boot.includes('await sealPlainTokens();')
+    && boot.indexOf('await sealPlainTokens();') < boot.indexOf('await renderMachines();'));
+  const dpkg = JSON.parse(await readText('../desktop/package.json'));
+  const major = Number(String(dpkg.devDependencies?.electron || '').replace(/^[^\d]*/, '').split('.')[0]);
+  let lockElectron = '';
+  try {
+    const lock = JSON.parse(await readText('../desktop/package-lock.json'));
+    lockElectron = lock.packages?.['node_modules/electron']?.version || '';
+  } catch { /* missing */ }
+  check('E1 desktop: Electron is a supported release (45 or newer) and the lock file pins the same major',
+    major >= 45 && Number(lockElectron.split('.')[0]) === major, `${dpkg.devDependencies?.electron} / lock ${lockElectron}`);
+  const ignore = await readText('../.gitignore');
+  check('E2 desktop: the lock file is kept in git (no longer ignored), so every build installs the same dependencies',
+    !/^desktop\/package-lock\.json\s*$/m.test(ignore));
 }
 
 /**

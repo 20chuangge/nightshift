@@ -7,7 +7,6 @@ workspace/.browser-profile/
 node_modules/
 desktop/node_modules/
 mobile/node_modules/
-desktop/package-lock.json
 
 # build output
 desktop/dist/

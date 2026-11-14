@@ -152,6 +152,34 @@
     remove: (key) => rawStore.remove(key),
   };
 
+  /*
+   * At start, seal every token still kept as plain text, including ones for
+   * addresses no longer in the machine list (they are never read, so sealing
+   * on first read would leave them plain forever). Each is checked to open
+   * back to the same token before it replaces the plain one.
+   */
+  async function sealPlainTokens() {
+    if (!tokenBox() || !prefs || typeof prefs.keys !== 'function') return 0;
+    let keys = [];
+    try {
+      const res = await prefs.keys();
+      keys = (res && Array.isArray(res.keys)) ? res.keys : [];
+    } catch (err) {
+      console.warn('[desk] Preferences.keys failed', err);
+      return 0;
+    }
+    let sealedCount = 0;
+    for (const key of keys.filter(isTokenKey)) {
+      const value = await rawStore.get(key);
+      if (!value || value.startsWith('tb1:')) continue;
+      const sealed = window.NightshiftShell.sealToken(value);
+      if (!sealed || !sealed.startsWith('tb1:') || window.NightshiftShell.openToken(sealed) !== value) continue;
+      await rawStore.set(key, sealed);
+      sealedCount += 1;
+    }
+    return sealedCount;
+  }
+
   // ------------------------------------------------------------------- state
   const state = {
     view: 'connect',
@@ -1252,6 +1280,11 @@
     await loadInfo();
     dom.foot.textContent = `Lamplit mobile · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
     if (dom.scanBtn) dom.scanBtn.hidden = false;
+    try {
+      await sealPlainTokens();
+    } catch (err) {
+      console.warn('[desk] sealing saved tokens failed', err);
+    }
 
     const hub = await store.get(KEYS.hub);
     if (hub) {
