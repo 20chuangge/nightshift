@@ -436,7 +436,7 @@
     position: relative; flex: none;
     width: var(--av-size, 52px); height: var(--av-size, 52px);
     display: grid; place-items: center; overflow: hidden;
-    background: var(--av-color, #d9b98a);
+    background: var(--av-color, #7c6cf0);
     -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
     -webkit-mask-position: center; mask-position: center;
@@ -4804,13 +4804,13 @@ const AVATAR_SHAPES = [
 ];
 
 /* Muted, slightly dusty tones: they sit well on both themes and never shout. */
-/* Soft, low-saturation tones (sand, sage, lavender, haze blue, clay, sea glass,
-   khaki) plus two neutrals: colour without shouting on the black/white UI. */
+/* Muted, slightly dusty tones: they sit well on both themes and never shout
+   (the first palette, chosen again by the user over gray and pastel ones). */
 const AVATAR_COLORS = [
-  '#d9b98a', '#a9b8a2', '#b7a9c2', '#8fa3b5', '#c9a39a', '#9db5b0', '#c2b280', '#a3a3a3', '#6b7280', '#3f3f46',
+  '#7c6cf0', '#5b7bea', '#3d9be0', '#2bab9c', '#4cae6e', '#d79b3a', '#e0744f', '#d65c7a', '#a46ad8', '#6b7280',
 ];
 
-const AVATAR_DEFAULT = { shape: 'squircle', color: '#d9b98a' };
+const AVATAR_DEFAULT = { shape: 'squircle', color: '#7c6cf0' };
 const SHAPE_IDS = new Set(AVATAR_SHAPES.map((s) => s.id));
 const LEGACY_SHAPES = { octagon: 'hex', gem: 'diamond', wave: 'squircle', ring: 'circle', chip: 'squircle' };
 const PICKER_SHAPES = AVATAR_SHAPES.filter((shape) => shape.picker !== false);
@@ -7260,6 +7260,39 @@ async function queueSpeech(text, botId = '') {
     try { await speakText(next.text, null, { botId: next.botId }); } catch (err) { toast(`朗读失败：${err.message}`, true); speech.queue = []; }
   }
 }
+
+/**
+ * What the desktop app's right-click menu does with selected text (main.mjs
+ * calls these): read it aloud, translate it, or hand it to the assistant.
+ */
+window.lamplitSelection = {
+  speak(text) {
+    stopSpeaking();
+    speakText(String(text || '')).catch((err) => toast(`朗读失败：${err.message}`, true));
+  },
+  async translate(text) {
+    toast('正在翻译…');
+    try {
+      const r = await api('/api/translate', { method: 'POST', body: { text: String(text || '') } });
+      hideToast();
+      const shown = askConfirm({ title: r.target === 'English' ? '翻译成英文' : '翻译成中文', text: r.text || '（没有译文）', confirmLabel: '复制译文' });
+      $('confirm-ok').classList.remove('danger');
+      if (await shown) {
+        await navigator.clipboard.writeText(r.text || '');
+        toast('译文已复制');
+      }
+    } catch (err) {
+      toast(`翻译失败：${err.message}`, true);
+    }
+  },
+  ask(text) {
+    const box = $('composer');
+    if (!box) return;
+    box.value = `${box.value ? `${box.value}\n` : ''}「${String(text || '').trim()}」\n`;
+    box.focus();
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+};
 
 function speakButton(text, botId = '') {
   const btn = el('button', 'speak-btn', '🔊 朗读');

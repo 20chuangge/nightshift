@@ -21,6 +21,7 @@ import fsp from 'node:fs/promises';
 import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
+import { textMenuTemplate } from './textmenu.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
@@ -564,6 +565,36 @@ async function restartLocalServer(host) {
 // window / tray / menu
 // ---------------------------------------------------------------------------
 
+/**
+ * Right-click: copy, read aloud, translate, ask the assistant, search on
+ * selected text; cut / paste / select all in a text box (textmenu.mjs).
+ * Reading, translating and asking run in the page (window.lamplitSelection),
+ * so they use this machine's voice and model. Nothing selected and no text
+ * box: no menu (the page's own right-click menus, e.g. on a bot, still work).
+ */
+function attachTextMenu(target) {
+  target.webContents.on('context-menu', async (_event, params) => {
+    const selected = String(params.selectionText || '').trim();
+    let hasPageTools = false;
+    try {
+      hasPageTools = (await target.webContents.executeJavaScript('typeof window.lamplitSelection')) === 'object';
+    } catch { /* page busy or gone */ }
+    const call = (fn) => target.webContents
+      .executeJavaScript(`window.lamplitSelection.${fn}(${JSON.stringify(selected.slice(0, 6000))})`)
+      .catch((err) => bootLog(`text menu ${fn}: ${err.message}`));
+    const actions = {
+      speak: () => call('speak'),
+      translate: () => call('translate'),
+      ask: () => call('ask'),
+      search: () => shell.openExternal(`https://www.bing.com/search?q=${encodeURIComponent(selected.slice(0, 300))}`),
+    };
+    const zh = /^zh/i.test(app.getLocale?.() || process.env.LANG || '');
+    const template = textMenuTemplate(params, { hasPageTools, zh }).map((item) => (item.id && actions[item.id] ? { ...item, click: actions[item.id] } : item));
+    if (!template.length) return;
+    Menu.buildFromTemplate(template).popup({ window: target });
+  });
+}
+
 function createWindowFor(url, bounds = null) {
   win = new BrowserWindow({
     ...(bounds || { width: 1280, height: 860 }),
@@ -646,6 +677,7 @@ function createWindowFor(url, bounds = null) {
   const target = new URL(url);
   target.searchParams.set('shell', 'desk');
   win.loadURL(target.toString());
+  attachTextMenu(win);
 
   // Safety net for an older UI (e.g. a hub that has not been updated yet):
   // without traffic buttons a frameless window cannot be closed. The page's own

@@ -4615,17 +4615,19 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // 1.2.150: renamed to Lamplit, black / white / gray everywhere.
     check('L1 name: installs named 长明 / Evenlight (and older) become Lamplit at start',
       ['留灯', '长明', 'Evenlight', '夜班', 'Nightshift'].every((n) => botsB.renamedAppName(n) === 'Lamplit') && botsB.renamedAppName('Lamplit') === null);
-    const warm = /#7c5cff|#6a4cff|#9a80ff|#8b5cf6|#7c6cf0|rgba\(124, 92, 255|rgba\(106, 76, 255|#e2b36a|rgba\(226, 179, 106|#b8812f/i;
+    // The app's own chrome stays black / white / gray (bots' avatars are the colour; the site has its violet).
+    const warm = /#7c5cff|#6a4cff|#9a80ff|#8b5cf6|rgba\(124, 92, 255|rgba\(106, 76, 255|#e2b36a|rgba\(226, 179, 106|#b8812f/i;
     const colorFiles = ['../public/index.html', '../mobile/shell/index.html', '../mobile/shell/app.html', '../site/style.css', '../site/index.html', '../site/docs.html', '../desktop/build/icon.svg', '../site/icon.svg', '../config/bots/chief.json'];
     const stillColored = [];
     for (const rel of colorFiles) if (warm.test(await readText(rel).catch(() => ''))) stillColored.push(rel.slice(3));
-    check('L1 colors: no purple or amber left in the app, the phone pages, the site, the icon or the main assistant (black / white / gray)', stillColored.length === 0, stillColored.join(' ; '));
-    check('L1 avatars: a bot still on a colour the hub gave out by itself moves to a soft colour (main assistant: sand); a colour picked in the UI stays',
-      botsB.softForOldColor('#7c5cff') === '#d9b98a' && botsB.softForOldColor('#52525b') === '#d9b98a' && botsB.softForOldColor('#22C55E') === '#a9b8a2'
-      && botsB.softForOldColor('#7c6cf0') === null && botsB.softForOldColor('#d65c7a') === null);
+    check('L1 colors: no old purple accent or amber in the app, the phone pages, the site or the icon', stillColored.length === 0, stillColored.join(' ; '));
+    check('L1 avatars: a bot still on a colour the hub gave out by itself (or a main-assistant default of 1.2.149-1.2.151) moves to the palette; a colour picked in the UI stays',
+      botsB.colorForOldDefault('#7c5cff') === '#7c6cf0' && botsB.colorForOldDefault('#52525b') === '#7c6cf0' && botsB.colorForOldDefault('#D9B98A') === '#7c6cf0'
+      && botsB.colorForOldDefault('#22c55e') === '#5b7bea' && botsB.colorForOldDefault('#7c6cf0') === null && botsB.colorForOldDefault('#6b7280') === null);
     const pageA = await readText('../public/index.html');
-    check('L3 avatars: the picker has soft colours (sand, sage, lavender, haze blue, clay, sea glass, khaki) and two neutrals, not gray only; eyes turn dark on light plates',
-      pageA.includes("'#d9b98a', '#a9b8a2', '#b7a9c2', '#8fa3b5', '#c9a39a', '#9db5b0', '#c2b280', '#a3a3a3', '#6b7280', '#3f3f46'")
+    check('L3 avatars: the picker is the first, muted colourful palette (chosen by the user over gray and pastel); the main assistant starts on its first colour; eyes still adapt to light plates',
+      pageA.includes("'#7c6cf0', '#5b7bea', '#3d9be0', '#2bab9c', '#4cae6e', '#d79b3a', '#e0744f', '#d65c7a', '#a46ad8', '#6b7280'")
+      && pageA.includes("const AVATAR_DEFAULT = { shape: 'squircle', color: '#7c6cf0' };")
       && pageA.includes("const ink = isLightColor(bg) ? '#1c1a17' : '#fff';") && pageA.includes('function isLightColor(hex)'));
     // L4: the approval card in the design's shape - nothing lost (approve once, deny, a note, the raw details).
     check('L4 approval card: one row 批准 / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
@@ -4637,7 +4639,31 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       pageA.includes('.messages .approval.pending {\n      position: sticky; bottom: 8px;') && pageA.includes('.sidebar.open .bot.is-primary { flex-direction: row;')
       && pageA.includes('max-width: calc(100% - 20px); box-sizing: border-box;') && pageA.includes('.sidebar.open .home-search { min-width: 0; flex: 1 1 0; height: 48px; }'));
     const siteL4 = await readText('../site/index.html');
-    check('L4 site: the icon URL carries the version, so an update never shows a cached old icon', siteL4.includes('src="icon.svg?v=151"') && siteL4.includes('href="icon.svg?v=151"'));
+    check('L4 site: the icon, stylesheet and script URLs carry the version, so an update never shows a cached old look', siteL4.includes('src="icon.svg?v=152"') && siteL4.includes('href="icon.svg?v=152"') && siteL4.includes('href="style.css?v=152"') && siteL4.includes('src="site.js?v=152"'));
+    const cssL6 = await readText('../site/style.css');
+    check('L6 site: one violet (紫气东来) on the black / white / gray site - #8B7CF6 on dark, #6A5AE0 on light; demo avatars use the app palette',
+      cssL6.includes('--accent: #8B7CF6;') && (cssL6.match(/--accent: #6A5AE0;/g) || []).length === 2 && cssL6.includes('.a1 { background: linear-gradient(160deg, #9a8ef5, #7c6cf0); }'));
+    // L5: right-click on selected text in the desktop app.
+    const TM = await import('../desktop/textmenu.mjs').catch(() => null);
+    const ids = (params, opts) => (TM ? TM.textMenuTemplate(params, opts).map((i) => i.id || i.role || i.type) : []);
+    check('L5 menu: selected text gets copy, read aloud, translate, ask the assistant and search; a text box adds cut / paste / select all',
+      ids({ selectionText: 'hello' }).join(',') === 'copy,separator,speak,translate,ask,search'
+      && ids({ selectionText: 'hi', isEditable: true, editFlags: { canCut: true, canPaste: true } }).join(',') === 'cut,copy,paste,separator,speak,translate,ask,search,separator,selectAll');
+    check('L5 menu: an older hub page (no page tools) only gets the plain items; nothing selected outside a text box shows no menu (the page\'s own menus keep working)',
+      ids({ selectionText: 'x' }, { hasPageTools: false }).join(',') === 'copy,search' && ids({}).length === 0
+      && TM.textMenuTemplate({ selectionText: 'x' }, { zh: false }).some((i) => i.label === 'Translate'));
+    const srvT = await import('../src/server.mjs').catch(() => null);
+    check('L5 translate: Chinese goes to English, anything else to Simplified Chinese, the model is told to return only the translation',
+      srvT?.translatePrompt('今天天气很好').target === 'English' && srvT?.translatePrompt('Good morning').target === '简体中文'
+      && srvT?.translatePrompt('x', 'Japanese').target === 'Japanese' && /translation only/.test(srvT?.translatePrompt('hi').messages[0].content));
+    const tr = await api('/api/translate', { method: 'POST', body: { text: 'Good morning' } });
+    const trEmpty = await api('/api/translate', { method: 'POST', body: { text: '' } });
+    check('L5 translate: POST /api/translate answers with the target and a text; empty text is a 400', tr.status === 200 && tr.json?.target === '简体中文' && typeof tr.json?.text === 'string' && trEmpty.status === 400, `${tr.status} ${tr.text.slice(0, 100)}`);
+    const mainL5 = await readText('../desktop/main.mjs');
+    const pageL5 = await readText('../public/index.html');
+    check('L5 wiring: every window gets the menu, it calls the page by JSON-quoted text (no script injection), and the page has speak / translate / ask',
+      mainL5.includes('attachTextMenu(win);') && mainL5.includes('window.lamplitSelection.${fn}(${JSON.stringify(selected.slice(0, 6000))})')
+      && pageL5.includes('window.lamplitSelection = {') && pageL5.includes("await api('/api/translate', { method: 'POST', body: { text: String(text || '') } });"));
     const srvL = await readText('../src/server.mjs');
     check('L1 avatars: the move to gray runs at start', srvL.includes('const grayed = await migrateDefaultAvatars().catch(() => 0);'));
     const builderL = await readText('../desktop/electron-builder.yml');

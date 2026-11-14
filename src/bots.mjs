@@ -53,19 +53,21 @@ export const DEFAULT_ASSISTANT_CONFIG = {
   },
 };
 
-// Soft, low-saturation tones plus two neutrals (same list as the UI picker).
-const AVATAR_COLORS = ['#d9b98a', '#a9b8a2', '#b7a9c2', '#8fa3b5', '#c9a39a', '#9db5b0', '#c2b280', '#a3a3a3', '#6b7280', '#3f3f46'];
+// The muted colourful palette (same list as the UI picker).
+const AVATAR_COLORS = ['#7c6cf0', '#5b7bea', '#3d9be0', '#2bab9c', '#4cae6e', '#d79b3a', '#e0744f', '#d65c7a', '#a46ad8', '#6b7280'];
 // Colours the hub handed out by itself before 1.2.150. The picker in the UI
 // never offered these exact values, so a bot still on one never had a colour
 // chosen by a person: it moves to the soft colour in the same place (see migrateDefaultAvatars).
-// '#52525b' is the main assistant's default from 1.2.150 (gray only, one hour on the market).
-const OLD_AUTO_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc', '#8b5cf6', '#52525b'];
+// The main assistant's defaults of 1.2.150 ('#52525b', gray) and 1.2.151 ('#d9b98a', sand) were each
+// on the market for an hour; a main assistant still on one of them goes back to the first palette.
+const OLD_AUTO_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc', '#8b5cf6'];
+const OLD_MAIN_DEFAULTS = new Set(['#52525b', '#d9b98a']);
 
-/** The soft colour an automatically given old colour becomes, or null to leave it.
- *  Both main-assistant defaults ('#7c5cff', 1.2.150's '#52525b') become sand. */
-export function softForOldColor(color) {
+/** The colour an automatically given old colour becomes, or null to leave it.
+ *  Every main-assistant default ('#7c5cff', '#52525b', '#d9b98a') becomes the first colour. */
+export function colorForOldDefault(color) {
   const c = String(color || '').trim().toLowerCase();
-  if (c === '#52525b') return AVATAR_COLORS[0];
+  if (OLD_MAIN_DEFAULTS.has(c)) return AVATAR_COLORS[0];
   const i = OLD_AUTO_COLORS.indexOf(c);
   return i === -1 ? null : AVATAR_COLORS[i % AVATAR_COLORS.length];
 }
@@ -98,7 +100,7 @@ export const AVATAR_SHAPES = [
 ];
 
 export const DEFAULT_AVATAR_SHAPE = 'squircle';
-export const DEFAULT_AVATAR_COLOR = '#d9b98a';
+export const DEFAULT_AVATAR_COLOR = '#7c6cf0';
 const AVATAR_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 /** Uploaded images: what we accept in, and what we serve back out. */
@@ -343,8 +345,8 @@ export async function migrateDefaultAvatars() {
     } catch {
       continue;
     }
-    const top = softForOldColor(bot.avatarColor);
-    const inner = bot.avatar && typeof bot.avatar === 'object' ? softForOldColor(bot.avatar.color) : null;
+    const top = colorForOldDefault(bot.avatarColor);
+    const inner = bot.avatar && typeof bot.avatar === 'object' ? colorForOldDefault(bot.avatar.color) : null;
     if (!top && !inner) continue;
     if (top) bot.avatarColor = top;
     if (inner) bot.avatar = { ...bot.avatar, color: inner };

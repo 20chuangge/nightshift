@@ -1708,6 +1708,28 @@ async function voiceForBot(state, botId) {
   return state.voice?.ttsVoice || '';
 }
 
+// Translate a piece of selected text with the machine's model: Chinese to
+// English, anything else to Simplified Chinese (or to `to`). No tools, no chat.
+export function translatePrompt(text, to = '') {
+  const target = to || (/[㐀-鿿]/.test(text) && (text.match(/[㐀-鿿]/g) || []).length >= text.replace(/\s/g, '').length * 0.3 ? 'English' : '简体中文');
+  return {
+    target,
+    messages: [
+      { role: 'system', content: `You are a translator. Translate the user's text into ${target}. Reply with the translation only: no notes, no quotes, keep line breaks, code and names as they are.` },
+      { role: 'user', content: text },
+    ],
+  };
+}
+
+route('POST', /^\/api\/translate$/, async (_req, _res, { body, state }) => {
+  const text = String(body?.text || '').trim();
+  if (!text) throw httpError(400, 'TEXT_REQUIRED', 'body needs { text }');
+  if (text.length > 6000) throw httpError(413, 'TEXT_TOO_LONG', 'select less text (6000 characters at most)');
+  const { target, messages } = translatePrompt(text, String(body?.to || ''));
+  const r = await state.model.complete(messages, { temperature: 0, maxTokens: 2000, timeoutMs: 60000 });
+  return { target, text: String(r?.content || '').trim() };
+});
+
 route('POST', /^\/api\/voice\/speak$/, async (_req, res, { body, state }) => {
   const format = body?.format === 'opus' ? 'opus' : 'mp3';
   const text = voiceModule.speakableText(body?.text, Math.min(Number(body?.max) || 600, 1500));

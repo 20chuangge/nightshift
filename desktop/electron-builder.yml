@@ -12,6 +12,7 @@ directories:
 files:
   - main.mjs
   - datadir.mjs
+  - textmenu.mjs
   - shell-preload.cjs
   - recorder.html
   - package.json
