@@ -4768,6 +4768,16 @@ async function scenarioTeamFixes() {
     const nothing = A.checkClaims('已提交，等审核。', [{ name: 'fs_read', args: { path: 'a.md' }, ok: true }], { workspaceDir });
     check('T2 continue: "已提交" is backed by a click in a page or on the desktop (this turn or carried from the last), not by a read',
       fromBefore.length === 0 && byBrowser.length === 0 && nothing.length === 1, JSON.stringify({ fromBefore, byBrowser, nothing }));
+    // Seen live (the 流水线接力 watchdog): relaying 质检's record, and denying it in quotes, were "corrected".
+    const others = { workspaceDir, otherNames: ['质检', '文案'] };
+    const relayed = A.checkClaims('质检已提交，状态审核中。', [], others);
+    const fromRecord = A.checkClaims('文件记录显示 D4 已提交，排进了定时队列。', [], others);
+    const denied = A.checkClaims('准确说法是：不是「我已提交」。', [], others);
+    const mine = A.checkClaims('已提交，等审核。', [], others);
+    const mineToo = A.checkClaims('我已经提交了，等审核。', [], others);
+    check('T2 claims: relaying what a teammate or a record says, or denying it in quotes, is not this bot\'s claim; its own "已提交" still is',
+      relayed.length === 0 && fromRecord.length === 0 && denied.length === 0 && mine.length === 1 && mineToo.length === 1, JSON.stringify({ relayed, fromRecord, denied, mine, mineToo }));
+    check('T2 claims wiring: the agent passes the other bots\' names to the check', (await readText('../src/agent.mjs')).includes('otherNames: await this.otherBotNames(bot.id)'));
     const src = await readText('../src/agent.mjs');
     check('T2 wiring: the continued turn starts with the previous receipts, and the group carries them too',
       src.includes('const receipts = priorReceipts.map((r) => ({ ...r, carried: true }));') && src.includes('priorReceipts: result.receipts'));

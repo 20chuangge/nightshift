@@ -215,17 +215,24 @@ export function stepLimitFor(bot) {
   return Math.min(Math.max(own, hands ? 150 : 80), 200);
 }
 
-export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) => fsSync.existsSync(p), group = false } = {}) {
+export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) => fsSync.existsSync(p), group = false, otherNames = [] } = {}) {
   const out = [];
   // Quoted sentences are reported speech ("你说的「已发送给张三」…"), not claims: drop them
   // (a short quoted name or path stays). Sentences that deny something are not claims either.
   const t = String(text || '').replace(/「[^」]{16,}」|“[^”]{16,}”|"[^"\n]{16,}"/g, ' ');
   if (!t.trim()) return out;
-  const NEG = /(不存在|没有|没能|未能|没写|没存|没做|没发|未生成|未发送|不成立|并非|失败|找不到|做不到|无法|not found|missing|failed|did not|didn't)/i;
+  const NEG = /(不存在|没有|没能|未能|没写|没存|没做|没发|未生成|未发送|不成立|并非|不是|失败|找不到|做不到|无法|not found|missing|failed|did not|didn't)/i;
   // What it is going to do ("风格定了之后会存到 essay.md") is a plan, not a claim (seen live).
   const FUTURE = /(会存|会写|会保存|会放|会生成|将存|将写|将保存|将会|准备|打算|待会|稍后|接下来|下一步|等[^。！？\n]{0,20}(后|再)|再存|再写|要存到|要写到|要保存|计划|will |going to|later)/i;
   const sentences = t.split(/(?<=[。！？!?；;\n])/);
-  const claimed = (re) => sentences.some((x) => re.test(x) && !NEG.test(x) && !FUTURE.test(x));
+  // Saying what a teammate or a record did is a report, not this bot's claim
+  // (seen: the watchdog relaying 质检's "已提交" was sent back to "correct" it).
+  const names = (otherNames || []).map((n) => String(n || '').trim()).filter((n) => n.length >= 2);
+  const REPORT = /(记录|显示|写着|报告里|据|日志|文件里|上面说|对方|它说|他说)/;
+  const reported = (x) => REPORT.test(x) || names.some((n) => x.includes(n));
+  // For "did / sent" claims every quoted span is someone's words (「我已提交」 in a denial), whatever its length.
+  const plainSentences = t.replace(/「[^」]*」|“[^”]*”|"[^"\n]*"/g, ' ').split(/(?<=[。！？!?；;\n])/);
+  const claimed = (re) => plainSentences.some((x) => re.test(x) && !NEG.test(x) && !FUTURE.test(x) && !reported(x));
   const okCalls = (receipts || []).filter((r) => r.ok !== false);
   // files
   const seen = new Set();
@@ -249,7 +256,7 @@ export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) =>
     out.push('说运行 / 执行了命令，但这一轮没有任何成功的执行类操作');
   }
   // sending
-  if (!group && claimed(/(已发送|发送了|已发给|已经发给|发出去了|已通知|已提交|已推送)/)
+  if (!group && claimed(/(已发送|发送了|已发给|已经发给|发出去了|已通知|已提交|提交了|已经提交|已推送|已发布|发布了)/)
     && !okCalls.some((r) => SEND_TOOLS.test(r.name) || (r.name === 'mcp_call' && SEND_TOOLS.test(String(r.args?.tool || ''))) || r.name === 'bot_message' || r.name === 'group_post'
       // A "发布" / "发送" button clicked in a page or on the desktop sends too.
       || /^(browser_click|browser_type|desktop_ui|winui_)/.test(r.name))) {
@@ -494,6 +501,15 @@ export class AgentRuntime {
       if (groupId && info.groupId === groupId && !info.kickoff) return { turnId, ...info };
     }
     return null;
+  }
+
+  /** The other bots' names: a sentence naming one reports its work, not a claim of this bot's. */
+  async otherBotNames(botId) {
+    try {
+      return (await this.bots.listBots()).filter((b) => b.id !== botId).map((b) => b.name);
+    } catch {
+      return [];
+    }
   }
 
   /** Is this bot in the middle of any turn (a chat, a group, a hand-off)? */
@@ -1065,7 +1081,7 @@ export class AgentRuntime {
         // nothing behind it is sent back once to be corrected; if it stays,
         // the answer carries a visible note.
         if (!response.toolCalls?.length && response.content && response.content.trim()) {
-          const problems = checkClaims(String(response.content), receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(groupContext) });
+          const problems = checkClaims(String(response.content), receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(groupContext), otherNames: await this.otherBotNames(bot.id) });
           if (problems.length && !claimState.nudged && steps < maxSteps - 1) {
             claimState.nudged = true;
             this.bus.emit({ type: 'message.retract', ...baseEvent });
@@ -2124,7 +2140,7 @@ export class AgentRuntime {
       // sent back once - the turn goes on - and flagged if it stays.
       if (ctx?.receipts) {
         const said = ctx.spokeThisStep ? ctx.spokenText : finalSummary;
-        const problems = checkClaims(said, ctx.receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(ctx.group) });
+        const problems = checkClaims(said, ctx.receipts, { workspaceDir: this.config.workspaceDir, group: Boolean(ctx.group), otherNames: await this.otherBotNames(ctx.bot?.id) });
         if (problems.length && !ctx.claimState?.nudged) {
           ctx.claimState.nudged = true;
           messages.push({ role: 'user', content: `（系统核对）你收尾时说的和这一轮的实际操作对不上：\n- ${problems.join('\n- ')}\n只更正上面这几条，其余说法不用改、也不要重做已经做完的事：做了的才说做了，没做到的直接说没做到；确实还需要做的，现在用工具去做，然后再调用 task_finish。` });
