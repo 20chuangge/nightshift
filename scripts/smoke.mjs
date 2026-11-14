@@ -145,6 +145,7 @@ async function main() {
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
     await stage('tightening (SEC-05/06/09/10/11/13/15/17/18)', () => scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, authMod }));
+    await stage('team fixes (programs, continuing, steps, group mentions)', scenarioTeamFixes);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4360,7 +4361,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         gBusy?.turnId === 'turn_g' && rt.busyGroupTurn('nope') === null && rt.active.get('turn_g').inbox[0] === '进度怎么样？'
         && groupLog.some((x) => x.gid === 'g1' && x.kind === 'user' && x.text === '进度怎么样？') && groupLog.some((x) => x.gid === 'g1' && x.kind === 'assistant' && x.from === 'm12bot' && x.text === g.text)
         && events.some((e) => e.type === 'message' && e.aside && e.groupId === 'g1') && /周报群/.test(seenPrompt?.msgs?.[0]?.content || '') && /fs_read/.test(seenPrompt?.msgs?.[0]?.content || '')
-        && srvSrc.includes('const busy = state.runtime.busyGroupTurn?.(group.id);'));
+        && srvSrc.includes('await state.runtime.routeGroupMessage({'));
       // Task board: the coordinator splits, the runtime runs each member's task (in order, in parallel where it can), then the coordinator sums up.
       {
         const PL = await import('../src/plans.mjs');
@@ -4712,6 +4713,99 @@ async function scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, auth
     check('ENG-01: a CI workflow runs check, check:i18n and smoke on Linux and Windows for pushes and pull requests',
       /on:\s*\n\s*push:/.test(ci) && ci.includes('pull_request:') && ci.includes('ubuntu-latest') && ci.includes('windows-latest')
       && ci.includes('npm run check') && ci.includes('npm run check:i18n') && ci.includes('npm run smoke') && ci.includes('npm audit'));
+  }
+}
+
+/**
+ * 1.2.154 - what the 小红书运营组 ran into: installed programs asked every time,
+ * a continued turn forgot what the previous one did, the step limit cut a
+ * publish in two, and an @mention in a busy group went to the wrong member.
+ */
+async function scenarioTeamFixes() {
+  const workspaceDir = path.join(home, 'workspace');
+  const B = await import('../src/boundary.mjs');
+  const A = await import('../src/agent.mjs');
+
+  // --- T1: running an installed program is not opening a folder -------------
+  {
+    const ff = 'C:\\Users\\me\\AppData\\Local\\Programs\\ffmpeg\\bin\\ffmpeg.exe';
+    const run = B.checkBoundary('shell', { command: `"${ff}" -y -i in.png out.png` }, { workspaceDir, policy: {}, remote: false });
+    const runBare = B.checkBoundary('shell', { command: `${ff} -version` }, { workspaceDir, policy: {}, remote: false });
+    const pipeRun = B.checkBoundary('shell', { command: `cd sub && "${ff}" -i a.mp4 b.mp4` }, { workspaceDir, policy: {}, remote: false });
+    check('T1 shell: running a program by its full path (ffmpeg.exe) does not ask for its folder; quoted, bare, or after &&',
+      run === null && runBare === null && pipeRun === null, JSON.stringify({ run, runBare, pipeRun }));
+    const fileArg = B.checkBoundary('shell', { command: `"${ff}" -i "C:\\Users\\me\\Pictures\\private.png" out.png` }, { workspaceDir, policy: {}, remote: false });
+    const script = B.checkBoundary('shell', { command: 'type C:\\Users\\me\\notes.exe' }, { workspaceDir, policy: {}, remote: false });
+    check('T1 shell: a file the program is given outside the opened folders still asks; so does a .exe that is only an argument',
+      fileArg?.code === 'FOLDER_NOT_OPEN' && /private\.png/.test(fileArg.reason) && script?.code === 'FOLDER_NOT_OPEN', JSON.stringify({ fileArg, script }));
+    const named = B.pathsInCommand('copy "C:\\Program Files\\Some App\\a b.txt" out.txt', workspaceDir);
+    check('T1 shell: a quoted path with spaces is read whole (not cut at "C:\\Program")', named.some((p) => p.endsWith('a b.txt')) && !named.some((p) => /Program$/.test(p)), JSON.stringify(named));
+  }
+
+  // --- T2: a continued turn knows what the cut-off one did -------------------
+  {
+    const receipts = [
+      { name: 'fs_read', args: { path: 'xhs/a.md' }, ok: true },
+      { name: 'browser_open', args: { url: 'https://creator.xiaohongshu.com/publish' }, ok: true },
+      { name: 'browser_type', args: { ref: 'e12', text: '别再花钱买AI助理' }, ok: true },
+      { name: 'desktop_ui', args: { action: 'click', name: '发布' }, ok: true },
+      { name: 'browser_snapshot', args: {}, ok: true },
+      { name: 'fs_write', args: { path: 'xhs/发布记录.md' }, ok: true },
+      { name: 'shell', args: { command: 'echo broken' }, ok: false },
+    ];
+    const lines = A.describeActions?.(receipts) || [];
+    check('T2 continue: the actions that change something are listed (open, type, click 发布, write), plain reads and failed calls are not',
+      lines.length === 4 && lines.some((l) => /desktop_ui/.test(l) && /发布/.test(l)) && lines.some((l) => /fs_write/.test(l) && /发布记录/.test(l))
+      && !lines.some((l) => /fs_read|browser_snapshot|echo broken/.test(l)), JSON.stringify(lines));
+    const prompt = A.continuationText?.({ n: 1, what: '任务「发第二篇」', actions: lines }) || '';
+    check('T2 continue: the next turn is told what the last one really did (system record), so it does not deny its own publish',
+      /上一轮实际做过的操作/.test(prompt) && prompt.includes('desktop_ui') && /第 1 次自动接着做/.test(prompt));
+    const fromBefore = A.checkClaims('已提交，等审核。', [{ name: 'desktop_ui', args: { action: 'click', name: '发布' }, ok: true, carried: true }], { workspaceDir });
+    const byBrowser = A.checkClaims('已提交，等审核。', [{ name: 'browser_click', args: { ref: 'e9' }, ok: true }], { workspaceDir });
+    const nothing = A.checkClaims('已提交，等审核。', [{ name: 'fs_read', args: { path: 'a.md' }, ok: true }], { workspaceDir });
+    check('T2 continue: "已提交" is backed by a click in a page or on the desktop (this turn or carried from the last), not by a read',
+      fromBefore.length === 0 && byBrowser.length === 0 && nothing.length === 1, JSON.stringify({ fromBefore, byBrowser, nothing }));
+    const src = await readText('../src/agent.mjs');
+    check('T2 wiring: the continued turn starts with the previous receipts, and the group carries them too',
+      src.includes('const receipts = priorReceipts.map((r) => ({ ...r, carried: true }));') && src.includes('priorReceipts: result.receipts'));
+  }
+
+  // --- T3: a bot that works a browser or the desktop gets more steps -------
+  {
+    check('T3 steps: 150 for a bot that clicks in a browser or on the desktop, 80 otherwise, a bot\'s own setting up to 200',
+      A.stepLimitFor?.({ tools: ['fs_read', 'desktop_ui'], policy: { maxSteps: 80 } }) === 150
+      && A.stepLimitFor?.({ tools: ['browser_click'], policy: {} }) === 150
+      && A.stepLimitFor?.({ tools: ['fs_read', 'browser_open'], policy: { maxSteps: 12 } }) === 80
+      && A.stepLimitFor?.({ tools: [], policy: { maxSteps: 500 } }) === 200);
+  }
+
+  // --- T4: an @mention in a busy group reaches that member -----------------
+  {
+    const members = [{ id: 'chief', name: '助理' }, { id: 'pick', name: '选题' }, { id: 'qa', name: '质检' }];
+    const group = { id: 'g1', name: '运营组', coordinatorId: 'chief', members };
+    const calls = [];
+    const fake = {
+      active: new Map([['t-busy', { botId: 'pick', groupId: 'g1', startedAt: Date.now() }]]),
+      busyGroupTurn: A.AgentRuntime.prototype.busyGroupTurn,
+      isWorking: A.AgentRuntime.prototype.isWorking,
+      runGroupMessage: async (opts) => { calls.push(['run', opts.only, opts.text]); },
+      aside: async (opts) => { calls.push(['aside', opts.botId]); return {}; },
+      bus: { emit: () => {} },
+    };
+    const route = A.AgentRuntime.prototype.routeGroupMessage;
+    const r1 = route ? await route.call(fake, { group, text: '@质检 这个是我自己写的开源项目', turnId: 't1' }) : null;
+    check('T4 group: @质检 while 选题 works goes to 质检 now (not to 选题\'s running turn)',
+      r1?.started?.join() === 'qa' && calls[0]?.[0] === 'run' && calls[0][1]?.join() === 'qa' && !calls.some((c) => c[0] === 'aside'), JSON.stringify({ r1, calls }));
+    calls.length = 0;
+    const r2 = route ? await route.call(fake, { group, text: '进度怎么样了', turnId: 't2' }) : null;
+    const r3 = route ? await route.call(fake, { group, text: '@选题 快点', turnId: 't3' }) : null;
+    check('T4 group: no mention, or a mention of the member who is working: that member answers in passing as before',
+      r2?.aside === true && r3?.aside === true && calls.filter((c) => c[0] === 'aside').every((c) => c[1] === 'pick') && !calls.some((c) => c[0] === 'run'), JSON.stringify(calls));
+    const srv = await readText('../src/server.mjs');
+    check('T4 wiring: the group message route lets the runtime decide', srv.includes('await state.runtime.routeGroupMessage({'));
+    const src = await readText('../src/agent.mjs');
+    check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
+      src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
   }
 }
 

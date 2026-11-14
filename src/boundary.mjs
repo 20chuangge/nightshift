@@ -45,8 +45,12 @@ function placeOf(abs, { workspaceDir, folders }) {
 
 /** Paths a shell command names (absolute, ~, or climbing out with ..). */
 export function pathsInCommand(command, workspaceDir) {
-  const text = String(command || '');
+  let text = String(command || '');
   const found = new Set();
+  // A quoted Windows path may hold spaces ("C:\Program Files\..."): take it whole first.
+  const QUOTED = /"([A-Za-z]:[\\/][^"]*)"|'([A-Za-z]:[\\/][^']*)'/g;
+  for (const m of text.matchAll(QUOTED)) found.add(m[1] || m[2]);
+  text = text.replace(QUOTED, ' ');
   const home = os.homedir();
   for (const m of text.matchAll(/(?:^|[\s"'=(,])([A-Za-z]:[\\/][^\s"'|&;<>,)]*)/g)) found.add(m[1]);
   if (process.platform !== 'win32') {
@@ -56,6 +60,23 @@ export function pathsInCommand(command, workspaceDir) {
   for (const m of text.matchAll(/(\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE)([\\/][^\s"'|&;<>,)]*)?/gi)) found.add(home + (m[2] || ''));
   for (const m of text.matchAll(/(?:^|[\s"'=(,])((?:\.\.[\\/])+[^\s"'|&;<>,)]*|\.\.)(?=$|[\s"'|&;<>,)])/g)) found.add(path.resolve(workspaceDir, m[1]));
   return [...found].map((p) => path.resolve(p));
+}
+
+/**
+ * The programs a command runs by full path: the first word of each part
+ * (after &&, ||, ;, |, &, PowerShell's call operator). Running an installed
+ * program (ffmpeg in AppData\Local\Programs) is not opening that folder; what
+ * it is given to read or write still goes through the fence.
+ */
+export function programsInCommand(command) {
+  const out = [];
+  for (const part of String(command || '').split(/&&|\|\||[;&|\n]/)) {
+    const seg = part.trim().replace(/^(?:call|start\s+""|start)\s+/i, '');
+    const m = /^"([^"]+)"|^'([^']+)'|^(\S+)/.exec(seg);
+    const word = m ? (m[1] || m[2] || m[3]) : '';
+    if (/^([A-Za-z]:[\\/]|\/)/.test(word) && /\.(exe|com)$/i.test(word)) out.push(path.resolve(word));
+  }
+  return out;
 }
 
 const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
@@ -168,7 +189,8 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     if (look.look && (remote || !look.reads)) return null;
     const cwd = args?.cwd ? path.resolve(workspaceDir, String(args.cwd)) : null;
     const named = pathsInCommand(command, workspaceDir).concat(cwd ? [cwd] : []);
-    const away = named.filter((p) => !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)));
+    const programs = new Set(programsInCommand(command).map((p) => norm(p)));
+    const away = named.filter((p) => !programs.has(norm(p)) && !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)));
     if (away.length) {
       return { decision: outside, code: 'FOLDER_NOT_OPEN', reason: `命令用到了没开放给机器人的位置：${away.slice(0, 3).join('、')}` };
     }

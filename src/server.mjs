@@ -2631,23 +2631,14 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   if (await state.runtime.answerBoard?.({ id: group.id, name: group.name, coordinatorId: group.coordinatorId, members }, text)) return { turnId, board: true };
   // Someone in the group is still working on the last message: they answer
   // now, and the message reaches their running turn (as in a 1:1 chat).
-  const busy = state.runtime.busyGroupTurn?.(group.id);
-  if (busy) {
-    state.runtime.aside({ botId: busy.botId, text, turnId, source: 'group', busy, group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members } })
-      .catch((err) => state.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message }));
-    return { turnId, aside: true };
-  }
-  state.runtime
-    .runGroupMessage({
-      group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members },
-      text,
-      turnId,
-    })
-    .catch((err) => {
-      state.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
-    });
-
-  return { turnId };
+  // Someone in the group is still working on the last message: they answer
+  // in passing, unless the human @mentions a member who is free (it answers now).
+  const routed = await state.runtime.routeGroupMessage({
+    group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members },
+    text,
+    turnId,
+  });
+  return { turnId, ...(routed?.aside ? { aside: true } : {}) };
 });
 
 route('PATCH', /^\/api\/groups\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {

@@ -179,6 +179,42 @@ const CLAIM_FILE_RE = /([A-Za-z]:[\\/][^\s`'"“”「」（）()<>，。；]+?|
 const CLAIM_SAVE_RE = /(写好|写入|写进|写了|存到|存在|存好|存进|保存|已存|生成|创建|落盘|导出|放在|位于|路径|文件在|saved|wrote|written|created|generated|exported)/i;
 const RUN_TOOLS = /^(shell|cli_agent_run|desktop_ui|winui_|browser_|mcp__)/;
 const SEND_TOOLS = /(send|post|message|reply|mail|notify|publish|push|create_issue|create_pull|comment)/i;
+// Tools that only look: left out of "what the last turn did".
+const LOOK_TOOLS = new Set(['fs_read', 'fs_list', 'memory_read', 'skill_list', 'skill_read', 'browser_snapshot', 'browser_screenshot', 'browser_status',
+  'image_view', 'settings_get', 'ui_get', 'bot_list', 'group_list', 'routine_list', 'machine_list', 'vault_list', 'mcp_find_tools', 'task_step']);
+
+/**
+ * What a turn really did that changed something, one short line per call:
+ * handed to the turn that continues it, which otherwise sees only the words
+ * of the last one (seen: a continued turn "corrected" its own publish away).
+ */
+export function describeActions(receipts, max = 30) {
+  const lines = [];
+  for (const r of receipts || []) {
+    if (!r || r.ok === false || LOOK_TOOLS.has(r.name)) continue;
+    const a = r.args || {};
+    if (r.name === 'http_fetch' && String(a.method || 'GET').toUpperCase() !== 'POST') continue;
+    const bits = ['path', 'url', 'command', 'action', 'name', 'text', 'ref', 'to', 'tool', 'id']
+      .filter((k) => a[k] !== undefined && a[k] !== null && a[k] !== '')
+      .map((k) => `${k}=${JSON.stringify(String(a[k]).slice(0, 80))}`);
+    lines.push(`${r.name}(${bits.join(', ')})`);
+  }
+  return lines.slice(-max);
+}
+
+/** The message that starts a turn again after the step limit. */
+export function continuationText({ n, what, actions = [] }) {
+  return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`
+    + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：\n- ${actions.join('\n- ')}` : '');
+}
+
+/** Steps per turn: 150 for a bot that works a browser or the desktop (a publish is long), else 80; its own setting up to 200. */
+export function stepLimitFor(bot) {
+  const own = Number(bot?.policy?.maxSteps) || 0;
+  const hands = (bot?.tools || []).some((t) => t === 'desktop_ui' || t === 'browser_click' || t === 'browser_type');
+  return Math.min(Math.max(own, hands ? 150 : 80), 200);
+}
+
 export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) => fsSync.existsSync(p), group = false } = {}) {
   const out = [];
   // Quoted sentences are reported speech ("你说的「已发送给张三」…"), not claims: drop them
@@ -214,7 +250,9 @@ export function checkClaims(text, receipts, { workspaceDir = '', exists = (p) =>
   }
   // sending
   if (!group && claimed(/(已发送|发送了|已发给|已经发给|发出去了|已通知|已提交|已推送)/)
-    && !okCalls.some((r) => SEND_TOOLS.test(r.name) || (r.name === 'mcp_call' && SEND_TOOLS.test(String(r.args?.tool || ''))) || r.name === 'bot_message' || r.name === 'group_post')) {
+    && !okCalls.some((r) => SEND_TOOLS.test(r.name) || (r.name === 'mcp_call' && SEND_TOOLS.test(String(r.args?.tool || ''))) || r.name === 'bot_message' || r.name === 'group_post'
+      // A "发布" / "发送" button clicked in a page or on the desktop sends too.
+      || /^(browser_click|browser_type|desktop_ui|winui_)/.test(r.name))) {
     out.push('说已经发送 / 提交了，但这一轮没有任何发送类操作');
   }
   return out;
@@ -456,6 +494,34 @@ export class AgentRuntime {
       if (groupId && info.groupId === groupId && !info.kickoff) return { turnId, ...info };
     }
     return null;
+  }
+
+  /** Is this bot in the middle of any turn (a chat, a group, a hand-off)? */
+  isWorking(botId) {
+    for (const info of this.active.values()) if (info.botId === botId) return true;
+    return false;
+  }
+
+  /**
+   * A message to a group. Nobody busy: the group runs it. Someone busy: a
+   * member the human @mentions who is free answers now; otherwise the busy
+   * member answers in passing and the message reaches its running turn.
+   * (Seen: "@质检 ..." while 选题 worked went into 选题's turn; 质检 never got it.)
+   */
+  async routeGroupMessage({ group, text, turnId }) {
+    const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
+    const busy = this.busyGroupTurn(group.id);
+    if (!busy) {
+      this.runGroupMessage({ group, text, turnId }).catch(fail);
+      return {};
+    }
+    const free = mentionedMembers(text, group.members || []).filter((m) => m.id !== busy.botId && !m.remote && !this.isWorking(m.id));
+    if (free.length) {
+      this.runGroupMessage({ group, text, turnId, only: free.map((m) => m.id) }).catch(fail);
+      return { started: free.map((m) => m.id) };
+    }
+    this.aside({ botId: busy.botId, text, turnId, source: 'group', busy, group }).catch(fail);
+    return { aside: true };
   }
 
   async aside({ botId, text, turnId: providedTurnId = null, source = 'chat', group = null, busy: givenBusy = null }) {
@@ -753,6 +819,10 @@ export class AgentRuntime {
     kickoff = false,
     // Group coordinator turns that must not plan again (introductions, the final summary).
     noPlan = false,
+    // A turn that continues one cut off by the step limit: what that one really did.
+    priorReceipts = [],
+    // In a group: how many times this member already went on by itself.
+    groupContinuation = 0,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -785,12 +855,13 @@ export class AgentRuntime {
     // real work (search, open, read, fix, check) easily takes dozens. The old
     // per-bot 12 / 5 min were floors, not ceilings; what stops a runaway turn
     // now is the loop check below and the time budget.
-    const maxSteps = Math.min(Math.max(Number(bot.policy?.maxSteps) || 0, 80), 200);
+    const maxSteps = stepLimitFor(bot);
     const maxTurnMs = Math.max(Number(bot.policy?.maxTurnMs) || 0, 30 * 60 * 1000);
     const deadline = Date.now() + maxTurnMs;
     const startedAt = nowIso();
     // Cut off by the step limit with no open checklist: the next turn starts by itself (set below).
     let autoContinue = null;
+    let groupGoesOn = false;
     // A message from the human starts the count of those automatic turns again.
     if (source !== 'task') this.limitRuns?.delete(botId);
 
@@ -901,7 +972,7 @@ export class AgentRuntime {
       const trail = [];
       let fabricationNudged = false;
       // What this turn really did, for checking the final answer's claims.
-      const receipts = [];
+      const receipts = priorReceipts.map((r) => ({ ...r, carried: true }));
       // One send-back per turn, shared by the final answer and a task_finish summary.
       const claimState = { nudged: false };
       ctx.receipts = receipts;
@@ -1170,8 +1241,14 @@ export class AgentRuntime {
         // on - seen on Ubuntu) a direct chat goes on by itself too, a few times
         // per message from the human; going round in circles stopped it earlier.
         const used = this.limitRuns?.get(bot.id) || 0;
-        if (direct && !taskGoesOn && used < LIMIT_CONTINUATIONS) autoContinue = { goal: tsk && tsk.status === 'done' ? tsk.goal : '' };
-        const note = taskGoesOn
+        if (direct && !taskGoesOn && used < LIMIT_CONTINUATIONS) autoContinue = { goal: tsk && tsk.status === 'done' ? tsk.goal : '', receipts };
+        // A group member goes on by itself too (runGroupMessage starts it again).
+        groupGoesOn = Boolean(groupContext) && groupContinuation < LIMIT_CONTINUATIONS;
+        const note = groupContext
+          ? (groupGoesOn
+            ? `这一轮做了 ${steps} 步，到了单轮的上限，我接着做（第 ${groupContinuation + 1} 次，最多 ${LIMIT_CONTINUATIONS} 次）。`
+            : `这件事已经做了 ${steps} 步还没完成（已经自动接着做了 ${groupContinuation} 次），我先停一下。最后几步：${last}。回一句「继续」我就接着做。`)
+          : taskGoesOn
           ? `这一轮已经做了 ${steps} 步，到了单轮的上限。任务「${tsk.goal}」还有 ${open} 步没做完，我会自动接着做，不用回「继续」。`
           : autoContinue
             ? `这一轮已经做了 ${steps} 步，到了单轮的上限。我会自动接着做（第 ${used + 1} 次，最多 ${LIMIT_CONTINUATIONS} 次），做完就告诉你结果，不用回「继续」；要停就点停止或直接说。`
@@ -1180,6 +1257,8 @@ export class AgentRuntime {
               + '如果还要继续，回一句「继续」我就接着做；如果方向不对，告诉我该改哪里。';
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
+        // In a group the summary is what the group sees: say it in Chinese, not "Stopped after 80 steps."
+        if (groupContext) summary = note;
       }
 
       if (status === 'needs_approval') {
@@ -1192,7 +1271,8 @@ export class AgentRuntime {
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
 
-      return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}) };
+      return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
+        ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}) };
     } catch (err) {
       status = 'failed';
       summary = `Turn failed: ${err.message}`;
@@ -1255,7 +1335,8 @@ export class AgentRuntime {
           botId: bot.id,
           source: 'task',
           recordUser: false,
-          text: `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`,
+          text: continuationText({ n, what, actions: describeActions(autoContinue.receipts) }),
+          priorReceipts: autoContinue.receipts || [],
         }).catch(() => {}), this.taskDelayMs ?? 1500);
         timer.unref?.();
       }
@@ -1269,17 +1350,19 @@ export class AgentRuntime {
    *     answers right after it (progress questions reach every owner)
    * Speakers run one after another so the transcript reads in order.
    */
-  async runGroupMessage({ group, text, turnId = null, recordUser = true, kickoff = false }) {
+  async runGroupMessage({ group, text, turnId = null, recordUser = true, kickoff = false, only = null }) {
     const members = group.members || [];
     const byId = new Map(members.map((m) => [m.id, m]));
-    const asked = mentionedMembers(text, members);
+    // `only`: the free members a message to a busy group named (the busy one answers elsewhere).
+    const asked = mentionedMembers(text, members).filter((m) => !only || only.includes(m.id));
     const first = asked.length ? asked : [byId.get(group.coordinatorId) || members[0]].filter(Boolean);
     const queue = first.map((m) => ({ member: m, role: asked.length ? 'speaker' : 'coordinator' }));
     const done = new Set();
     let record = recordUser;
     let id = turnId;
+    const went = new Map();
     while (queue.length && done.size < 6) {
-      const { member, role, prompt } = queue.shift();
+      const { member, role, prompt, priorReceipts, cont } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
       const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record }) : await this.runTurn({
@@ -1291,12 +1374,22 @@ export class AgentRuntime {
         groupRole: role,
         recordUser: record,
         kickoff,
+        priorReceipts: priorReceipts || [],
+        groupContinuation: cont || 0,
       }).catch((err) => {
         this.bus.emit({ type: 'error', groupId: group.id, turnId: id, message: err.message });
         return null;
       });
       record = false;
       id = null;
+      // Cut off by the step limit: the same member goes on, told what it already did.
+      if (result?.status === 'max_steps' && result.continueGroup) {
+        const n = (went.get(member.id) || 0) + 1;
+        went.set(member.id, n);
+        done.delete(member.id);
+        queue.unshift({ member, role, prompt: continuationText({ n, what: `群里交给你的事（用户原话：「${String(prompt || text).slice(0, 300)}」）`, actions: describeActions(result.receipts) }), priorReceipts: result.receipts, cont: n });
+        continue;
+      }
       // The coordinator split the work: the task board runs it (and it sums up at the end).
       if (role === 'coordinator' && result?.board?.plan) {
         const plan = result.board.plan;
