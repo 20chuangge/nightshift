@@ -460,10 +460,10 @@ const INTENTS = [
   { id: 'routine', re: /\b(routine|schedule|recurr|every \d+ (minutes?|hours?)|cron)\b/i },
   { id: 'skill', re: /(\bsave\b.{0,30}\bskill\b)|(\bas a skill\b)|(\bskill\b.{0,20}\bsave\b)/i },
   { id: 'outside', re: /\b(outside (of )?the workspace|beyond the workspace|external file|wherever you like)\b/i },
-  { id: 'shell', re: /\b(shell|terminal|run (the )?command|execute (a )?command|\bcmd\b)\b/i },
-  { id: 'memory', re: /\b(remember|memory|memorise|memorize|note that|keep in mind)\b/i },
-  { id: 'read', re: /\b(read|open|cat|show me)\b.{0,40}(file|welcome|readme|note)/i },
-  { id: 'files', re: /\b(list|ls\b|what'?s in|workspace|directory|folder)\b/i },
+  { id: 'shell', re: /\b(shell|terminal|run (the )?command|execute (a )?command|\bcmd\b)\b|(运行|执行|跑)[^。，,]{0,6}(命令|指令)|命令行/i },
+  { id: 'memory', re: /\b(remember|memory|memorise|memorize|note that|keep in mind)\b|记住|记一下|别忘了/i },
+  { id: 'read', re: /\b(read|open|cat|show me)\b.{0,40}(file|welcome|readme|note)|(读|打开)[^。，,]{0,10}(文件|welcome|readme|笔记)/i },
+  { id: 'files', re: /\b(list|ls\b|what'?s in|workspace|directory|folder)\b|工作区|(列出|有哪些)[^。，,]{0,8}文件/i },
 ];
 
 function detectIntent(text) {
@@ -521,6 +521,9 @@ function shortQuote(text, max = 90) {
  */
 function mockPlan(text, botName) {
   const intent = detectIntent(text);
+  // A Chinese message gets Chinese words back (BUG-04: a new user's first sight was English).
+  const zh = /[\u4e00-\u9fff]/.test(String(text || ''));
+  const say = (cn, en) => (zh ? cn : en);
 
   switch (intent) {
     case 'handoff':
@@ -624,7 +627,7 @@ function mockPlan(text, botName) {
         { tool: 'shell', args: { command: 'node --version', timeoutMs: 15000 } },
         {
           tool: 'task_finish',
-          args: { summary: 'Ran `node --version` inside the shared workspace and reported the output.' },
+          args: { summary: say('在工作区里运行了 `node --version`，结果在上面。', 'Ran `node --version` inside the shared workspace and reported the output.') },
         },
       ];
 
@@ -633,7 +636,7 @@ function mockPlan(text, botName) {
         { tool: 'memory_write', args: { text } },
         {
           tool: 'task_finish',
-          args: { summary: 'Saved that to my memory. I will still have it in the next conversation.' },
+          args: { summary: say('记下了，下次聊天我还记得。', 'Saved that to my memory. I will still have it in the next conversation.') },
         },
       ];
 
@@ -642,7 +645,7 @@ function mockPlan(text, botName) {
         { tool: 'fs_read', args: { path: extractFileName(text) } },
         {
           tool: 'task_finish',
-          args: { summary: `Read ${extractFileName(text)} from the shared workspace and summarised it above.` },
+          args: { summary: say(`读了工作区里的 ${extractFileName(text)}，要点在上面。`, `Read ${extractFileName(text)} from the shared workspace and summarised it above.`) },
         },
       ];
 
@@ -667,7 +670,7 @@ function mockPlan(text, botName) {
         {
           tool: 'task_finish',
           args: {
-            summary: 'Listed the shared workspace, wrote notes/plan.md, and saved a memory entry about it.',
+            summary: say('看了工作区里的文件，写了 notes/plan.md，也记进了笔记。', 'Listed the shared workspace, wrote notes/plan.md, and saved a memory entry about it.'),
           },
         },
       ];
@@ -675,10 +678,13 @@ function mockPlan(text, botName) {
     default:
       return [
         {
-          content:
-            `I'm ${botName}, working out of the shared workspace. ` +
-            'Ask me to read or list files, remember something, run a shell command, save a skill, ' +
-            'create a routine, or hand a task to another bot - those all go through real tools and the approval boundary.',
+          content: zh
+            ? `我是${botName === 'the assistant' ? '助理' : botName}，现在是演示模式（还没接入真实模型）。` +
+              '可以让我看看工作区有哪些文件、读一个文件、记住一件事、运行一个命令——这些都会真的调用工具，需要你同意的会先问你。' +
+              '到 设置 → 模型 接入真实模型后，我就能听懂任何话。'
+            : `I'm ${botName}, working out of the shared workspace. ` +
+              'Ask me to read or list files, remember something, run a shell command, save a skill, ' +
+              'create a routine, or hand a task to another bot - those all go through real tools and the approval boundary.',
         },
       ];
   }
@@ -688,7 +694,7 @@ function mockPlan(text, botName) {
 function botNameFromMessages(messages) {
   const system = messages.find((m) => m.role === 'system');
   if (!system || typeof system.content !== 'string') return 'the assistant';
-  const match = system.content.match(/You are\s+([A-Za-z][A-Za-z0-9 _-]{0,30})[,.]/);
+  const match = system.content.match(/You are\s+([A-Za-z\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff _-]{0,30})[,.，。]/);
   return match ? match[1].trim() : 'the assistant';
 }
 

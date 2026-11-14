@@ -2437,6 +2437,27 @@
     flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
     padding: 22px 28px 40px; scroll-behavior: smooth;
   }
+  /* Settings groups (design 6.2): 助理 / 安全 / 连接 / 通用, each with a small title. */
+  .setnav-sec { display: flex; flex-direction: column; gap: 1px; }
+  .setnav-sec + .setnav-sec { margin-top: 14px; }
+  .setnav-group {
+    padding: 4px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--dim);
+  }
+  .settings-scroll > .dsec { max-width: 640px; }
+  /* On a computer settings is a page over the chat area; the sidebar stays, so a chat is one click away. */
+  @media (min-width: 861px) {
+    .settings-modal.page-mode {
+      inset: 0 0 0 auto; left: var(--side-w); margin: 0;
+      width: auto; height: auto; border: 0; border-left: 1px solid var(--border); border-radius: 0;
+      box-shadow: none; background: var(--bg); transform: none;
+    }
+    html[data-theme="light"] .settings-modal.page-mode { box-shadow: none; }
+    .settings-modal.page-mode .settings-nav { width: 208px; padding: 14px 12px; overflow-y: auto; }
+    .settings-modal.page-mode .settings-scroll { padding: 28px 40px 48px; }
+    .settings-modal.page-mode .dsec-head:first-child { font-size: 18px; margin-bottom: 6px; }
+    /* no backdrop: it would swallow the click on a chat in the sidebar */
+    #settings-scrim { display: none; }
+  }
   .dsec {
     padding: 0 0 24px; margin: 0 0 24px;
     border-bottom: 1px solid var(--border-soft);
@@ -3220,12 +3241,12 @@
       border-right: 1.75px solid var(--dim); border-top: 1.75px solid var(--dim); transform: rotate(45deg);
     }
     .settings-modal.set-home .setnav svg { display: block; width: 20px; height: 20px; flex: none; color: var(--muted); }
-    .settings-modal.set-home .setnav[data-set-target="sec-model"],
-    .settings-modal.set-home .setnav[data-set-target="sec-appearance"],
-    .settings-modal.set-home .setnav[data-set-target="sec-pair"] { border-radius: 16px 16px 0 0; box-shadow: none; }
-    .settings-modal.set-home .setnav[data-set-target="sec-memory"],
-    .settings-modal.set-home .setnav[data-set-target="sec-about"] { border-radius: 0 0 16px 16px; }
-    .settings-modal.set-home .setnav[data-set-target="sec-appearance"] { border-radius: 16px; margin: 20px 0; }
+    /* each group is one rounded card with its title above it */
+    .settings-modal.set-home .setnav-sec { gap: 0; margin: 0 0 20px; }
+    .settings-modal.set-home .setnav-group { padding: 0 16px 8px; font-size: 13px; font-weight: 500; }
+    .settings-modal.set-home .setnav-sec .setnav:first-of-type { border-radius: 16px 16px 0 0; box-shadow: none; }
+    .settings-modal.set-home .setnav-sec .setnav:last-of-type { border-radius: 0 0 16px 16px; }
+    .settings-modal:not(.set-home) .setnav-group { display: none; }
     .settings-scroll { padding: 8px 20px calc(32px + var(--safe-b)); }
     .dsec-head { font-size: 17px; }
     .dsec-sub { font-size: 13px; color: var(--muted); }
@@ -3531,7 +3552,7 @@
      settings
      ===================================================================== -->
 <div class="scrim" id="settings-scrim" aria-hidden="true"></div>
-<div class="settings-modal" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden="true">
+<div class="settings-modal page-mode" id="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden="true">
   <div class="settings-top">
     <button class="icon-btn set-back" id="settings-back" type="button" aria-label="返回设置列表"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
     <span class="settings-heading" id="settings-title">设置</span>
@@ -3539,20 +3560,33 @@
   </div>
   <div class="settings-body">
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
-      <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
-      <button class="setnav" type="button" data-set-target="sec-run">权限</button>
-      <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
-      <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
-      <button class="setnav" type="button" data-set-target="sec-mcp">连接应用</button>
-      <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
-      <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
-      <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
-      <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
-      <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
-      <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
-      <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
-      <button class="setnav" type="button" data-set-target="sec-pair">手机和外网</button>
-      <button class="setnav" type="button" data-set-target="sec-about">关于</button>
+      <div class="setnav-sec">
+        <div class="setnav-group">助理</div>
+        <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
+        <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
+        <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
+      </div>
+      <div class="setnav-sec">
+        <div class="setnav-group">安全</div>
+        <button class="setnav" type="button" data-set-target="sec-run">审批</button>
+        <button class="setnav" type="button" data-set-target="sec-bounds">边界</button>
+        <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
+        <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
+      </div>
+      <div class="setnav-sec">
+        <div class="setnav-group">连接</div>
+        <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
+        <button class="setnav" type="button" data-set-target="sec-pair">手机和外网</button>
+        <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
+        <button class="setnav" type="button" data-set-target="sec-mcp">连接应用</button>
+      </div>
+      <div class="setnav-sec">
+        <div class="setnav-group">通用</div>
+        <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
+        <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
+        <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
+        <button class="setnav" type="button" data-set-target="sec-about">关于</button>
+      </div>
     </nav>
     <div class="settings-scroll" id="settings-scroll">
       <div class="notice-inline" id="settings-note" hidden></div>
@@ -3712,7 +3746,8 @@
       </section>
 
       <section class="dsec" id="sec-run">
-        <div class="dsec-head">权限</div>
+        <div class="dsec-head">审批</div>
+        <div class="dsec-sub">机器人做事前要不要先问你：审批级别、接管桌面、生成图片视频、你写的规则和禁止的命令。</div>
         <div class="perm-card">
           <div class="perm-summary" id="perm-summary"></div>
           <div class="perm-table-wrap">
@@ -3777,6 +3812,12 @@
           <button class="btn" id="deny-add-btn" type="button">添加</button>
         </div>
         <div class="row-note">命令里出现这些词时，机器人会停下来问你（放手模式也一样）。</div>
+        <input type="checkbox" id="auto-approve-all" hidden />
+      </section>
+
+      <section class="dsec" id="sec-bounds">
+        <div class="dsec-head">边界</div>
+        <div class="dsec-sub">机器人能碰到这台电脑的哪些地方：工作区以外的文件夹、管理员权限。不管审批级别是什么，越过这里都要先问你。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">能访问的文件夹</div>
         <div class="row-note">机器人只能动工作区和下面开放的文件夹，其他位置不管审批级别是什么都会先问你（或者直接不许）。旧电脑接进来，不等于它的文件都给机器人看。</div>
         <div class="vault-list" id="folder-list"></div>
@@ -3800,7 +3841,6 @@
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">主助理完全信任</div>
         <label class="switch-row"><input type="checkbox" id="trust-primary" /> 主助理用 sudo、动工作区以外的位置，都直接做</label>
         <div class="row-note">只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。</div>
-        <input type="checkbox" id="auto-approve-all" hidden />
       </section>
 
       <section class="dsec" id="sec-usage">
@@ -8538,10 +8578,10 @@ function handleEvent(ev) {
     const active = document.querySelector('.setnav.active')?.dataset.setTarget || 'sec-model';
     const where = {
       model: 'sec-model', voice: 'sec-model', vision: 'sec-model', media: 'sec-model',
-      policy: 'sec-run', usage: 'sec-usage', feishu: 'sec-feishu', mcp: 'sec-mcp',
+      policy: ['sec-run', 'sec-bounds'], usage: 'sec-usage', feishu: 'sec-feishu', mcp: 'sec-mcp',
       machines: 'sec-machines', network: 'sec-pair',
     }[section];
-    if (where && active !== where) return;
+    if (where && ![].concat(where).includes(active)) return;
     if (section === 'model') { loadSettings().then(renderSettingsForm).catch(() => {}); loadModels().catch(() => {}); }
     if (section === 'voice') loadVoice().catch(() => {});
     if (section === 'vision') loadVision().catch(() => {});
@@ -10139,6 +10179,7 @@ function showSettingsHome() {
 const SETNAV_ICONS = {
   'sec-model': '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>',
   'sec-run': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'sec-bounds': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
   'sec-usage': '<circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a3 3 0 0 0-2.5-1.2c-1.7 0-2.8.9-2.8 2s1 1.6 2.8 1.9 2.8.9 2.8 2-1.2 2-2.8 2a3 3 0 0 1-2.6-1.3M12 6.5v1.8M12 15.8v1.7"/>',
   'sec-feishu': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   'sec-mcp': '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/>',
@@ -13664,6 +13705,10 @@ function wireChrome() {
   $('settings-back')?.addEventListener('click', showSettingsHome);
   decorateSettingsNav();
   $('settings-scrim').addEventListener('click', closeSettings);
+  // Settings is a page beside the sidebar: picking a chat there goes back to it.
+  $('sidebar')?.addEventListener('click', (e) => {
+    if (state.settingsOpen && !isMobile() && e.target.closest('.bot, .group')) closeSettings();
+  });
   document.querySelectorAll('.setnav').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsNav(btn.dataset.setTarget));
   });

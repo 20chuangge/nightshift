@@ -1729,4 +1729,9 @@ window.DESK_I18N_EN = {
   "第一次连这台机器，记下了它的 SSH 指纹 {0}；以后指纹变了会停下来问你": "First connection to this machine: its SSH fingerprint {0} is remembered; if it ever changes, setup stops and asks you",
   "这是程序文件，已在文件夹里选中，没有直接运行": "This is a program file: it is selected in its folder, not run",
   "这个配对码已经过期（一天换一次），到 设置 → 手机和外网 看新的": "This pairing code has expired (it changes every day); see the new one in Settings → Phone and remote access",
+  "安全": "Safety",
+  "边界": "Boundaries",
+  "通用": "General",
+  "机器人做事前要不要先问你：审批级别、接管桌面、生成图片视频、你写的规则和禁止的命令。": "Whether the bots ask you first: the approval level, taking over the desktop, making pictures and videos, your own rules and the blocked commands.",
+  "机器人能碰到这台电脑的哪些地方：工作区以外的文件夹、管理员权限。不管审批级别是什么，越过这里都要先问你。": "Which parts of this computer the bots can reach: folders outside the workspace and administrator rights. Whatever the approval level, going past this asks you first.",
 };

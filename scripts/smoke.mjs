@@ -146,6 +146,7 @@ async function main() {
     await stage('crash recovery', scenarioCrashRecovery);
     await stage('tightening (SEC-05/06/09/10/11/13/15/17/18)', () => scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, authMod }));
     await stage('team fixes (programs, continuing, steps, group mentions)', scenarioTeamFixes);
+    await stage('1.2.156: settings page, sealed keys, phone hardening, Chinese demo', scenarioV156);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4819,6 +4820,132 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.156 - settings as a full page (design 6.2), keys encrypted at rest
+ * (SEC-14), the Android app hardened (SEC-16), demo answers in Chinese (BUG-04).
+ */
+async function scenarioV156() {
+  const fsx = await import('node:fs');
+  const page = await readText('../public/index.html');
+
+  // --- S: settings as a full page --------------------------------------------
+  {
+    const nav = (page.match(/<nav class="settings-nav" id="settings-nav"[\s\S]*?<\/nav>/) || [''])[0];
+    const groups = [...nav.matchAll(/<div class="setnav-sec"[^>]*>\s*<div class="setnav-group">([^<]+)<\/div>([\s\S]*?)<\/div>\s*(?=<div class="setnav-sec"|<\/nav>)/g)]
+      .map((m) => [m[1], [...m[2].matchAll(/data-set-target="([^"]+)"/g)].map((x) => x[1]).join(',')]);
+    check('S1 settings: four groups with titles - 助理 / 安全 / 连接 / 通用 - in the design\'s order',
+      JSON.stringify(groups) === JSON.stringify([
+        ['助理', 'sec-model,sec-skills,sec-memory'],
+        ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
+        ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
+        ['通用', 'sec-appearance,sec-usage,sec-pages,sec-about'],
+      ]), JSON.stringify(groups));
+    const sec = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">[\\s\\S]*?</section>`)) || [''])[0];
+    const run = sec('sec-run');
+    const bounds = sec('sec-bounds');
+    check('S2 settings: 「权限」 is split - 审批 keeps the levels, takeover, generation, rules and blocked commands; 边界 has the folders, other places, sudo and full trust',
+      /<div class="dsec-head">审批<\/div>/.test(run) && run.includes('id="level-list"') && run.includes('id="deny-list"') && run.includes('id="perm-table"') && run.includes('id="rule-list"')
+      && !run.includes('id="folder-list"') && /<div class="dsec-head">边界<\/div>/.test(bounds) && bounds.includes('id="folder-list"') && bounds.includes('id="folder-outside"')
+      && bounds.includes('id="sudo-mode"') && bounds.includes('id="trust-primary"') && /<div class="dsec-sub">[^<]{8,}<\/div>/.test(bounds), `${run.length} ${bounds.length}`);
+    check('S3 settings: on a computer it covers the chat area (the sidebar stays), content at most 640 wide; on a phone it stays list → page',
+      page.includes('.settings-modal.page-mode {') && page.includes('left: var(--side-w);') && page.includes('.settings-scroll > .dsec { max-width: 640px; }')
+      && page.includes('.settings-modal.set-home .setnav-sec') && page.includes('.setnav-group {'));
+    check('S4 settings: a change to the rules refreshes 审批 and 边界 alike; the new page has an icon and English',
+      page.includes("policy: ['sec-run', 'sec-bounds']") && /'sec-bounds': '</.test(page)
+      && /"边界": "Boundaries"/.test(await readText('../public/i18n-en.js')) && /"审批": "Approvals?"/.test(await readText('../public/i18n-en.js')));
+  }
+
+  // --- K: keys encrypted at rest (SEC-14) -------------------------------------
+  {
+    const store = await import('../src/store.mjs');
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sealed-'));
+    const saved = process.env.ASSIST_MASTER_KEY;
+    const keyA = 'a1'.repeat(32);
+    const keyB = 'b2'.repeat(32);
+    try {
+      process.env.ASSIST_MASTER_KEY = keyA;
+      const file = path.join(dir, 'secrets.json');
+      await store.writeJsonAtomic(file, { apiKey: 'sk-secret-value-123' });
+      const raw = fsx.readFileSync(file, 'utf8');
+      const back = await store.readJson(file, null);
+      check('K1 keys: with the desktop app\'s master key, secrets.json is written encrypted and read back as before',
+        /lamplitSealed/.test(raw) && !raw.includes('sk-secret-value-123') && back?.apiKey === 'sk-secret-value-123' && store.readJsonSync(file, null)?.apiKey === 'sk-secret-value-123', raw.slice(0, 120));
+      const plainFile = path.join(dir, 'settings.json');
+      await store.writeJsonAtomic(plainFile, { model: 'x' });
+      check('K1 keys: files that hold no secret (settings.json) stay plain', !/lamplitSealed/.test(fsx.readFileSync(plainFile, 'utf8')));
+      process.env.ASSIST_MASTER_KEY = keyB;
+      const wrongKey = await store.readJson(file, 'fallback');
+      delete process.env.ASSIST_MASTER_KEY;
+      const noKey = await store.readJson(file, 'fallback');
+      check('K2 keys: copied to another computer (another key, or no key) the file cannot be read - and is not overwritten',
+        wrongKey === 'fallback' && noKey === 'fallback' && fsx.readFileSync(file, 'utf8') === raw);
+      // A file from before 1.2.156: plain until the master key is there, then sealed in place.
+      const legacy = path.join(dir, 'voice.json');
+      fsx.writeFileSync(legacy, JSON.stringify({ apiKey: 'voice-key-9' }));
+      process.env.ASSIST_MASTER_KEY = keyA;
+      const sealedNow = await store.sealSecretFiles(dir);
+      const legacyRaw = fsx.readFileSync(legacy, 'utf8');
+      check('K3 keys: plain key files from before are sealed in place at start, and still read the same',
+        sealedNow.includes('voice.json') && /lamplitSealed/.test(legacyRaw) && !legacyRaw.includes('voice-key-9') && (await store.readJson(legacy, null))?.apiKey === 'voice-key-9');
+      const V = await import('../src/vault.mjs');
+      const raw32 = Buffer.alloc(32, 7);
+      const wrapped = V.wrapVaultKey(raw32);
+      check('K4 keys: the vault key is wrapped with the master key; an old raw key still opens; a wrong master key opens nothing',
+        V.unwrapVaultKey(raw32)?.equals(raw32) && !wrapped.includes(raw32) && V.unwrapVaultKey(wrapped)?.equals(raw32)
+        && (() => { process.env.ASSIST_MASTER_KEY = keyB; const r = V.unwrapVaultKey(wrapped); process.env.ASSIST_MASTER_KEY = keyA; return r === null; })());
+      const D = await import('../desktop/sealed.mjs').catch(() => null);
+      check('K5 keys: the desktop app opens the same sealed files (model sync reads secrets / voice / vision through it)',
+        Boolean(D) && D.readSecretJson(file, keyA)?.apiKey === 'sk-secret-value-123' && D.readSecretJson(path.join(dir, 'nope.json'), keyA) === null);
+    } finally {
+      if (saved === undefined) delete process.env.ASSIST_MASTER_KEY; else process.env.ASSIST_MASTER_KEY = saved;
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+    const main = await readText('../desktop/main.mjs');
+    const srv = await readText('../src/server.mjs');
+    const builder = await readText('../desktop/electron-builder.yml');
+    check('K6 wiring: the desktop app keeps its master key with safeStorage (DPAPI), never makes a new one over an unreadable one, hands it to the server, and reads secrets through it; the server seals old files at start',
+      main.includes('safeStorage.encryptString') && main.includes('safeStorage.decryptString') && main.includes('ASSIST_MASTER_KEY: masterKey()')
+      && main.includes("readSecretJson(path.join(HOME, 'data', 'secrets.json'), masterKey())") && !main.includes("JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'secrets.json')")
+      && main.includes('// An unreadable key file is never replaced') && srv.includes('await sealSecretFiles(P.dataDir)') && builder.includes('- sealed.mjs'));
+  }
+
+  // --- A: the Android app (SEC-16) -------------------------------------------
+  {
+    const root = '../mobile/android/app/src/main/';
+    const manifest = await readText(`${root}AndroidManifest.xml`);
+    const rules = await readText(`${root}res/xml/data_extraction_rules.xml`).catch(() => '');
+    const bridge = await readText(`${root}java/com/desk/assistant/ShellBridge.java`);
+    const box = await readText(`${root}java/com/desk/assistant/TokenBox.java`).catch(() => '');
+    const watcher = await readText(`${root}java/com/desk/assistant/NightshiftWatcher.java`);
+    const launcher = await readText('../mobile/shell/launcher.js');
+    check('A1 phone: no backups of the app\'s data (device tokens stay on the phone)',
+      manifest.includes('android:allowBackup="false"') && manifest.includes('android:dataExtractionRules="@xml/data_extraction_rules"') && /<exclude domain="sharedpref" path="\."/.test(rules));
+    check('A2 phone: device tokens are encrypted with a key in the Android Keystore; the launcher stores them sealed and the notifier opens them',
+      box.includes('AndroidKeyStore') && box.includes('AES/GCM/NoPadding') && box.includes('public static String seal(') && box.includes('public static String open(')
+      && /TokenBox\.open\(/.test(watcher) && (await readText('../mobile/shell/chat.js')).includes('box.openToken(v)') && launcher.includes('NightshiftShell.sealToken(') && launcher.includes('NightshiftShell.openToken(') && launcher.includes("startsWith('tb1:')"));
+    check('A3 phone: the clipboard and opening links only work for the app\'s own page and paired machines, not any page it shows',
+      /public String clipboardRead\(\) \{\s*if \(!fromTrustedPage\(\)\) return "";/.test(bridge) && /public boolean clipboardWrite\(final String text\) \{\s*if \(!fromTrustedPage\(\)\) return false;/.test(bridge)
+      && /public String openToken\(final String sealed\) \{\s*if \(!fromAppPage\(\)\) return "";/.test(bridge) && bridge.includes('boolean fromTrustedPage()'));
+  }
+
+  // --- B: demo mode answers in Chinese (BUG-04) -------------------------------
+  {
+    const M = await import('../src/model.mjs');
+    const mock = M.createModel({ provider: 'mock' });
+    const ask = async (text) => mock.complete([{ role: 'system', content: 'You are 助理, the primary bot.' }, { role: 'user', content: text }], { tools: [] });
+    const hi = await ask('你好');
+    const en = await ask('hello');
+    const run = await ask('帮我运行一个命令看看');
+    const remember = await ask('记住我喜欢简洁的回答');
+    const list = await ask('看看工作区里有哪些文件');
+    check('B1 demo: a Chinese message gets a Chinese answer that uses the bot\'s own name; English stays English',
+      /我是助理/.test(hi.content || '') && /[一-鿿]/.test(hi.content) && /^I'm /.test(en.content || ''), `${hi.content} | ${en.content}`);
+    check('B2 demo: Chinese requests reach the real tools (a command, a memory, the file list)',
+      run.toolCalls?.[0]?.name === 'shell' && remember.toolCalls?.[0]?.name === 'memory_write' && list.toolCalls?.[0]?.name === 'fs_list',
+      JSON.stringify([run.toolCalls?.[0]?.name, remember.toolCalls?.[0]?.name, list.toolCalls?.[0]?.name]));
   }
 }
 

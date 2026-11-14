@@ -169,7 +169,7 @@ public class NightshiftWatcher extends Service {
      * Nothing is copied between machines: each pairing is its own credential.
      */
     private void syncFleet(String hub) {
-        String token = prefs(this).getString("desk.token:" + hub, null);
+        String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
         if (token == null) return;
         try {
             JSONObject list = new JSONObject(get(hub + "/api/machines", token));
@@ -311,7 +311,7 @@ public class NightshiftWatcher extends Service {
         int attempt = 0;
         while (running) {
             SharedPreferences p = prefs(this);
-            String token = p.getString("desk.token:" + hub, null);
+            String token = TokenBox.open(p.getString("desk.token:" + hub, null));
             if (token == null) return; // unpaired or revoked: the supervisor decides
             boolean established = false;
             try {

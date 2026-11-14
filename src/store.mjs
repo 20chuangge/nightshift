@@ -163,11 +163,95 @@ export async function appendText(file, text) {
 // JSON (whole-document) storage
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Keys at rest (SEC-14)
+// ---------------------------------------------------------------------------
+//
+// The desktop app keeps a master key in Windows' own protected storage (DPAPI,
+// via Electron safeStorage) and hands it over as ASSIST_MASTER_KEY. With it,
+// the files that hold keys are written encrypted (AES-256-GCM): copied to
+// another computer, data/ alone opens nothing. Without it (a hub started from
+// the command line, a Linux machine) they stay plain, as before.
+
+/** Files that hold a model / voice / app key or a connected app's token. */
+export const SEALED_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json']);
+
+export function masterKey() {
+  const hex = String(process.env.ASSIST_MASTER_KEY || '').trim();
+  return /^[0-9a-f]{64}$/i.test(hex) ? Buffer.from(hex, 'hex') : null;
+}
+
+export function sealText(text, key = masterKey()) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
+  return `${JSON.stringify({ lamplitSealed: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') })}\n`;
+}
+
+/** The plain text of a sealed box, or null (no key, another key, damaged). */
+export function openSealed(box, key = masterKey()) {
+  if (!key || !box?.lamplitSealed) return null;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(box.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(box.tag, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(box.data, 'base64')), decipher.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+const sealedWarned = new Set();
+/** Parsed JSON, opening a sealed file; `undefined` when it cannot be opened. */
+function parseMaybeSealed(file, raw) {
+  const value = JSON.parse(raw);
+  if (!value || typeof value !== 'object' || !value.lamplitSealed) return value;
+  const text = openSealed(value);
+  if (text === null) {
+    if (!sealedWarned.has(file)) {
+      sealedWarned.add(file);
+      console.error(`[store] ${path.basename(file)} is encrypted with a key this app does not have (copied from another computer, or started without the desktop app); treating it as empty and leaving the file as it is`);
+    }
+    return undefined;
+  }
+  return JSON.parse(text);
+}
+
+function jsonTextFor(file, value) {
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  const key = SEALED_FILES.has(path.basename(file)) ? masterKey() : null;
+  return key ? sealText(text, key) : text;
+}
+
+/**
+ * At start: seal the key files still written in plain text (before 1.2.156,
+ * or before the desktop app had a master key). Each one is read back and
+ * checked before it replaces the plain file. -> names sealed
+ */
+export async function sealSecretFiles(dir) {
+  const key = masterKey();
+  const done = [];
+  if (!key) return done;
+  for (const name of SEALED_FILES) {
+    const file = path.join(dir, name);
+    let raw;
+    try { raw = await fsp.readFile(file, 'utf8'); } catch { continue; }
+    let value;
+    try { value = JSON.parse(raw); } catch { continue; }
+    if (!value || typeof value !== 'object' || value.lamplitSealed) continue;
+    const sealed = sealText(raw, key);
+    if (openSealed(JSON.parse(sealed), key) !== raw) continue; // never replace what cannot be read back
+    await writeTextAtomic(file, sealed);
+    done.push(name);
+  }
+  return done;
+}
+
 export async function readJson(file, fallback = null) {
   try {
     const raw = await fsp.readFile(file, 'utf8');
     if (!raw.trim()) return fallback;
-    return JSON.parse(raw);
+    const value = parseMaybeSealed(file, raw);
+    return value === undefined ? fallback : value;
   } catch (err) {
     // A corrupt config file should degrade to the fallback, not take the server
     // down; the caller decides whether that is fatal.
@@ -177,7 +261,17 @@ export async function readJson(file, fallback = null) {
 }
 
 export async function writeJsonAtomic(file, value) {
-  await writeTextAtomic(file, `${JSON.stringify(value, null, 2)}\n`);
+  // A sealed file this app cannot open is never written over: that would throw
+  // away the keys of the computer it came from (or of the desktop app).
+  if (SEALED_FILES.has(path.basename(file)) && !masterKey()) {
+    try {
+      const raw = await fsp.readFile(file, 'utf8');
+      if (/"lamplitSealed"\s*:\s*1/.test(raw)) throw Object.assign(new Error(`${path.basename(file)} is encrypted; open Lamplit from the desktop app to change it`), { code: 'SEALED_NO_KEY', status: 409 });
+    } catch (err) {
+      if (err.code === 'SEALED_NO_KEY') throw err;
+    }
+  }
+  await writeTextAtomic(file, jsonTextFor(file, value));
 }
 
 /**
@@ -191,7 +285,7 @@ export async function writeJsonAtomic(file, value) {
 export function writeJsonSyncAtomic(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(tmp, jsonTextFor(file, value), 'utf8');
   let lastErr;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -219,7 +313,8 @@ export function readJsonSync(file, fallback = null) {
   try {
     const raw = fs.readFileSync(file, 'utf8');
     if (!raw.trim()) return fallback;
-    return JSON.parse(raw);
+    const value = parseMaybeSealed(file, raw);
+    return value === undefined ? fallback : value;
   } catch (err) {
     if (err.code === 'ENOENT' || err instanceof SyntaxError) return fallback;
     throw err;

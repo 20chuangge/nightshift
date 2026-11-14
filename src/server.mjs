@@ -87,7 +87,8 @@ import { createPeers } from './peers.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
-import { listVault, putVault, deleteVault } from './vault.mjs';
+import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
+import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
@@ -195,6 +196,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const workspaceDir = P.workspaceDir;
   config.workspaceDir = workspaceDir;
 
+  // The desktop app's master key is here: seal key files still in plain text (SEC-14).
+  if (masterKey()) {
+    const sealedNow = await sealSecretFiles(P.dataDir).catch((err) => { console.error('[assistant] could not seal key files:', err.message); return []; });
+    const vaultOk = await sealVaultKey();
+    if (sealedNow.length) console.error(`[assistant] key files encrypted: ${sealedNow.join(', ')}`);
+    if (!vaultOk) console.error('[assistant] the vault key cannot be opened with this computer\'s key; the vault stays locked');
+  }
   // Settings + secret are read once at boot; PUT /api/settings rewrites both and
   // swaps the live model client without a restart.
   const settings = await settingsModule.loadSettings();

@@ -72,7 +72,7 @@
   const isNative = Boolean(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform());
 
   /** @capacitor/preferences on device, localStorage when previewing in a browser. */
-  const store = {
+  const rawStore = {
     async get(key) {
       if (prefs) {
         try {
@@ -117,6 +117,39 @@
         /* ignore */
       }
     },
+  };
+
+  /*
+   * Device tokens are kept sealed with the phone's Keystore (SEC-16): the app's
+   * files hold "tb1:..." instead of a usable token. The native bridge seals and
+   * opens them, for this page only. A plain token from before is sealed the
+   * first time it is read. In a browser preview (no bridge) nothing changes.
+   */
+  const isTokenKey = (key) => String(key).startsWith('desk.token:');
+  const tokenBox = () => (window.NightshiftShell && typeof window.NightshiftShell.sealToken === 'function' ? window.NightshiftShell : null);
+  const store = {
+    async get(key) {
+      const value = await rawStore.get(key);
+      if (!isTokenKey(key) || !value) return value;
+      if (value.startsWith('tb1:')) {
+        if (!tokenBox()) return null;
+        return window.NightshiftShell.openToken(value) || null;
+      }
+      if (tokenBox()) {
+        const sealed = window.NightshiftShell.sealToken(value);
+        if (sealed && sealed.startsWith('tb1:')) await rawStore.set(key, sealed);
+      }
+      return value;
+    },
+    async set(key, value) {
+      if (isTokenKey(key) && value && tokenBox()) {
+        const sealed = window.NightshiftShell.sealToken(value);
+        // Sealing not possible on this phone: keep it as before rather than lose the pairing.
+        if (sealed && sealed.startsWith('tb1:')) return rawStore.set(key, sealed);
+      }
+      return rawStore.set(key, value);
+    },
+    remove: (key) => rawStore.remove(key),
   };
 
   // ------------------------------------------------------------------- state

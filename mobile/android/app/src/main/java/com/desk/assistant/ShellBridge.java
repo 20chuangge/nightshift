@@ -5,7 +5,13 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
+import android.webkit.WebView;
+
+import com.getcapacitor.BridgeActivity;
+
+import java.util.Map;
 import android.content.pm.ActivityInfo;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -30,6 +36,69 @@ public class ShellBridge {
 
     public ShellBridge(Activity activity) {
         this.activity = activity;
+    }
+
+    /*
+     * Who is calling (SEC-16). Every page the app shows gets this bridge, and
+     * the app may show any address a link leads to. The clipboard is for the
+     * app's own page and the machines this phone is paired with; the token box
+     * is for the app's own page only (the launcher, http://localhost).
+     */
+    private String currentUrl() {
+        FutureTask<String> task = new FutureTask<>(() -> {
+            if (!(activity instanceof BridgeActivity)) return "";
+            WebView view = ((BridgeActivity) activity).getBridge().getWebView();
+            String url = view == null ? null : view.getUrl();
+            return url == null ? "" : url;
+        });
+        activity.runOnUiThread(task);
+        try {
+            return task.get(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String originOf(String url) {
+        try {
+            Uri u = Uri.parse(url);
+            if (u.getScheme() == null || u.getHost() == null) return "";
+            return u.getScheme() + "://" + u.getHost() + (u.getPort() > 0 ? ":" + u.getPort() : "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    boolean fromAppPage() {
+        return "http://localhost".equals(originOf(currentUrl()));
+    }
+
+    boolean fromTrustedPage() {
+        String origin = originOf(currentUrl());
+        if (origin.isEmpty()) return false;
+        if ("http://localhost".equals(origin)) return true;
+        SharedPreferences p = activity.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+        for (Map.Entry<String, ?> entry : p.getAll().entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith("desk.token:") && origin.equals(originOf(key.substring("desk.token:".length())))) return true;
+        }
+        return false;
+    }
+
+    /** A device token sealed with the phone's Keystore (launcher only). Empty when sealing is not possible. */
+    @JavascriptInterface
+    public String sealToken(final String token) {
+        if (!fromAppPage()) return "";
+        String sealed = TokenBox.seal(token);
+        return sealed == null ? "" : sealed;
+    }
+
+    /** The token inside a sealed value (launcher only). Empty when it cannot be opened. */
+    @JavascriptInterface
+    public String openToken(final String sealed) {
+        if (!fromAppPage()) return "";
+        String token = TokenBox.open(sealed);
+        return token == null ? "" : token;
     }
 
     @JavascriptInterface
@@ -64,6 +133,7 @@ public class ShellBridge {
      */
     @JavascriptInterface
     public String clipboardRead() {
+        if (!fromTrustedPage()) return "";
         FutureTask<String> task = new FutureTask<>(() -> {
             ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm == null || !cm.hasPrimaryClip()) return "";
@@ -102,6 +172,7 @@ public class ShellBridge {
 
     @JavascriptInterface
     public boolean clipboardWrite(final String text) {
+        if (!fromTrustedPage()) return false;
         FutureTask<Boolean> task = new FutureTask<>(() -> {
             ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm == null) return false;

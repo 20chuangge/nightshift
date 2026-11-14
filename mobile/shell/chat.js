@@ -32,6 +32,15 @@
   const prefs = plugins.Preferences || null;
   const app = plugins.App || null;
 
+  /* The launcher keeps device tokens sealed with the phone's Keystore ("tb1:...",
+     SEC-16); the native bridge opens them for the app's own pages. */
+  const openToken = (value) => {
+    const v = String(value || '');
+    if (!v.startsWith('tb1:')) return v;
+    const box = window.NightshiftShell;
+    return box && typeof box.openToken === 'function' ? box.openToken(v) || '' : '';
+  };
+
   const store = {
     async get(key) {
       if (prefs) {
@@ -476,7 +485,7 @@
   // -------------------------------------------------------------------- boot
   async function boot() {
     state.hub = ((await store.get(KEYS.hub)) || '').replace(/\/+$/, '');
-    state.token = (await store.get(tokenKey(state.hub))) || '';
+    state.token = openToken(await store.get(tokenKey(state.hub)));
     if (!state.hub || !state.token) {
       banner('还没有连上 Hub，回到上一屏填地址和配对码。');
       setTimeout(() => window.location.assign('index.html'), 1200);

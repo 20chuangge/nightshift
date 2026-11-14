@@ -16,7 +16,7 @@
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { P, readJson, writeJsonAtomic, nowIso, uid } from './store.mjs';
+import { P, readJson, writeJsonAtomic, nowIso, uid, masterKey, sealText, openSealed, writeFileAtomic } from './store.mjs';
 
 const KEY_FILE = () => path.join(P.dataDir, 'vault.key');
 const VAULT_FILE = () => path.join(P.dataDir, 'vault.json');
@@ -31,19 +31,56 @@ function vaultError(status, code, message) {
   return err;
 }
 
+/**
+ * The vault key as stored: wrapped with the desktop app's master key when
+ * there is one (SEC-14), else the raw 32 bytes (a hub from the command line).
+ */
+export function wrapVaultKey(raw32) {
+  const mk = masterKey();
+  return mk ? Buffer.from(sealText(raw32.toString('base64'), mk), 'utf8') : Buffer.from(raw32);
+}
+
+/** The 32-byte vault key from the file's bytes, or null when it cannot be opened here. */
+export function unwrapVaultKey(buf) {
+  if (!buf) return null;
+  if (buf.length === 32) return Buffer.from(buf);
+  try {
+    const text = openSealed(JSON.parse(buf.toString('utf8')));
+    const raw = text === null ? null : Buffer.from(text, 'base64');
+    return raw && raw.length === 32 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 let keyCache = null;
 async function key() {
   if (keyCache) return keyCache;
-  try {
-    const raw = await fsp.readFile(KEY_FILE());
-    if (raw.length === 32) { keyCache = raw; return keyCache; }
-  } catch { /* first use */ }
+  let stored = null;
+  try { stored = await fsp.readFile(KEY_FILE()); } catch { /* first use */ }
+  if (stored) {
+    const raw = unwrapVaultKey(stored);
+    // A key this app cannot open is never replaced: that would lose every saved password.
+    if (!raw) throw vaultError(409, 'VAULT_LOCKED', '保险箱是在另一台电脑（或不经电脑版启动时）加密的，这里打不开；用电脑版打开 Lamplit 再试');
+    // Raw from before 1.2.156 and a master key now: wrap it in place.
+    if (stored.length === 32 && masterKey()) {
+      const wrapped = wrapVaultKey(raw);
+      if (unwrapVaultKey(wrapped)?.equals(raw)) await writeFileAtomic(KEY_FILE(), wrapped).catch(() => {});
+    }
+    keyCache = raw;
+    return keyCache;
+  }
   const fresh = crypto.randomBytes(32);
   await fsp.mkdir(P.dataDir, { recursive: true });
-  await fsp.writeFile(KEY_FILE(), fresh, { mode: 0o600 });
+  await fsp.writeFile(KEY_FILE(), wrapVaultKey(fresh), { mode: 0o600 });
   try { await fsp.chmod(KEY_FILE(), 0o600); } catch { /* Windows */ }
   keyCache = fresh;
   return keyCache;
+}
+
+/** At start: wrap a raw vault key left from before (the master key is there now). */
+export async function sealVaultKey() {
+  try { await key(); return true; } catch { return false; }
 }
 
 async function seal(value) {

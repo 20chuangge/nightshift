@@ -12,7 +12,8 @@
  *   %APPDATA%/Lamplit/          <- ASSIST_HOME: config, skills, public, workspace, data
  *                                  (%APPDATA%/Desk/ on installs from before 1.2.151)
  */
-import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification, clipboard } from 'electron';
+import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification, clipboard, safeStorage } from 'electron';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
 import { senderKind, mayUse, isProgramFile } from './guard.mjs';
+import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
@@ -447,6 +449,42 @@ async function startServer({ host = '127.0.0.1', pinned = false } = {}) {
 
 /** One server process. Resolves with its port once it is listening; rejects
  *  if it exits first. A crash later restarts it on the same port. */
+/**
+ * The key the hub encrypts its key files with (SEC-14). Kept in HOME/master.key,
+ * itself encrypted by Windows for this user (safeStorage = DPAPI): the data
+ * folder copied to another computer, or another account, opens nothing.
+ * '' when the system offers no protected storage: the files then stay plain.
+ */
+let masterKeyCache = null;
+function masterKey() {
+  if (masterKeyCache !== null) return masterKeyCache;
+  masterKeyCache = '';
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return masterKeyCache;
+    const file = path.join(HOME, 'master.key');
+    if (fs.existsSync(file)) {
+      // An unreadable key file is never replaced: the key files sealed with it would be lost for good.
+      try {
+        const hex = safeStorage.decryptString(fs.readFileSync(file));
+        if (/^[0-9a-f]{64}$/i.test(hex)) masterKeyCache = hex;
+        else bootLog('master.key holds no valid key; key files stay as they are');
+      } catch (err) {
+        bootLog(`master.key cannot be opened by this Windows account (${err.message}); key files stay as they are`);
+      }
+      return masterKeyCache;
+    }
+    const hex = crypto.randomBytes(32).toString('hex');
+    const sealed = safeStorage.encryptString(hex);
+    if (safeStorage.decryptString(sealed) !== hex) return masterKeyCache;
+    fs.mkdirSync(HOME, { recursive: true });
+    fs.writeFileSync(file, sealed);
+    masterKeyCache = hex;
+  } catch (err) {
+    bootLog(`no master key: ${err.message}`);
+  }
+  return masterKeyCache;
+}
+
 function launchServer({ host, port }) {
   const entry = path.join(SERVER_DIR, 'src', 'server.mjs');
   if (!fs.existsSync(entry)) throw new Error(`server entry missing: ${entry}`);
@@ -459,6 +497,7 @@ function launchServer({ host, port }) {
       ASSIST_HOME: HOME,
       PORT: port,
       HOST: host,
+      ...(masterKey() ? { ASSIST_MASTER_KEY: masterKey() } : {}),
       ...(host === HUB_HOST ? { ASSIST_ALLOW_REMOTE: '1' } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1031,7 +1070,7 @@ handle('desk:sync-model', async () => {
   try {
     const settings = JSON.parse(fs.readFileSync(path.join(HOME, 'config', 'settings.json'), 'utf8'));
     let apiKey = '';
-    try { apiKey = String(JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'secrets.json'), 'utf8')).apiKey || ''); } catch { /* no key */ }
+    apiKey = String(readSecretJson(path.join(HOME, 'data', 'secrets.json'), masterKey())?.apiKey || '');
     model = { provider: settings.provider, baseUrl: settings.baseUrl, model: settings.model, apiKey };
   } catch (err) {
     return { ok: false, error: L(`读不到这台电脑的模型设置：${err.message}`, `Can't read this computer's model settings: ${err.message}`) };
@@ -1042,12 +1081,12 @@ handle('desk:sync-model', async () => {
   // The voice key rides along when this computer has one.
   let voice = null;
   try {
-    const v = JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'voice.json'), 'utf8'));
+    const v = readSecretJson(path.join(HOME, 'data', 'voice.json'), masterKey());
     if (v?.apiKey) voice = { baseUrl: v.baseUrl || '', model: v.model || '', apiKey: v.apiKey };
   } catch { /* no voice key here */ }
   let vision = null;
   try {
-    const v = JSON.parse(fs.readFileSync(path.join(HOME, 'data', 'vision.json'), 'utf8'));
+    const v = readSecretJson(path.join(HOME, 'data', 'vision.json'), masterKey());
     if (v?.apiKey) vision = { baseUrl: v.baseUrl || '', model: v.model || '', apiKey: v.apiKey };
   } catch { /* no vision key here */ }
   const results = [];
