@@ -1,10 +1,10 @@
-# 留灯 · Lamplit
+# Lamplit
 
-> 1.2.150 起改名为「留灯 · Lamplit」（1.2.146–1.2.149 叫「长明 · Evenlight」，更早叫 Nightshift · 夜班）；数据和自动更新都不受影响。网站与使用文档：https://20chuangge.github.io/nightshift/
+> 现在叫 Lamplit（以前叫 Evenlight，更早叫 Nightshift）；数据和自动更新都不受影响。网站与使用文档：https://20chuangge.github.io/lamplit/
 
 你休息时，灯还亮着。一个有自己电脑的 AI 助理：说一句要做什么，它在电脑上把事情办完。
 
-**官网和下载：https://20chuangge.github.io/nightshift/**
+**官网和下载：https://20chuangge.github.io/lamplit/**
 
 - **一个助理就够**：默认的「助理」什么都能做，也能自己建 Bot、拉群分工。
 - **多台机器**：闲置电脑或云主机填上 IP、账号、密码，自动装好；切换机器，整个界面跟着切。支持 Ubuntu、Rocky、Windows。
@@ -43,7 +43,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 1087 assertions, boots the real server on a free port
+npm run smoke                  # 1092 assertions, boots the real server on a free port
 
 # 2) 桌面应用（Electron 壳）
 npm run desktop                # 开发模式，等同 npm start 但带窗口/托盘
