@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- 留灯 · Lamplit: a window left lit for you. One light arch and the light
+  <!-- Lamplit: a window left lit for you. One light arch and the light
        it spills on the floor, on a near-black tile. Black, white and gray
        only; no glow, no thin lines: it stays a clear shape at 16 px.
        Source of every app icon; render with: npm run desktop:icons -->
