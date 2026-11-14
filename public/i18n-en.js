@@ -1725,4 +1725,8 @@ window.DESK_I18N_EN = {
   "移除失败：{0}": "Could not remove: {0}",
   "再加一个邮箱": "Add another mailbox",
   "收信、查信、读信、发信（QQ、163、126、Gmail 等，用授权码，可以连多个邮箱）": "Check, search, read and send mail (QQ, 163, 126, Gmail and more, with an authorization code; several mailboxes)",
+  "这台机器（{0}）的 SSH 指纹变了：以前是 {1}，现在是 {2}。可能是重装过系统，也可能有人冒充它。确认是重装后，在 设置 → 机器 里删掉它再重新添加。": "The SSH fingerprint of this machine ({0}) changed: it was {1}, now it is {2}. It may have been reinstalled, or something else is pretending to be it. If it was reinstalled, remove it in Settings → Machines and add it again.",
+  "第一次连这台机器，记下了它的 SSH 指纹 {0}；以后指纹变了会停下来问你": "First connection to this machine: its SSH fingerprint {0} is remembered; if it ever changes, setup stops and asks you",
+  "这是程序文件，已在文件夹里选中，没有直接运行": "This is a program file: it is selected in its folder, not run",
+  "这个配对码已经过期（一天换一次），到 设置 → 手机和外网 看新的": "This pairing code has expired (it changes every day); see the new one in Settings → Phone and remote access",
 };

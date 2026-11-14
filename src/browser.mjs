@@ -31,6 +31,7 @@ import { spawn, execFile } from 'node:child_process';
 
 import { P } from './store.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
+import { assertPublicUrl } from './netguard.mjs';
 
 // ---------------------------------------------------------------------------
 // small utilities
@@ -1007,6 +1008,12 @@ class BrowserManager {
         'PRIVATE_HOST_BLOCKED',
         `${new URL(url).hostname} is a private or loopback address. Set ALLOW_PRIVATE=1 to allow LAN/local addresses.`,
       );
+    }
+    // A public-looking name may still resolve into the home network (SEC-11).
+    try {
+      await assertPublicUrl(url);
+    } catch (err) {
+      if (err.code === 'PRIVATE_HOST_BLOCKED') return errorResult('PRIVATE_HOST_BLOCKED', err.message);
     }
     try {
       const session = await this.ensureSession();

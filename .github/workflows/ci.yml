@@ -1,0 +1,51 @@
+name: Tests
+
+# Every push and pull request: the same checks a release goes through
+# (npm run check, check:i18n, smoke, smoke:selfupdate), on Linux and Windows.
+# Report ENG-01 / ENG-02.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run check:i18n
+      - run: npm run smoke
+      - run: npm run smoke:selfupdate
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Reported, not blocking: a new advisory should not stop an unrelated fix.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm audit (hub)
+        run: npm audit --registry=https://registry.npmjs.org --omit=dev
+      - name: npm audit (phone app)
+        working-directory: mobile
+        run: npm audit --registry=https://registry.npmjs.org --omit=dev

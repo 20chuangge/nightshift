@@ -1780,7 +1780,12 @@ export class AgentRuntime {
     }
 
     const granted = this.registry.isGranted(bot, name);
-    const riskInfo = typeof tool.risk === 'function' ? tool.risk(args, ctx) : { risk: tool.risk };
+    let riskInfo = typeof tool.risk === 'function' ? tool.risk(args, ctx) : { risk: tool.risk };
+    // Some arguments make a tool riskier than it says (a bot handing out shell, SEC-05).
+    if (typeof tool.escalate === 'function') {
+      const raised = await tool.escalate(args, ctx);
+      if (raised) riskInfo = raised;
+    }
 
     // Whole-machine autonomy: on a remote machine by default, on this computer
     // only when the human turns it on. The denylist still asks either way.

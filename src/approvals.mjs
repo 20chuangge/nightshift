@@ -267,6 +267,8 @@ export function classify(toolName, args, policy = {}) {
  * card cannot hold a turn open forever (the timer is unref'd so it never keeps
  * the process alive on its own).
  */
+const MAX_FINISHED_RECORDS = 500;
+
 export class ApprovalQueue {
   constructor({ timeoutMs = 10 * 60 * 1000, onAudit = async () => {}, onPersist = () => {} } = {}) {
     this.timeoutMs = timeoutMs;
@@ -426,6 +428,7 @@ export class ApprovalQueue {
     this.records.set(id, record);
     void this.onAudit({ kind: 'approval.resolved', ...record });
     this.persist();
+    this.prune();
 
     const waiter = this.waiters.get(id);
     if (waiter) {
@@ -438,6 +441,17 @@ export class ApprovalQueue {
 
   get(id) {
     return this.records.get(id) || null;
+  }
+
+  /**
+   * Keep the newest 500 finished cards in memory (BUG-03): a hub that runs
+   * for months would otherwise grow forever. The audit file keeps every one.
+   */
+  prune(keep = MAX_FINISHED_RECORDS) {
+    const finished = [...this.records.values()].filter((r) => r.status !== 'pending' && r.status !== 'awaiting_human');
+    if (finished.length <= keep) return;
+    finished.sort((a, b) => String(a.decidedAt || a.createdAt).localeCompare(String(b.decidedAt || b.createdAt)));
+    for (const r of finished.slice(0, finished.length - keep)) this.records.delete(r.id);
   }
 
   list({ status, botId, limit = 100 } = {}) {

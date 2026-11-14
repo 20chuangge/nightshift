@@ -144,6 +144,7 @@ async function main() {
     await stage('app catalog and sign-in (MCP OAuth)', () => scenarioMcpCatalog({ home, toolsMod }));
     await stage('streaming parser', () => scenarioStreamingParser({ modelMod }));
     await stage('crash recovery', scenarioCrashRecovery);
+    await stage('tightening (SEC-05/06/09/10/11/13/15/17/18)', () => scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, authMod }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -2541,7 +2542,7 @@ async function scenarioPairing() {
   );
   const appPair = await api('/api/pair', {
     method: 'POST',
-    body: { code: pairing.json.code, client: 'app' },
+    body: { code: (await api('/api/pairing')).json.code, client: 'app' },
     headers: { origin: 'https://localhost', 'user-agent': 'Nightshift/1.2.42 (Android)' },
   });
   check(
@@ -3340,7 +3341,7 @@ function shanghaiWeekday(ts) {
     check('takeover: a request in the open chat pops the full-window takeover, elsewhere it notifies', /if \(takeover\) popupTakeover\(\)/.test(html) && /notifyHuman\(\{/.test(html) && /onActionRequest\(ev\)/.test(html));
     const main = await readText('../desktop/main.mjs');
     const preload = await readText('../desktop/shell-preload.cjs');
-    check('notifications: the shell shows them and a click comes back to the page', /ipcMain\.handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /flashFrame\(true\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
+    check('notifications: the shell shows them and a click comes back to the page', /handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /flashFrame\(true\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
   }
 
 main().catch(async (err) => {
@@ -3651,7 +3652,7 @@ async function scenarioClipboard({ home }) {
     const main = await readText('../desktop/main.mjs');
     check('M clip shells: Android ClipboardManager and the desktop app\'s clipboard are offered as window.desk.clipboardRead/Write',
       bridge.includes('public String clipboardRead()') && bridge.includes('cm.setPrimaryClip(ClipData.newPlainText(') && activity.includes('d.clipboardRead=async function()')
-      && preload.includes("clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read')") && main.includes("ipcMain.handle('desk:clipboard-write'"));
+      && preload.includes("clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read')") && main.includes("handle('desk:clipboard-write'"));
     const setup = await readText('../hub/setup-linux.sh');
     check('M clip setup: Linux setup installs xclip (X11) and wl-clipboard (Wayland)', (setup.match(/has xclip \|\| pm_install xclip/g) || []).length === 2 && setup.includes('has wl-copy || pm_install wl-clipboard'));
   }
@@ -4536,6 +4537,176 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     check('M5 catalog page: search, categories, 连接 / ✓ 已连接, one-click OAuth opens the app\'s page, custom form kept',
       page.includes('id="mcp-search"') && page.includes('id="mcp-catalog"') && page.includes("if (!srv && app.auth === 'oauth') { connectMcpApp(app, {}, btn); return; }")
       && page.includes('await openSignInPage(out.authorizeUrl);') && !page.includes('location.href = out.authorizeUrl') && page.includes('自己添加一个（目录里没有的应用）'));
+  }
+}
+
+/**
+ * 1.2.153 - tightening what the bots, other pages and paired devices may do
+ * (report SEC-05/06/09/10/11/13/15/17/18, BUG-03, ENG-01).
+ */
+async function scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, authMod }) {
+  const fsx = await import('node:fs');
+  const crypto = await import('node:crypto');
+  const workspaceDir = path.join(home, 'workspace');
+
+  // --- SEC-05: a bot cannot hand itself (or a new bot) risky tools unasked ---
+  {
+    const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => { throw new Error('no turns'); }, getRoutines: () => { throw new Error('no routines'); } });
+    const ctx = { bot: await botsMod.getBot('chief'), workspaceDir, bots: { getBot: botsMod.getBot, listBots: botsMod.listBots } };
+    // A bot that still lacks one of the risky tools (the main assistant may have them all).
+    const SENS = ['fs_delete', 'desktop_ui', 'cli_agent_run', 'settings_update', 'shell', 'mcp_call', 'browser_eval'];
+    let target = null;
+    let missing = '';
+    for (const b of await botsMod.listBots()) { const m = SENS.find((t) => !(b.tools || []).includes(t)); if (m) { target = b; missing = m; break; } }
+    const current = new Set(target?.tools || []);
+    const up = registry.get('bot_update');
+    const grow = await up.escalate?.({ id: target?.id, tools: [...current, missing] }, ctx);
+    const rename = await up.escalate?.({ id: target?.id, name: '大管家' }, ctx);
+    const same = await up.escalate?.({ id: target?.id, tools: [...current] }, ctx);
+    check('SEC-05: bot_update that adds a risky tool becomes high risk (and names it); renaming or keeping the same tools does not',
+      grow?.risk === 'HIGH' && /加上/.test(grow?.reason || '') && !rename && !same, JSON.stringify({ missing, grow, rename, same }));
+    const make = registry.get('bot_create');
+    const risky = await make.escalate?.({ name: '运维', tools: ['fs_delete'] }, ctx);
+    const plain = await make.escalate?.({ name: '写手', tools: ['memory_write'] }, ctx);
+    check('SEC-05: bot_create with a risky tool is high risk, with ordinary tools it is not', risky?.risk === 'HIGH' && !plain, JSON.stringify({ risky, plain }));
+    const asked = approvals.classify('bot_update', { id: 'chief' }, { baseRisk: grow?.risk || 'MEDIUM', granted: true, autoApproveMedium: true });
+    check('SEC-05: so even a trusted main assistant has to ask (only 放手 lets it through)', asked.decision === 'ask');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('SEC-05 wiring: the agent asks the tool to raise its risk for these arguments', agentSrc.includes('await tool.escalate(args, ctx)'));
+  }
+
+  // --- SEC-15: the 8-digit code is spent once, and goes stale after a day ---
+  const port = new URL(base).port;
+  const code1 = (await api('/api/pairing')).json?.code;
+  const phone = await api('/api/pair', { method: 'POST', body: { code: code1, client: 'app' }, headers: { 'user-agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Safari/537.36' } });
+  const code2 = (await api('/api/pairing')).json?.code;
+  const again = await api('/api/pair', { method: 'POST', body: { code: code1 } });
+  check('SEC-15: after a pairing the code changes, and the used code is refused', phone.status === 200 && /^\d{8}$/.test(code2 || '') && code2 !== code1 && again.status === 401, `${phone.status} ${code1} ${code2} ${again.status}`);
+  const dayAgo = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+  check('SEC-15: a code older than 24 hours counts as expired', authMod.pairingCodeExpired?.({ codeCreatedAt: dayAgo }) === true
+    && authMod.pairingCodeExpired?.({ codeCreatedAt: new Date().toISOString() }) === false && authMod.pairingCodeExpired?.({ createdAt: dayAgo }) === true);
+
+  // --- SEC-06: only the master token or another computer may push an update --
+  const machine = await api('/api/pair', { method: 'POST', body: { code: code2 }, headers: { 'user-agent': 'node' } });
+  const security = JSON.parse(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8'));
+  const machineToken = /desk_session=([0-9a-f]+)/.exec(machine.headers.get('set-cookie') || '')?.[1] || '';
+  const junk = Buffer.from('not a package');
+  const sha = crypto.createHash('sha256').update(junk).digest('hex');
+  const push = (headers) => rawHttp('/api/system/update', { method: 'POST', headers: { host: `lamplit.test:${port}`, 'content-type': 'application/gzip', ...headers }, body: junk });
+  const fromPhone = await push({ authorization: `Bearer ${phone.json?.token}`, 'x-nightshift-sha256': sha });
+  check('SEC-06: a paired phone cannot replace this machine\'s code (403)', fromPhone.status === 403 && /UPDATE_NOT_ALLOWED/.test(fromPhone.text), `${fromPhone.status} ${fromPhone.text.slice(0, 120)}`);
+  const noHash = await push({ authorization: `Bearer ${security.token}` });
+  const badHash = await push({ authorization: `Bearer ${security.token}`, 'x-nightshift-sha256': '0'.repeat(64) });
+  check('SEC-06: the package must come with its SHA-256, and a wrong one is refused (400)', noHash.status === 400 && /UPDATE_HASH_REQUIRED/.test(noHash.text) && badHash.status === 400 && /UPDATE_HASH_MISMATCH/.test(badHash.text), `${noHash.status} ${badHash.status} ${badHash.text.slice(0, 100)}`);
+  const fromMachine = await rawHttp('/api/system/update', { method: 'POST', headers: { host: `lamplit.test:${port}`, cookie: `desk_session=${machineToken}`, 'content-type': 'application/gzip', 'x-nightshift-sha256': '1'.repeat(64) }, body: junk });
+  check('SEC-06: another computer (the desktop app\'s own session) still gets past the gate', Boolean(machineToken) && fromMachine.status === 400 && /UPDATE_HASH_MISMATCH/.test(fromMachine.text), `${fromMachine.status} ${fromMachine.text.slice(0, 100)}`);
+  const fromPage = await rawHttp('/api/system/update', { method: 'POST', headers: { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}`, 'content-type': 'application/gzip', 'x-nightshift-sha256': sha }, body: junk });
+  check('SEC-06: a web page (even this hub\'s own) cannot push an update', fromPage.status === 403, `${fromPage.status}`);
+  const srvSrc = await readText('../src/server.mjs');
+  check('SEC-06: the desktop app sends the SHA-256 with every pushed package', srvSrc.includes("'x-nightshift-sha256': sha256Hex(packageBytes)"));
+  for (const d of (await api('/api/devices')).json?.devices || []) await api(`/api/devices/${d.id}`, { method: 'DELETE' });
+
+  // --- SEC-13: security headers ---------------------------------------------
+  const page = await fetch(`${base}/`);
+  const csp = page.headers.get('content-security-policy') || '';
+  check('SEC-13: the app page cannot be framed by another site and carries a content security policy',
+    page.headers.get('x-frame-options') === 'SAMEORIGIN' && /frame-ancestors 'self'/.test(csp) && /object-src 'none'/.test(csp) && /base-uri 'self'/.test(csp), `${page.headers.get('x-frame-options')} ${csp}`);
+  const health = await fetch(`${base}/api/health`);
+  check('SEC-13: every response says nosniff and no-referrer', health.headers.get('x-content-type-options') === 'nosniff' && health.headers.get('referrer-policy') === 'no-referrer'
+    && page.headers.get('x-content-type-options') === 'nosniff');
+
+  // --- SEC-11: web fetches cannot be steered into the home network -----------
+  {
+    const NG = await import('../src/netguard.mjs').catch(() => null);
+    check('SEC-11: private and loopback addresses are recognised in every spelling', Boolean(NG)
+      && ['127.0.0.1', '10.0.0.8', '192.168.1.1', '172.20.0.1', '169.254.169.254', '100.101.102.103', '0.0.0.0', '::1', '::ffff:127.0.0.1', 'fd00::1', 'fe80::1'].every((ip) => NG.isPrivateIp(ip))
+      && ['8.8.8.8', '1.1.1.1', '2606:4700::1111', '100.128.0.1'].every((ip) => !NG.isPrivateIp(ip)));
+    const lookup = async (host) => (host === 'sneaky.example' ? [{ address: '127.0.0.1' }] : [{ address: '93.184.216.34' }]);
+    const blocked = async (url) => { try { await NG.assertPublicUrl(url, { lookup }); return false; } catch (err) { return err.code === 'PRIVATE_HOST_BLOCKED'; } };
+    check('SEC-11: a name that resolves to loopback, a decimal address and an IPv4-mapped address are blocked; a public name is fine',
+      Boolean(NG) && await blocked('http://sneaky.example/') && await blocked('http://2130706433/') && await blocked('http://[::ffff:127.0.0.1]/') && !(await blocked('https://example.com/')));
+    const hops = [];
+    const fakeFetch = async (url) => { hops.push(url); return url.startsWith('https://example.com/')
+      ? { status: 302, headers: new Map([['location', 'http://127.0.0.1:4390/api/pairing']]), text: async () => '' }
+      : { status: 200, headers: new Map(), text: async () => 'secret' }; };
+    let redirectErr = null;
+    try { await NG.fetchPublic('https://example.com/start', {}, { fetchImpl: fakeFetch, lookup }); } catch (err) { redirectErr = err; }
+    check('SEC-11: a redirect into the home network is stopped before it is followed', redirectErr?.code === 'PRIVATE_HOST_BLOCKED' && hops.length === 1, `${redirectErr?.code} ${hops.join(' ')}`);
+    const toolsSrc = await readText('../src/tools.mjs');
+    const browserSrc = await readText('../src/browser.mjs');
+    check('SEC-11 wiring: http_fetch follows redirects itself through the guard, browser_open checks the resolved address',
+      toolsSrc.includes('await fetchPublic(target.href,') && !/redirect: 'follow'/.test(toolsSrc) && browserSrc.includes('await assertPublicUrl(url)'));
+  }
+
+  // --- SEC-18: a link inside the workspace does not lead out of it -----------
+  {
+    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+    await fsp.writeFile(path.join(outside, 'secret.txt'), 'x');
+    const link = path.join(workspaceDir, 'door');
+    let made = true;
+    try { fsx.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir'); } catch { made = false; }
+    const r = toolsMod.resolvePath(workspaceDir, 'door/secret.txt');
+    const plainFile = toolsMod.resolvePath(workspaceDir, 'notes/new-file.md');
+    check('SEC-18: a junction / symlink in the workspace pointing outside counts as outside; a new file inside is still inside', made && r.inWorkspace === false && plainFile.inWorkspace === true, JSON.stringify({ made, r }));
+    const B = await import('../src/boundary.mjs');
+    const fence = B.checkBoundary('fs_read', { path: path.join(link, 'secret.txt') }, { workspaceDir, policy: {}, remote: false });
+    check('SEC-18: the folder fence sees through the link too', Boolean(fence), JSON.stringify(fence));
+    try { fsx.rmSync(link, { recursive: false, force: true }); } catch { try { fsx.unlinkSync(link); } catch { /* left */ } }
+    await fsp.rm(outside, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // --- BUG-03: finished approvals do not pile up forever ---------------------
+  {
+    const q = new approvals.ApprovalQueue({ timeoutMs: 60000 });
+    for (let i = 0; i < 620; i += 1) {
+      const waiting = q.request({ turnId: 't', botId: 'b', toolName: 'shell', args: { command: `echo ${i}` }, risk: 'MEDIUM', reason: 'test' });
+      const id = [...q.records.keys()].at(-1);
+      q.decide(id, 'approve');
+      await waiting;
+    }
+    check('BUG-03: at most 500 finished approvals stay in memory (the audit file keeps all)', q.records.size <= 500 && q.list({ status: 'history', limit: 1000 }).length <= 500, `${q.records.size}`);
+  }
+
+  // --- SEC-09 / SEC-17: the desktop app's bridge ---------------------------
+  {
+    const G = await import('../desktop/guard.mjs').catch(() => null);
+    const where = { localOrigin: 'http://127.0.0.1:4390', machineOrigins: ['http://192.168.1.20:4390', 'http://pc.tail.ts.net:4390'] };
+    check('SEC-09: the bridge knows this computer\'s page, an added machine\'s page, and everything else',
+      Boolean(G) && G.senderKind('http://127.0.0.1:4390/?shell=desk', where) === 'local' && G.senderKind('http://192.168.1.20:4390/#c', where) === 'known'
+      && G.senderKind('http://pc.tail.ts.net:4390/', where) === 'known' && G.senderKind('https://evil.example/', where) === 'other' && G.senderKind('http://127.0.0.1:9999/', where) === 'other');
+    check('SEC-09: opening files and changing this computer\'s network are for this computer\'s page only; the clipboard and machine setup for any added machine; nothing for other pages',
+      Boolean(G) && G.mayUse('desk:open-file', 'known') === false && G.mayUse('desk:open-file', 'local') === true && G.mayUse('desk:set-remote', 'known') === false
+      && G.mayUse('desk:clipboard-read', 'known') === true && G.mayUse('desk:local-provision', 'known') === true && G.mayUse('desk:clipboard-read', 'other') === false && G.mayUse('desk:list-machines', 'other') === false);
+    check('SEC-17: program files are shown in their folder, not run', Boolean(G) && ['a.bat', 'setup.EXE', 'x.ps1', 'y.lnk', 'z.vbs', 'w.hta', 'r.reg', 's.cmd', 'm.msi', 'j.js'].every((n) => G.isProgramFile(n))
+      && ['a.txt', 'b.png', 'c.html', 'd.docx', 'e.md'].every((n) => !G.isProgramFile(n)));
+    const mainSrc = await readText('../desktop/main.mjs');
+    check('SEC-09 wiring: every bridge channel goes through the sender check, the window cannot wander off, and only hub pages get the microphone',
+      !/ipcMain\.handle\('desk:/.test(mainSrc) && mainSrc.includes("win.webContents.on('will-navigate'") && mainSrc.includes('setPermissionRequestHandler') && mainSrc.includes('if (isProgramFile(abs))'));
+    const builder = await readText('../desktop/electron-builder.yml');
+    check('SEC-09 packaging: guard.mjs ships in the app', builder.includes('- guard.mjs'));
+  }
+
+  // --- SEC-10: SSH host keys are remembered --------------------------------
+  {
+    const R = await import('../src/remote.mjs');
+    const file = path.join(home, 'data', 'known-hosts-test.json');
+    const keyA = Buffer.from('host key A');
+    const keyB = Buffer.from('host key B');
+    const first = R.checkHostKey({ file, host: '192.168.1.30', port: 22, key: keyA });
+    const second = R.checkHostKey({ file, host: '192.168.1.30', port: 22, key: keyA });
+    const changed = R.checkHostKey({ file, host: '192.168.1.30', port: 22, key: keyB });
+    check('SEC-10: the first SSH connection remembers the host key, the same key passes, a changed key stops before any password is sent',
+      first.ok && first.first && /^SHA256:/.test(first.fingerprint) && second.ok && !second.first && !changed.ok && /指纹/.test(changed.message || ''), JSON.stringify({ first, second, changed }));
+    const remoteSrc = await readText('../src/remote.mjs');
+    check('SEC-10 wiring: the SSH client verifies the host key', remoteSrc.includes('hostVerifier: (key) =>'));
+  }
+
+  // --- ENG-01: tests run on every push ---------------------------------------
+  {
+    const ci = await readText('../.github/workflows/ci.yml').catch(() => '');
+    check('ENG-01: a CI workflow runs check, check:i18n and smoke on Linux and Windows for pushes and pull requests',
+      /on:\s*\n\s*push:/.test(ci) && ci.includes('pull_request:') && ci.includes('ubuntu-latest') && ci.includes('windows-latest')
+      && ci.includes('npm run check') && ci.includes('npm run check:i18n') && ci.includes('npm run smoke') && ci.includes('npm audit'));
   }
 }
 
@@ -5462,7 +5633,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: #fff; color: #0a0a0a;/.test(page));
     check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
     const main = await readText('../desktop/main.mjs');
-    check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("ipcMain.handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
+    check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
     const jobs = await api('/api/media/jobs?botId=chief');
     check('video progress: the chat asks how its videos are going, with a typical time from recent ones', jobs.status === 200 && Array.isArray(jobs.json?.jobs) && 'typicalSec' in (jobs.json || {}) && page.includes('async function renderVideoJobs()') && page.includes("'通常 3–15 分钟'"), `status ${jobs.status} ${JSON.stringify(jobs.json).slice(0,160)}`);
     const srv = await readText('../src/server.mjs');

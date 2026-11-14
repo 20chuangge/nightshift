@@ -48,6 +48,27 @@ export function describeAgent(userAgent) {
   return '浏览器';
 }
 
+/**
+ * What kind of client paired (SEC-06): a phone or tablet, a web browser, or
+ * another computer's Lamplit (the desktop app's own requests and its window).
+ * Only a computer may push an update package. A client could lie here, but it
+ * needed the pairing code to get this far.
+ */
+export function deviceKind(userAgent) {
+  const ua = String(userAgent || '');
+  if (/iPhone|iPad|Android/i.test(ua)) return 'phone';
+  if (/Electron\//i.test(ua)) return 'machine';
+  if (/Mozilla/i.test(ua)) return 'browser';
+  return 'machine';
+}
+
+/** May this paired device replace this machine's code? Devices paired before 1.2.153 have no kind: all but phones may. */
+export function mayPushUpdate(device) {
+  if (!device) return false;
+  if (device.kind) return device.kind === 'machine';
+  return !/^(iPhone|iPad|Android)/.test(String(device.name || ''));
+}
+
 function cleanIso(value, fallback) {
   const text = String(value || '').trim();
   if (!text) return fallback;
@@ -63,6 +84,7 @@ function publicDevice(device) {
     createdAt: device.createdAt,
     lastSeenAt: device.lastSeenAt,
     ip: device.ip,
+    ...(device.kind ? { kind: device.kind } : {}),
   };
 }
 
@@ -81,6 +103,7 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
       createdAt: cleanIso(d.createdAt, now()),
       lastSeenAt: cleanIso(d.lastSeenAt || d.createdAt, now()),
       ip: String(d.ip || ''),
+      ...(['phone', 'browser', 'machine'].includes(d.kind) ? { kind: d.kind } : {}),
     }))
     .slice(0, MAX_DEVICES);
 
@@ -104,7 +127,7 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
     },
 
     /** Register a newly paired device and hand back its one-time session token. */
-    add({ name = '设备', ip = '' } = {}) {
+    add({ name = '设备', ip = '', kind = '' } = {}) {
       const sessionToken = crypto.randomBytes(SESSION_BYTES).toString('hex');
       const stamp = now();
       const device = {
@@ -114,6 +137,7 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
         createdAt: stamp,
         lastSeenAt: stamp,
         ip: String(ip || ''),
+        ...(['phone', 'browser', 'machine'].includes(kind) ? { kind } : {}),
       };
       devices.push(device);
       // Oldest activity goes first when the list is full.

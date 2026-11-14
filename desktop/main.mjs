@@ -22,6 +22,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
+import { senderKind, mayUse, isProgramFile } from './guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
@@ -670,6 +671,13 @@ function createWindowFor(url, bounds = null) {
     if (url.startsWith('http')) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // The window only ever shows a hub: a link to anywhere else opens in the
+  // browser, so no outside page gets window.desk (SEC-09).
+  win.webContents.on('will-navigate', (e, url) => {
+    if (pageKind(url) !== 'other') return;
+    e.preventDefault();
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+  });
 
   // Frameless: the page draws the title bar and its own traffic buttons.
   // `?shell=desk` tells the web UI it is inside the desktop shell (it is also
@@ -729,6 +737,24 @@ function createWindowFor(url, bounds = null) {
 
 function localUrl() {
   return `http://127.0.0.1:${serverPort}/`;
+}
+
+/** Whose page is this URL: this computer's hub, an added machine, or something else (SEC-09). */
+function pageKind(url) {
+  const machineOrigins = readMachines().flatMap((m) => [m.url, m.tailnetUrl]).concat([remoteHub, remoteReach]).filter(Boolean);
+  return senderKind(url, { localOrigin: serverPort ? localUrl() : '', machineOrigins });
+}
+
+/** ipcMain.handle, but only for the pages allowed to make that call. */
+function handle(channel, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    const from = event?.senderFrame?.url || '';
+    if (!mayUse(channel, pageKind(from))) {
+      bootLog(`refused ${channel} from ${from.slice(0, 120)}`);
+      return { ok: false, error: 'not allowed from this page' };
+    }
+    return fn(event, ...args);
+  });
 }
 
 // The address actually in use for remoteHub (its Tailscale address when away).
@@ -892,7 +918,7 @@ ipcMain.on('shell:close', (event) => {
 });
 
 // Machine list for the web UI (sidebar switcher, Settings → 机器).
-ipcMain.handle('desk:list-machines', () => ({
+handle('desk:list-machines', () => ({
   current: remoteHub || '',
   local: !remoteHub,
   // This computer's own hub: an app's sign-in comes back to it (loopback is the
@@ -904,7 +930,7 @@ ipcMain.handle('desk:list-machines', () => ({
 
 // Sidebar badge: what is waiting on the machines this window is NOT showing.
 // The page cannot reach them (other origins); this process has their cookies.
-ipcMain.handle('desk:machines-attention', async () => {
+handle('desk:machines-attention', async () => {
   // Every few minutes: pick up Tailscale addresses (it may have been installed since).
   for (const m of readMachines()) learnTailnet(m.url);
   const others = [{ name: L('本机', 'This computer'), url: 'local', target: localUrl() }]
@@ -928,15 +954,15 @@ ipcMain.handle('desk:machines-attention', async () => {
 // System notification from the page (a bot needs the human); clicking it
 // brings the window back and tells the page what it was about.
 const liveNotes = new Set();
-ipcMain.handle('desk:clipboard-read', () => clipboard.readText());
-ipcMain.handle('desk:open-external', async (_event, url) => {
+handle('desk:clipboard-read', () => clipboard.readText());
+handle('desk:open-external', async (_event, url) => {
   if (!/^https?:\/\//i.test(String(url))) return false;
   await shell.openExternal(String(url));
   return true;
 });
-ipcMain.handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
+handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
 
-ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
+handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
   // The taskbar button flashes until the window is used: this works even when
   // Windows notifications are turned off (they often are).
   if (win && !win.isDestroyed() && !win.isFocused()) {
@@ -959,12 +985,12 @@ ipcMain.handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {})
   return true;
 });
 
-ipcMain.handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
-ipcMain.handle('desk:use-local', (_event, message) => switchTo('', message));
+handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
+handle('desk:use-local', (_event, message) => switchTo('', message));
 
 // Settings → 手机和外网 → 允许手机连接. Rebinds the bundled server so phones on
 // the home network or on Tailscale can reach it; pairing is still required.
-ipcMain.handle('desk:set-remote', async (_event, allowRemote) => {
+handle('desk:set-remote', async (_event, allowRemote) => {
   const want = Boolean(allowRemote);
   if (HUB_MODE) {
     writeRemote(true);
@@ -976,7 +1002,7 @@ ipcMain.handle('desk:set-remote', async (_event, allowRemote) => {
   return { ok: true, remote: want, port: result.port, host };
 });
 // Handed over once, and only to the machine it was meant for.
-ipcMain.handle('desk:take-pending-message', () => {
+handle('desk:take-pending-message', () => {
   if (!pendingTask || pendingTask.machine !== remoteHub) return '';
   const { text } = pendingTask;
   pendingTask = null;
@@ -985,7 +1011,7 @@ ipcMain.handle('desk:take-pending-message', () => {
 
 // A machine Desk just provisioned: remember it under the human's name and pair
 // with the code its installer printed, so switching to it is one click.
-ipcMain.handle('desk:add-machine', async (_event, { url, name, pairCode } = {}) => {
+handle('desk:add-machine', async (_event, { url, name, pairCode } = {}) => {
   const target = normalizeHub(url);
   if (!target) return { ok: false, error: '地址格式不对' };
   const paired = await pairWith(target, pairCode);
@@ -1000,7 +1026,7 @@ ipcMain.handle('desk:add-machine', async (_event, { url, name, pairCode } = {}) 
  * neither read the key nor talk to other machines; net.fetch carries the
  * pairing cookies this app already holds for each of them.
  */
-ipcMain.handle('desk:sync-model', async () => {
+handle('desk:sync-model', async () => {
   let model;
   try {
     const settings = JSON.parse(fs.readFileSync(path.join(HOME, 'config', 'settings.json'), 'utf8'));
@@ -1058,7 +1084,7 @@ async function recorderWindow() {
   await recorderWin.loadFile(path.join(__dirname, 'recorder.html'));
   return recorderWin;
 }
-ipcMain.handle('desk:voice-start', async () => {
+handle('desk:voice-start', async () => {
   try {
     const w = await recorderWindow();
     return await w.webContents.executeJavaScript('window.__start()');
@@ -1066,12 +1092,12 @@ ipcMain.handle('desk:voice-start', async () => {
     return { error: 'Error', message: err.message };
   }
 });
-ipcMain.handle('desk:voice-stop', async () => {
+handle('desk:voice-stop', async () => {
   if (!recorderWin || recorderWin.isDestroyed()) return null;
   const out = await recorderWin.webContents.executeJavaScript('window.__stop()').catch(() => null);
   return out ? { mime: out.mime, bytes: Buffer.from(out.b64, 'base64') } : null;
 });
-ipcMain.handle('desk:voice-cancel', async () => {
+handle('desk:voice-cancel', async () => {
   if (recorderWin && !recorderWin.isDestroyed()) await recorderWin.webContents.executeJavaScript('window.__cancel()').catch(() => null);
   return true;
 });
@@ -1085,17 +1111,22 @@ ipcMain.handle('desk:voice-cancel', async () => {
  * Open a file the bots made on this computer with its usual program, or show
  * it in its folder. Only inside this computer's workspace.
  */
-ipcMain.handle('desk:open-file', async (_event, { rel = '', reveal = false } = {}) => {
+handle('desk:open-file', async (_event, { rel = '', reveal = false } = {}) => {
   const root = path.resolve(HOME, 'workspace');
   const abs = path.resolve(root, String(rel).replace(/^workspace[\\/]/, ''));
   if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };
   if (!fs.existsSync(abs)) return { ok: false, error: L('这台电脑上没有这个文件', 'No such file on this computer') };
   if (reveal) { shell.showItemInFolder(abs); return { ok: true }; }
+  // A program a bot made is never run by a click (SEC-17).
+  if (isProgramFile(abs)) {
+    shell.showItemInFolder(abs);
+    return { ok: true, message: L('这是程序文件，已在文件夹里选中，没有直接运行', 'This is a program file: it is selected in its folder, not run') };
+  }
   const err = await shell.openPath(abs);
   return err ? { ok: false, error: err } : { ok: true };
 });
 
-ipcMain.handle('desk:local-provision', async (_event, { method = 'GET', path: apiPath = '', body } = {}) => {
+handle('desk:local-provision', async (_event, { method = 'GET', path: apiPath = '', body } = {}) => {
   if (!/^\/api\/remote\/provision(\/[\w-]+)?$/.test(apiPath)) return { status: 400, json: { error: { message: 'bad path' } } };
   try {
     const res = await net.fetch(`${localUrl().replace(/\/$/, '')}${apiPath}`, {
@@ -1242,7 +1273,7 @@ async function putToMachine(url, apiPath, body) {
  * while the UI still holds it: hubs never hand a key back out.
  */
 /** The same, for other write-only per-machine settings (vision). */
-ipcMain.handle('desk:sync-config', async (_event, { path: apiPath = '', body = {} } = {}) => {
+handle('desk:sync-config', async (_event, { path: apiPath = '', body = {} } = {}) => {
   if (!['/api/vision', '/api/voice', '/api/media/image', '/api/media/video'].includes(apiPath)) return { ok: false, error: 'bad path' };
   if (!body.apiKey) return { ok: false, error: L('没有密钥可同步', 'no key to sync') };
   const targets = [{ name: L('本机', 'This computer'), url: localUrl() }, ...readMachines()];
@@ -1254,7 +1285,7 @@ ipcMain.handle('desk:sync-config', async (_event, { path: apiPath = '', body = {
   return { ok: true, results };
 });
 
-ipcMain.handle('desk:sync-voice', async (_event, voice = {}) => {
+handle('desk:sync-voice', async (_event, voice = {}) => {
   const body = { baseUrl: String(voice.baseUrl || ''), model: String(voice.model || ''), apiKey: String(voice.apiKey || '') };
   if (!body.apiKey) return { ok: false, error: L('没有密钥可同步', 'no key to sync') };
   const targets = [{ name: L('本机', 'This computer'), url: localUrl() }, ...readMachines()];
@@ -1266,7 +1297,7 @@ ipcMain.handle('desk:sync-voice', async (_event, voice = {}) => {
   return { ok: true, results };
 });
 
-ipcMain.handle('desk:rename-machine', (_event, { url, name } = {}) => {
+handle('desk:rename-machine', (_event, { url, name } = {}) => {
   const target = normalizeHub(url);
   const clean = String(name || '').trim().slice(0, 40);
   if (!target || !clean) return { ok: false, error: '名字不能为空' };
@@ -1275,7 +1306,7 @@ ipcMain.handle('desk:rename-machine', (_event, { url, name } = {}) => {
   return { ok: true };
 });
 
-ipcMain.handle('desk:remove-machine', async (_event, url) => {
+handle('desk:remove-machine', async (_event, url) => {
   const target = normalizeHub(url);
   writeMachines(readMachines().filter((m) => m.url !== target));
   if (target && target === remoteHub) await switchTo('');
@@ -1348,6 +1379,12 @@ if (!gotLock) {
   };
 
   app.whenReady().then(async () => {
+    // Microphone, clipboard and notifications for hub pages only (SEC-09).
+    const PAGE_PERMISSIONS = new Set(['media', 'clipboard-read', 'clipboard-sanitized-write', 'notifications', 'fullscreen', 'pointerLock', 'openExternal']);
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+      const from = details?.requestingUrl || (wc && !wc.isDestroyed() ? wc.getURL() : '');
+      callback(PAGE_PERMISSIONS.has(permission) && pageKind(from) !== 'other');
+    });
     startLocalVnc();
     try {
       // Hub mode: no window, bind the network, stay in the tray. This is what

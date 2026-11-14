@@ -13,6 +13,7 @@ files:
   - main.mjs
   - datadir.mjs
   - textmenu.mjs
+  - guard.mjs
   - shell-preload.cjs
   - recorder.html
   - package.json

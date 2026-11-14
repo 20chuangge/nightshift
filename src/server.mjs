@@ -110,8 +110,11 @@ import {
   preferredLanAddress,
   lanUrlFor,
   tailnetAddress,
+  pairingCodeExpired,
+  renewPairingCode,
 } from './auth.mjs';
-import { loadDeviceStore, describeAgent } from './devices.mjs';
+import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './devices.mjs';
+import { realPathOf } from './realpath.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
 const VERSION = (() => {
@@ -771,6 +774,9 @@ async function handleRequest(req, res, state) {
     // The tunnel terminates TLS; tell the browser never to go back to http.
     res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains');
   }
+  // Every answer (SEC-13): no guessing a file's type, no addresses leaking to other sites.
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('referrer-policy', 'no-referrer');
 
   // The native app lives on its own origin (https://localhost in a Capacitor
   // WebView). It authenticates with a Bearer token, never a cookie, so the
@@ -986,6 +992,8 @@ function pairingInfo(state) {
     if (lanAddress) urls.push({ kind: 'lan', url: lanUrlFor(lanAddress, port) });
     if (tailnetIp) urls.push({ kind: 'tailnet', url: lanUrlFor(tailnetIp, port) });
   }
+  // A code older than a day is replaced before anyone sees it (SEC-15).
+  if (pairingCodeExpired(state.security)) void renewPairingCode(state.security);
   return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl || publicUrl) };
 }
 
@@ -1812,13 +1820,20 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
     }
   } else if (!safeEqual(code, state.security.code)) {
     throw httpError(401, 'PAIR_INVALID_CODE', 'that pairing code is not valid');
+  } else if (pairingCodeExpired(state.security)) {
+    void renewPairingCode(state.security);
+    throw httpError(401, 'PAIR_CODE_EXPIRED', '这个配对码已经过期（一天换一次），到 设置 → 手机和外网 看新的');
+  } else {
+    // A typed code is spent once: whoever reads it off the screen later cannot reuse it (SEC-15).
+    void renewPairingCode(state.security);
   }
 
   // Every paired client gets its own session, so Settings can list the phones
   // and remove one without logging the others out.
   // A client may name its device (the computer's entry for the other machines).
   const deviceName = String(body?.deviceName || '').trim().slice(0, 40);
-  const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(req?.headers?.['user-agent']), ip: clientIp(req) });
+  const userAgent = req?.headers?.['user-agent'];
+  const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(userAgent), ip: clientIp(req), kind: deviceKind(userAgent) });
   res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) || Boolean(req.viaPublic) }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
@@ -2062,6 +2077,8 @@ route('GET', /^\/api\/remote\/provision\/(?<id>[^/]+)$/, async (_req, _res, { pa
 });
 
 // --- self-update ------------------------------------------------------------
+
+const sha256Hex = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 //
 //   POST /api/system/update        raw .tar.gz (the same package setup installs)
 //        -> {ok, from, to, restarting}; then this process exits and its
@@ -2073,10 +2090,20 @@ route(
   'POST',
   /^\/api\/system\/update$/,
   async (req, _res, { state }) => {
+    // New code runs with every right this machine has (SEC-06): the master token,
+    // another computer's Lamplit, or the desktop app here (no Origin: not a page).
+    // Never a phone, a browser, or a web page.
+    const auth = req.auth || {};
+    const device = auth.deviceId ? state.devices.list().find((d) => d.id === auth.deviceId) : null;
+    const allowed = auth.mode === 'local' ? !req.headers.origin : auth.deviceId ? mayPushUpdate(device) : auth.mode === 'token' || auth.mode === 'cookie';
+    if (!allowed) throw httpError(403, 'UPDATE_NOT_ALLOWED', 'only another computer running Lamplit (or the master token) can update this machine');
+    const expected = String(req.headers['x-nightshift-sha256'] || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(expected)) throw httpError(400, 'UPDATE_HASH_REQUIRED', 'send the package SHA-256 in x-nightshift-sha256');
     if (state.runtime.activeTurns().length) {
       throw httpError(409, 'UPDATE_BUSY', '这台机器上有任务正在进行，等它做完再更新');
     }
     const bytes = await readRawBody(req, UPDATE_MAX_BYTES, { code: 'UPDATE_TOO_LARGE', message: '更新包太大' });
+    if (!safeEqual(sha256Hex(bytes), expected)) throw httpError(400, 'UPDATE_HASH_MISMATCH', '更新包和它的校验值对不上（传输中损坏或被改过）');
     const result = await applyUpdate({ bytes, currentVersion: VERSION, log: (line) => console.error(line) });
     if (process.env.ASSIST_UPDATE_NO_EXIT !== '1') {
       setTimeout(() => process.exit(0), 800).unref?.();
@@ -2107,10 +2134,11 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
   }
   const packed = await packApp();
   try {
+    const packageBytes = fs.readFileSync(packed.file);
     const res = await fetch(`${url}/api/system/update`, {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION },
-      body: fs.readFileSync(packed.file),
+      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION, 'x-nightshift-sha256': sha256Hex(packageBytes) },
+      body: packageBytes,
       // The machine test-starts the new version (up to 2 min) before answering.
       signal: AbortSignal.timeout(300000),
     });
@@ -2277,6 +2305,11 @@ function workspaceFile(state, rel) {
   const root = path.resolve(state.workspaceDir);
   const abs = path.resolve(root, String(rel || ''));
   if (abs !== root && !abs.startsWith(root + path.sep)) throw httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace');
+  // ...and a link inside it must not lead out (SEC-18).
+  const realRoot = realPathOf(root);
+  const real = realPathOf(abs);
+  const cmp = (s) => (process.platform === 'win32' ? s.toLowerCase() : s);
+  if (cmp(real) !== cmp(realRoot) && !cmp(real).startsWith(cmp(realRoot + path.sep))) throw httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace');
   return abs;
 }
 
@@ -3619,12 +3652,43 @@ async function serveStatic(req, res, pathname) {
     'cache-control': 'no-cache',
     vary: 'accept-encoding',
   });
+  if (SHELL_PAGES.has(relative)) Object.assign(headers, SHELL_PAGE_HEADERS);
   if (etag) headers.etag = etag;
   if (compressible) headers['content-encoding'] = 'gzip';
   res.writeHead(200, headers);
   if (req.method === 'HEAD') return res.end();
   return res.end(payload);
 }
+
+/**
+ * The app page itself (SEC-13): no other site may frame it (click-jacking),
+ * and the page may only run its own scripts. Inline scripts stay allowed
+ * until the page is split into files. Pictures, sounds, other machines'
+ * desktops and the reachability probe may come from any http(s) address.
+ * Bot-made pages and the desktop viewer keep their own rules: other machines
+ * show them in a frame.
+ */
+const SHELL_PAGES = new Set(['index.html', 'offline.html']);
+const SHELL_PAGE_HEADERS = {
+  'x-frame-options': 'SAMEORIGIN',
+  'cross-origin-opener-policy': 'same-origin',
+  'content-security-policy': [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: http: https:",
+    "media-src 'self' data: blob: http: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' data: blob: http: https: ws: wss:",
+    "frame-src 'self' blob: http: https:",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+  ].join('; '),
+};
 
 /** One cached gzip buffer per static file, keyed by size+mtime. */
 const gzipCache = new Map();

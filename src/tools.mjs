@@ -50,6 +50,8 @@ function sameSite(a, b) {
 }
 import { getBrowserManager } from './browser.mjs';
 import { grantsForNewBot, isRequestable } from './abilities.mjs';
+import { fetchPublic } from './netguard.mjs';
+import { realPathOf } from './realpath.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -80,9 +82,24 @@ function resolvePath(workspaceDir, input) {
   const raw = String(input ?? '.').trim() || '.';
   const abs = path.resolve(workspaceDir, raw);
   const wsWithSep = workspaceDir.endsWith(path.sep) ? workspaceDir : workspaceDir + path.sep;
-  const inWorkspace = abs === workspaceDir || abs.startsWith(wsWithSep);
+  // Inside by name, and inside where links and junctions really lead (SEC-18).
+  const realWs = realPathOf(workspaceDir);
+  const realAbs = realPathOf(abs);
+  const realWsSep = realWs.endsWith(path.sep) ? realWs : realWs + path.sep;
+  const cmp = (s) => (process.platform === 'win32' ? s.toLowerCase() : s);
+  const inWorkspace = (abs === workspaceDir || abs.startsWith(wsWithSep))
+    && (cmp(realAbs) === cmp(realWs) || cmp(realAbs).startsWith(cmp(realWsSep)));
   return { abs, raw, inWorkspace, rel: path.relative(workspaceDir, abs) || '.' };
 }
+
+// Tools that change the computer or the team. Handing one of them to a bot
+// goes past tool_request (which always asks), so it asks too (SEC-05).
+const SENSITIVE_GRANTS = new Set(['shell', 'fs_delete', 'desktop_ui', 'browser_eval', 'browser_fill_secret',
+  'bot_create', 'bot_update', 'bot_delete', 'settings_update', 'file_send', 'cli_agent_run', 'mcp_call']);
+const GRANT_LABELS = { shell: '命令行', fs_delete: '删除文件', desktop_ui: '操作桌面', browser_eval: '在网页里运行脚本',
+  browser_fill_secret: '填写保险箱里的密码', bot_create: '新建机器人', bot_update: '修改机器人', bot_delete: '删除机器人',
+  settings_update: '修改设置', file_send: '发送文件', cli_agent_run: '编程助手', mcp_call: '连接应用' };
+const grantLabel = (names) => names.map((n) => GRANT_LABELS[n] || n).join('、');
 
 function outsideReason(resolved) {
   return `path resolves outside the shared workspace (${resolved.abs})`;
@@ -808,16 +825,18 @@ export function createRegistry(deps) {
       const maxBytes = Math.min(Number(args?.maxBytes) || 100000, 2000000);
       const headers = { 'user-agent': 'personal-assistant/1.0 (+local)', ...(args?.headers || {}) };
 
+      // The name is resolved and every redirect checked, so a public-looking
+      // address cannot lead into the home network (SEC-11).
       let res;
       try {
-        res = await fetch(target.href, {
+        res = await fetchPublic(target.href, {
           method,
           headers,
           body: method === 'POST' ? String(args?.body ?? '') : undefined,
           signal: AbortSignal.timeout(20000),
-          redirect: 'follow',
         });
       } catch (err) {
+        if (err.code === 'PRIVATE_HOST_BLOCKED') throw toolError('PRIVATE_HOST_BLOCKED', err.message);
         throw toolError('HTTP_FAILED', `request failed: ${err.message}`);
       }
 
@@ -825,7 +844,7 @@ export function createRegistry(deps) {
       const raw = await res.text();
       const clipped = truncate(raw, maxBytes);
       return {
-        url: res.url || target.href,
+        url: res.finalUrl || res.url || target.href,
         status: res.status,
         ok: res.ok,
         contentType,
@@ -1483,6 +1502,11 @@ export function createRegistry(deps) {
     description:
       'Create a new teammate bot on this machine. It appears in the roster immediately with its own memory and its own transcript. It gets the tools every teammate needs automatically (read/write its workspace files, fetch pages, notes, group_post) plus shell / browser_open when its role plainly calls for them; list in tools anything else its job needs (e.g. fs_delete, bot_message, routine_create) - not more. Tell the human in one line what it can do. Later it can ask the human for a missing tool itself. Name it in the language the human writes in (Chinese conversation -> a Chinese name such as 编剧 or 美术). When the human asks for a team, first list the bots you would create (name + job, keep it to the fewest that cover the work) and ask before creating more than one; create a group only if the human asks for one or agrees.',
     risk: RISK.MEDIUM,
+    // A new bot that gets risky tools spelled out asks even a trusted bot.
+    escalate: (args) => {
+      const risky = (Array.isArray(args?.tools) ? args.tools : []).map(String).filter((t) => SENSITIVE_GRANTS.has(t));
+      return risky.length ? { risk: RISK.HIGH, reason: `新机器人要带上：${grantLabel(risky)}` } : null;
+    },
     parameters: {
       type: 'object',
       properties: {
@@ -1541,6 +1565,13 @@ export function createRegistry(deps) {
     description:
       'Change an existing bot: its display name, role, tool grants, skill grants or avatar look. Ids are immutable; to rename the id, create a new bot.',
     risk: RISK.MEDIUM,
+    // Adding a risky tool to any bot (itself included) asks, like tool_request does.
+    escalate: async (args, ctx) => {
+      if (!Array.isArray(args?.tools)) return null;
+      const current = new Set((await ctx?.bots?.getBot?.(String(args?.id || '')))?.tools || []);
+      const added = args.tools.map(String).filter((t) => !current.has(t) && SENSITIVE_GRANTS.has(t));
+      return added.length ? { risk: RISK.HIGH, reason: `要给机器人加上：${grantLabel(added)}` } : null;
+    },
     parameters: {
       type: 'object',
       properties: {

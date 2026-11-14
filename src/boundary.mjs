@@ -14,6 +14,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { realPathOf } from './realpath.mjs';
 
 const FILE_TOOLS = { fs_list: ['path', false], fs_read: ['path', false], image_view: ['path', false], fs_write: ['path', true], fs_mkdir: ['path', true], fs_delete: ['path', true], video_generate: ['image', false] };
 
@@ -22,8 +23,9 @@ const SYSTEM_PREFIXES = process.platform === 'win32'
   ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)']
   : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/proc', '/sys', '/dev', '/tmp', '/var/tmp', '/etc', '/run', '/var/log', '/snap', '/opt/node'];
 
+// Real paths: a link in an opened folder does not open what it points to (SEC-18).
 const norm = (p) => {
-  const n = path.resolve(p);
+  const n = realPathOf(p);
   return process.platform === 'win32' ? n.toLowerCase() : n;
 };
 const inside = (child, parent) => {

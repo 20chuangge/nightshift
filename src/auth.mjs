@@ -220,6 +220,23 @@ export async function rotatePairingCode(security) {
   return next;
 }
 
+/** A typed code lives a day at most (SEC-15); before 1.2.153 there was no stamp, so the file's age counts. */
+export const PAIRING_CODE_TTL_MS = 24 * 60 * 60 * 1000;
+export function pairingCodeExpired(security, now = Date.now()) {
+  const stamp = Date.parse(security?.codeCreatedAt || security?.createdAt || '');
+  return !Number.isFinite(stamp) || now - stamp > PAIRING_CODE_TTL_MS;
+}
+
+/**
+ * A new code in place (every holder of `security` sees it at once), saved in
+ * the background. Used after each pairing with the code, and when it expired.
+ */
+export function renewPairingCode(security) {
+  security.code = generatePairingCode();
+  security.codeCreatedAt = new Date().toISOString();
+  return writeJsonAtomic(P.securityFile, { ...security }).catch((err) => console.error('[auth] could not save the new pairing code:', err.message));
+}
+
 // ---------------------------------------------------------------------------
 // The decision
 // ---------------------------------------------------------------------------

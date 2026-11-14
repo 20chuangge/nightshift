@@ -19,7 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { uid, nowIso } from './store.mjs';
+import fs from 'node:fs';
+import { uid, nowIso, P } from './store.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 
 // ssh2 is only needed when this machine PROVISIONS another one. Importing it
@@ -132,18 +133,55 @@ function friendlySshError(err) {
   return message || '远程配置失败';
 }
 
+/**
+ * Remember each machine's SSH host key the first time (SEC-10). A key that
+ * changed later means another machine answers at that address (or it was
+ * reinstalled): stop before the password is sent. -> {ok, first, fingerprint, message?}
+ */
+export function checkHostKey({ file = path.join(P.dataDir, 'known-hosts.json'), host, port = 22, key }) {
+  const fingerprint = `SHA256:${crypto.createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`;
+  const id = `${String(host).toLowerCase()}:${Number(port) || 22}`;
+  let known = {};
+  try { known = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { /* first one */ }
+  const saved = known[id]?.fingerprint;
+  if (saved && saved !== fingerprint) {
+    return { ok: false, first: false, fingerprint, message: `这台机器（${id}）的 SSH 指纹变了：以前是 ${saved}，现在是 ${fingerprint}。可能是重装过系统，也可能有人冒充它。确认是重装后，在 设置 → 机器 里删掉它再重新添加。` };
+  }
+  if (!saved) {
+    known[id] = { fingerprint, firstSeen: new Date().toISOString() };
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(known, null, 2));
+    } catch (err) {
+      console.error('[remote] could not save the SSH host key:', err.message);
+    }
+  }
+  return { ok: true, first: !saved, fingerprint };
+}
+
+/** Forget a machine's host key (it was removed from the list, or reinstalled). */
+export function forgetHostKey({ file = path.join(P.dataDir, 'known-hosts.json'), host, port = 22 }) {
+  try {
+    const known = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+    delete known[`${String(host).toLowerCase()}:${Number(port) || 22}`];
+    fs.writeFileSync(file, JSON.stringify(known, null, 2));
+  } catch { /* nothing saved */ }
+}
+
 function connectSsh({ host, port, username, password }) {
   return new Promise(async (resolve, reject) => {
     const { Client } = await loadSsh2();
     const client = new Client();
     let settled = false;
+    let hostCheck = null;
     const finish = (err) => {
       if (settled) return;
       settled = true;
       if (err) {
         client.end();
-        reject(err);
+        reject(hostCheck && !hostCheck.ok ? remoteError('REMOTE_HOST_KEY_CHANGED', hostCheck.message) : err);
       } else {
+        client.hostCheck = hostCheck;
         resolve(client);
       }
     };
@@ -157,6 +195,11 @@ function connectSsh({ host, port, username, password }) {
       port,
       username,
       password,
+      // Checked before the password goes out.
+      hostVerifier: (key) => {
+        hostCheck = checkHostKey({ host, port, key });
+        return hostCheck.ok;
+      },
       // Windows OpenSSH on a fresh VM can take 15-20 s to finish the handshake.
       readyTimeout: 45000,
       keepaliveInterval: 10000,
@@ -457,6 +500,10 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       phase(job, '连接 SSH');
       setProgress(job, '正在连接 SSH…');
       client = await connectSsh({ host, port: sshPort, username, password });
+      if (client.hostCheck?.fingerprint) {
+        job.hostFingerprint = client.hostCheck.fingerprint;
+        if (client.hostCheck.first) setProgress(job, `第一次连这台机器，记下了它的 SSH 指纹 ${client.hostCheck.fingerprint}；以后指纹变了会停下来问你`);
+      }
 
       setProgress(job, '识别系统…');
       job.os = await detectOs(client);
