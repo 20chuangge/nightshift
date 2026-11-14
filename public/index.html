@@ -6614,8 +6614,15 @@ function renderMessages() {
         messagesEl.appendChild(el('div', 'status-line', `这条消息没能渲染（${item && item.role}）`));
       }
     }
+    // The last ended turn's result goes at the bottom only while it is the newest
+    // thing in the chat and nothing runs: an old "已取消" must not sit under a
+    // turn that is running now.
     const last = statuses[statuses.length - 1];
-    if (last && last.status !== 'success') messagesEl.appendChild(statusLine(last));
+    const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);
+    const newer = items.some((it) => it.ts && last?.ts && it.ts > last.ts);
+    if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));
+    // A reload wiped the "working…" line; the bot is still at it.
+    if (working) showTyping(state.botId, '正在处理…');
   }
 
   updateComposerMode();
@@ -10380,7 +10387,21 @@ function loadAttention() {
     renderBots();
     renderGroups();
     syncDoneButton();
+    syncTypingWithAttention();
   }, 120);
+}
+
+/**
+ * The chat on screen shows "working…" whenever its bot is working, also when
+ * the page missed the start (reloaded, opened mid-turn) or a step runs long
+ * without news (waiting on a colleague). Live streaming keeps its own line.
+ */
+function syncTypingWithAttention() {
+  if (isGroupMode() || !state.botId || !messagesEl) return;
+  const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);
+  const row = messagesEl.querySelector('.typing-row');
+  if (working && !row && !state.liveTurn?.bubble) showTyping(state.botId, '正在处理…');
+  else if (!working && row && !state.liveTurn) hideTyping();
 }
 
 /** The human is looking at the chat on screen. */

@@ -62,7 +62,8 @@ win:
     - target: portable
       arch: [x64]
   icon: build/icon.ico
-  publisherName: Lamplit
+  signtoolOptions:
+    publisherName: Lamplit
   artifactName: Lamplit-${version}-${arch}.${ext}
 
 nsis:

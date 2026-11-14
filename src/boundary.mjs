@@ -79,6 +79,36 @@ export function programsInCommand(command) {
   return out;
 }
 
+/**
+ * Paths a command only checks for (cmd `if [not] exist X`, PowerShell
+ * `Test-Path X`, sh `test -f X` / `[ -d X ]`): finding out that ffmpeg or a
+ * font is installed is not using that folder. A path that the same command
+ * also names anywhere else (to read, copy, run...) is not counted here.
+ */
+export function existenceChecksInCommand(command) {
+  const text = String(command || '');
+  const ARG = String.raw`(?:"([^"]+)"|'([^']+)'|([^\s"'()|&;<>]+))`;
+  const PATTERNS = [
+    new RegExp(String.raw`\bif\s+(?:not\s+)?exist\s+${ARG}`, 'gi'),
+    new RegExp(String.raw`\bTest-Path\s+(?:-(?:Literal)?Path\s+)?${ARG}`, 'gi'),
+    new RegExp(String.raw`\btest\s+-[edfrswxL]\s+${ARG}`, 'g'),
+    new RegExp(String.raw`\[\[?\s+-[edfrswxL]\s+${ARG}`, 'g'),
+  ];
+  const checked = new Map();
+  for (const re of PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      const raw = m[1] || m[2] || m[3];
+      if (raw) checked.set(raw, (checked.get(raw) || 0) + 1);
+    }
+  }
+  const out = [];
+  for (const [raw, times] of checked) {
+    if (text.split(raw).length - 1 > times) continue; // named again: read, copied or run as well
+    out.push(path.resolve(raw));
+  }
+  return out;
+}
+
 const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
 
 // Commands that only look: they list, measure or print, and change nothing.
@@ -189,7 +219,7 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     if (look.look && (remote || !look.reads)) return null;
     const cwd = args?.cwd ? path.resolve(workspaceDir, String(args.cwd)) : null;
     const named = pathsInCommand(command, workspaceDir).concat(cwd ? [cwd] : []);
-    const programs = new Set(programsInCommand(command).map((p) => norm(p)));
+    const programs = new Set(programsInCommand(command).concat(existenceChecksInCommand(command)).map((p) => norm(p)));
     const away = named.filter((p) => !programs.has(norm(p)) && !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)));
     if (away.length) {
       return { decision: outside, code: 'FOLDER_NOT_OPEN', reason: `命令用到了没开放给机器人的位置：${away.slice(0, 3).join('、')}` };

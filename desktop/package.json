@@ -1,7 +1,7 @@
 {
   "name": "desk-desktop",
   "productName": "Lamplit",
-  "version": "1.2.157",
+  "version": "1.2.158",
   "description": "Lamplit - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
@@ -18,6 +18,6 @@
   },
   "devDependencies": {
     "electron": "^45.3.2",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^26.18.0"
   }
 }

@@ -148,6 +148,7 @@ async function main() {
     await stage('team fixes (programs, continuing, steps, group mentions)', scenarioTeamFixes);
     await stage('1.2.156: settings page, sealed keys, phone hardening, Chinese demo', scenarioV156);
     await stage('1.2.157: phone tokens sealed at start, Electron, lock file', scenarioV157);
+    await stage('1.2.158: electron-builder 26', scenarioV158);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4823,6 +4824,55 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.158: the installer is made with electron-builder 26; the signing fields sit
+ * where 26 reads them (win.signtoolOptions), and the lock file pins the same major.
+ */
+async function scenarioV158() {
+  const dpkg = JSON.parse(await readText('../desktop/package.json'));
+  const major = Number(String(dpkg.devDependencies?.['electron-builder'] || '').replace(/^[^\d]*/, '').split('.')[0]);
+  let lockBuilder = '';
+  try {
+    lockBuilder = JSON.parse(await readText('../desktop/package-lock.json')).packages?.['node_modules/electron-builder']?.version || '';
+  } catch { /* missing */ }
+  const yml = await readText('../desktop/electron-builder.yml');
+  const win = (yml.match(/\nwin:\n([\s\S]*?)\n(?=\S)/) || ['', ''])[1];
+  check('E3 desktop: electron-builder 26 (lock file agrees); the publisher name moved to win.signtoolOptions, nothing deprecated left',
+    major >= 26 && Number(lockBuilder.split('.')[0]) === major && !/^  publisherName:/m.test(win) && /^  signtoolOptions:\n    publisherName: Lamplit$/m.test(win),
+    `${dpkg.devDependencies?.['electron-builder']} / lock ${lockBuilder}`);
+
+  // --- X1: checking that a file exists is not using its folder ----------------
+  {
+    const workspaceDir = path.join(home, 'workspace');
+    const B = await import('../src/boundary.mjs');
+    const at = (command) => B.checkBoundary('shell', { command }, { workspaceDir, policy: {}, remote: false });
+    const ff = 'C:\\Users\\me\\AppData\\Local\\Programs\\ffmpeg\\bin\\ffmpeg.exe';
+    const cmdIf = at(`if exist "${ff}" (echo FFOK) else (echo NOFF) & if exist "C:\\Windows\\Fonts\\msyhbd.ttf" (echo FONTOK) else (echo NOFONT) & node -v`);
+    const cmdNot = at('if not exist "D:\\tools\\magick.exe" echo missing');
+    const ps = at("powershell -NoProfile -Command \"if (Test-Path -LiteralPath 'D:\\tools\\fonts\\a.ttf') { 'ok' }\"");
+    const sh = at('test -f /opt/tools/bin/ffmpeg && echo ok; [ -d /srv/media ] && echo dir');
+    check('X1 shell: only checking that a file exists (if exist / Test-Path / test -f / [ -d ]) does not ask for its folder',
+      cmdIf === null && cmdNot === null && ps === null && sh === null, JSON.stringify({ cmdIf, cmdNot, ps, sh }));
+    const thenRead = at('if exist "C:\\Users\\me\\secret.txt" type "C:\\Users\\me\\secret.txt"');
+    const thenCopy = at("if (Test-Path 'D:\\private\\a.txt') { Copy-Item 'D:\\private\\a.txt' out.txt }");
+    check('X1 shell: a path that is also read or copied in the same command still asks',
+      thenRead?.code === 'FOLDER_NOT_OPEN' && thenCopy?.code === 'FOLDER_NOT_OPEN', JSON.stringify({ thenRead, thenCopy }));
+  }
+
+  // --- X2 / X3: the chat after a reload ---------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    const render = (page.match(/function renderMessages\(\) \{[\s\S]*?\n\}\n/) || [''])[0];
+    check('X2 chat: the last ended turn\'s result (e.g. an old "已取消") shows only when it is the newest thing in the chat and nothing is running',
+      render.includes('const newer = items.some((it) => it.ts && last?.ts && it.ts > last.ts);')
+      && render.includes("if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));"));
+    check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
+      render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
+      && render.includes("if (working) showTyping(state.botId, '正在处理…');")
+      && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,400}syncTypingWithAttention\(\);/.test(page));
   }
 }
 
