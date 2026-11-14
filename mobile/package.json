@@ -1,9 +1,9 @@
 {
   "name": "desk-mobile",
-  "version": "1.2.148",
+  "version": "1.2.149",
   "private": true,
   "type": "module",
-  "description": "Nightshift mobile shell (Capacitor): connects to a Nightshift hub on your LAN and shows its web UI.",
+  "description": "Evenlight (长明) mobile shell (Capacitor): connects to an Evenlight hub on your LAN and shows its web UI.",
   "engines": {
     "node": ">=20"
   },

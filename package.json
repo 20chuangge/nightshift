@@ -1,9 +1,9 @@
 {
   "name": "personal-assistant",
-  "version": "1.2.148",
+  "version": "1.2.149",
   "private": true,
   "type": "module",
-  "description": "Nightshift - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
+  "description": "Evenlight (长明) - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
   "engines": {
     "node": ">=20"
   },

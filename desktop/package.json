@@ -1,7 +1,7 @@
 {
   "name": "desk-desktop",
   "productName": "Evenlight",
-  "version": "1.2.148",
+  "version": "1.2.149",
   "description": "Evenlight - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
