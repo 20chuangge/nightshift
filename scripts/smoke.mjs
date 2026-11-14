@@ -198,6 +198,10 @@ function pointEnvAt(target) {
   process.env.CHROME_PATH = path.join(target, 'no-such-browser.exe');
   delete process.env.ALLOW_PRIVATE;
   process.env.PORT = '0';
+  // A CI runner on Windows runs as a service (no SESSIONNAME): the browser would
+  // then open on the signed-in user's desktop, with no pid of its own. These
+  // tests describe an ordinary signed-in session.
+  if (process.platform === 'win32' && !process.env.SESSIONNAME) process.env.SESSIONNAME = 'Console';
 }
 
 async function startServerChild(target, extraEnv = {}) {
@@ -3489,8 +3493,9 @@ async function scenarioCliAgents({ toolsMod, home }) {
       const r2 = await sh.run({ command: `"${process.execPath}" -e "setTimeout(()=>{},60000)"`, timeoutMs: 2000 }, { workspaceDir: ws });
       const took2 = Date.now() - t1;
       check('M33 shell: past its time limit a command ends, with everything it started, and returns', r2.timedOut && !r2.ok && took2 < 9000, `${took2} ms`);
-      const r3 = await sh.run({ command: 'echo 你好' }, { workspaceDir: ws });
-      check('M33 shell: an ordinary command is unchanged (no note)', r3.ok && r3.stdout.includes('你好') && r3.note === undefined);
+      // ASCII on purpose: a CI machine's console code page (437) cannot print Chinese.
+      const r3 = await sh.run({ command: 'echo hello-m33' }, { workspaceDir: ws });
+      check('M33 shell: an ordinary command is unchanged (no note)', r3.ok && r3.stdout.includes('hello-m33') && r3.note === undefined, JSON.stringify({ ok: r3.ok, out: r3.stdout, note: r3.note }).slice(0, 200));
     }
 
     // M33: this Windows computer's own screen, owned by Nightshift.

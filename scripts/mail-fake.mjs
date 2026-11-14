@@ -94,11 +94,16 @@ export async function fakeImap({ user, pass, messages, caps = 'IMAP4rev1 MOVE UI
       buf += d.toString('utf8');
       for (;;) {
         if (pendingLiteral) {
-          const bytes = Buffer.from(buf, 'utf8');
-          if (bytes.length < pendingLiteral.need) return;
-          const lit = bytes.subarray(0, pendingLiteral.need).toString('utf8');
-          buf = bytes.subarray(pendingLiteral.need).toString('utf8');
-          pendingLiteral.cmd += `\u0000${lit}\u0000`;
+          // The literal and the line end may arrive in separate packets (Linux
+          // does that on loopback): take the literal once, then wait for the line end.
+          if (pendingLiteral.need) {
+            const bytes = Buffer.from(buf, 'utf8');
+            if (bytes.length < pendingLiteral.need) return;
+            const lit = bytes.subarray(0, pendingLiteral.need).toString('utf8');
+            buf = bytes.subarray(pendingLiteral.need).toString('utf8');
+            pendingLiteral.cmd += `\u0000${lit}\u0000`;
+            pendingLiteral.need = 0;
+          }
           const nl = buf.indexOf('\r\n');
           if (nl < 0) return;
           const rest = buf.slice(0, nl);
