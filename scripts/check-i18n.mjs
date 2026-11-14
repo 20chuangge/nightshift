@@ -12,8 +12,13 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(path.join(root, 'desktop', 'package.json'));
-const ts = require('typescript');
+// The desktop app's tools bring typescript along; CI installs it at the root instead.
+const ts = (() => {
+  for (const from of [path.join(root, 'desktop', 'package.json'), path.join(root, 'package.json')]) {
+    try { return createRequire(from)('typescript'); } catch { /* try the next place */ }
+  }
+  throw new Error('typescript not found: npm install --no-save typescript (or npm install in desktop/)');
+})();
 
 // Not UI text: regex replacement sources (their {0} forms are in the
 // dictionary) and an instruction sent to the model.

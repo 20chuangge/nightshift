@@ -28,6 +28,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # check:i18n parses the page with typescript (locally it comes with desktop/).
+      - run: npm install --no-save typescript@5.9.3
       - run: npm run check
       - run: npm run check:i18n
       - run: npm run smoke
