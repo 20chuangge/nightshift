@@ -1,6 +1,6 @@
 {
   "name": "desk-mobile",
-  "version": "1.2.152",
+  "version": "1.2.153",
   "private": true,
   "type": "module",
   "description": "Lamplit (Lamplit) mobile shell (Capacitor): connects to an Lamplit hub on your LAN and shows its web UI.",
