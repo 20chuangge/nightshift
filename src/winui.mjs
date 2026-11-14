@@ -124,7 +124,7 @@ const MESSAGES = {
   NO_CLICK: (r) => `「${r.target}」不支持在后台点击（这个程序没有提供无障碍接口）。`,
   NO_TYPE: (r) => `「${r.target || '这个输入框'}」不支持在后台输入，或者是只读的。`,
   BAD_ACTION: (r) => `不认识的操作：${r.action}`,
-  NO_DESKTOP: () => '这台 Windows 的留灯在后台服务里运行，看不到桌面上的窗口。要操作桌面程序，请在登录后的桌面上运行留灯。',
+  NO_DESKTOP: () => '这台 Windows 的 Lamplit 在后台服务里运行，看不到桌面上的窗口。要操作桌面程序，请在登录后的桌面上运行 Lamplit。',
 };
 
 /**

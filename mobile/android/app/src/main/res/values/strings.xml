@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">留灯</string>
-    <string name="title_activity_main">留灯</string>
+    <string name="app_name">Lamplit</string>
+    <string name="title_activity_main">Lamplit</string>
     <string name="package_name">com.desk.assistant</string>
     <string name="custom_url_scheme">com.desk.assistant</string>
 </resources>

@@ -181,7 +181,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // additive migration (config seeds are copy-if-missing).
   const renamed = await migrateBuiltinNames();
   if (renamed) console.log(`[assistant] renamed ${renamed} built-in bot(s)`);
-  if (await migrateAppName().catch(() => false)) console.log('[assistant] app name updated to 留灯');
+  if (await migrateAppName().catch(() => false)) console.log('[assistant] app name updated to Lamplit');
   const grayed = await migrateDefaultAvatars().catch(() => 0);
   if (grayed) console.log(`[assistant] ${grayed} bot(s) moved from an old default colour to gray`);
   await migrateBaseGrants().catch((err) => console.error('[bots] base grants:', err.message));
@@ -1573,7 +1573,7 @@ async function syncMcpToPeers(state, catalogId, { relay = '' } = {}) {
     try {
       const cat = await state.peers.json(peer, 'GET', '/api/mcp/catalog', { timeoutMs: 8000 });
       const there = (cat.apps || []).find((a) => a.id === catalogId);
-      if (!there) return { machine: p.name, ok: false, message: '那台机器的留灯版本较旧，更新后再同步' };
+      if (!there) return { machine: p.name, ok: false, message: '那台机器的 Lamplit 版本较旧，更新后再同步' };
       // 邮箱 always gets the whole list: a mailbox added here must reach a machine that is already connected.
       if (catalogId !== 'email' && there.server && ['ready', 'connecting'].includes(there.server.state)) return { machine: p.name, ok: true, already: true };
       const body = { origin: p.url, relay, token: payload.token, appId: payload.appId, appSecret: payload.appSecret, ...(payload.fields ? { fields: payload.fields } : {}) };
@@ -1636,7 +1636,7 @@ route('GET', /^\/api\/mcp\/oauth\/callback$/, async (req, res, { state, query })
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
   const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const title = out.ok ? `已连接「${esc(out.name)}」${out.machine ? `（${esc(out.machine)}）` : ''}` : '没有连上';
-  const text = out.ok ? '可以关掉这个页面，回到留灯。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
+  const text = out.ok ? '可以关掉这个页面，回到 Lamplit。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
   res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);
 });
@@ -3435,7 +3435,7 @@ export function checkWorkspacePath(raw, { dataDir, platform = process.platform }
   const text = String(raw || '').trim().replace(/^"(.*)"$/, '$1');
   const win = platform === 'win32';
   const abs = win ? /^[a-zA-Z]:[\\/]/.test(text) : text.startsWith('/');
-  if (!abs) return { ok: false, error: win ? '要填完整路径，比如 D:\\留灯工作区' : '要填完整路径，比如 /home/me/workspace' };
+  if (!abs) return { ok: false, error: win ? '要填完整路径，比如 D:\\Lamplit 工作区' : '要填完整路径，比如 /home/me/workspace' };
   const p = win ? path.win32.resolve(text) : path.posix.resolve(text);
   const norm = (s) => (win ? s.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() : s.replace(/\/+$/, ''));
   const n = norm(p);
@@ -3446,7 +3446,7 @@ export function checkWorkspacePath(raw, { dataDir, platform = process.platform }
   if (system.some((s) => n === s || n.startsWith(`${s}${win ? '\\' : '/'}`))) return { ok: false, error: '不能放在系统文件夹里' };
   if (dataDir) {
     const d = norm(win ? path.win32.resolve(dataDir) : path.posix.resolve(dataDir));
-    if (n === d || n.startsWith(`${d}${win ? '\\' : '/'}`) || d.startsWith(`${n}${win ? '\\' : '/'}`)) return { ok: false, error: '不能和留灯自己的数据文件夹放在一起' };
+    if (n === d || n.startsWith(`${d}${win ? '\\' : '/'}`) || d.startsWith(`${n}${win ? '\\' : '/'}`)) return { ok: false, error: '不能和 Lamplit 自己的数据文件夹放在一起' };
   }
   return { ok: true, path: p };
 }

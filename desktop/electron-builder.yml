@@ -11,6 +11,7 @@ directories:
 # shell starts it with a separate Node process.
 files:
   - main.mjs
+  - datadir.mjs
   - shell-preload.cjs
   - recorder.html
   - package.json
@@ -68,9 +69,9 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: 留灯 Lamplit
+  shortcutName: Lamplit
   deleteAppDataOnUninstall: false
-  uninstallDisplayName: "留灯 Lamplit"
+  uninstallDisplayName: "Lamplit"
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico

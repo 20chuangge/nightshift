@@ -380,8 +380,8 @@ export function reachesSecrets(name, args = {}) {
       : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')
         : '';
   if (!text) return '';
-  if (SECRET_FILES.test(text)) return '要碰留灯保险箱里的密钥或授权码（vault），每次都先问你';
-  if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用留灯自己的模块（会绕过「连接应用」的审批），每次都先问你';
+  if (SECRET_FILES.test(text)) return '要碰 Lamplit 保险箱里的密钥或授权码（vault），每次都先问你';
+  if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用 Lamplit 自己的模块（会绕过「连接应用」的审批），每次都先问你';
   return '';
 }
 
@@ -1659,7 +1659,7 @@ export class AgentRuntime {
     try {
       const peers = this.getPeers();
       const peer = peers?.find(member.remote.machine);
-      if (!peer) throw new Error(`这台机器不认识「${member.remote.machine}」（在留灯客户端里添加那台机器后再试）`);
+      if (!peer) throw new Error(`这台机器不认识「${member.remote.machine}」（在 Lamplit 客户端里添加那台机器后再试）`);
       const names = new Map((group.members || []).map((m) => [m.id, m.name]));
       const recent = (await this.groups.readGroupMessages(group.id, { limit: 14 }).catch(() => []))
         .filter((m) => (m.kind === 'user' || m.kind === 'assistant') && m.text)

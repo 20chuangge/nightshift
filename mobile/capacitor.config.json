@@ -1,6 +1,6 @@
 {
   "appId": "com.desk.assistant",
-  "appName": "留灯",
+  "appName": "Lamplit",
   "webDir": "www",
   "backgroundColor": "#0a0a0a",
   "server": {

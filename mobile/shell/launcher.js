@@ -444,7 +444,7 @@
           timer = null;
           longPressed = true;
           // eslint-disable-next-line no-alert
-          const ok = window.confirm(`从列表里删掉「${entry.url}」？\n电脑上的留灯不受影响。`);
+          const ok = window.confirm(`从列表里删掉「${entry.url}」？\n电脑上的 Lamplit 不受影响。`);
           if (!ok) return;
           await forgetHub(entry.url);
           await renderMachines();
@@ -876,7 +876,7 @@
   /** Pair (when a code came with it) and go into that machine's full UI. */
   async function openChat(hub, code) {
     show('booting');
-    dom.bootingText.textContent = code ? '正在配对…' : '正在打开留灯…';
+    dom.bootingText.textContent = code ? '正在配对…' : '正在打开 Lamplit…';
     dom.bootingUrl.textContent = hub;
     state.hub = hub;
     const up = await probe(hub);
@@ -909,7 +909,7 @@
     try {
       url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`);
     } catch {
-      setError(`这个码不是留灯的连接码：${text.slice(0, 80)}`);
+      setError(`这个码不是 Lamplit 的连接码：${text.slice(0, 80)}`);
       return;
     }
     // The code carries every address of the machine (alt=): use the one this
@@ -1039,7 +1039,7 @@
       if (scanner) {
         const permission = await scanner.requestPermissions().catch(() => null);
         if (permission && permission.camera !== 'granted' && permission.camera !== 'limited') {
-          setError('没有相机权限，扫不了码。到系统设置里给留灯打开「相机」再试一次。');
+          setError('没有相机权限，扫不了码。到系统设置里给 Lamplit 打开「相机」再试一次。');
           return;
         }
         useGoogle = await ensureBarcodeModule().catch(() => false);
@@ -1056,7 +1056,7 @@
     } catch (err) {
       const message = String(err?.message || err || '');
       if (message === 'NO_CAMERA_PERMISSION') {
-        setError('没有相机权限，扫不了码。到系统设置里给留灯打开「相机」再试一次。');
+        setError('没有相机权限，扫不了码。到系统设置里给 Lamplit 打开「相机」再试一次。');
         return;
       }
       if (/barcode scanner module/i.test(message)) {
@@ -1094,7 +1094,7 @@
       if (!up) {
         state.hub = hub;
         showOffline(
-          `${hub} 没有响应。\n确认那边留灯是用 ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 起的，` +
+          `${hub} 没有响应。\n确认那边 Lamplit 是用 ASSIST_ALLOW_REMOTE=1 HOST=0.0.0.0 起的，` +
             '手机和电脑在同一个网络，防火墙放行了这个端口。',
         );
         return;
@@ -1194,7 +1194,7 @@
   dom.forgetBtn.addEventListener('click', async () => {
     const count = (await readHubs()).length;
     if (count && !window.confirm(`忘记这台手机上保存的全部 ${count} 台机器？
-电脑上的留灯不受影响，以后要重新配对。`)) return;
+电脑上的 Lamplit 不受影响，以后要重新配对。`)) return;
     await forgetAllHubs();
     state.hub = '';
     dom.connectForm.reset();
@@ -1217,7 +1217,7 @@
   // -------------------------------------------------------------------- boot
   async function boot() {
     await loadInfo();
-    dom.foot.textContent = `留灯 Lamplit mobile · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
+    dom.foot.textContent = `Lamplit mobile · ${shellLabel()}${isNative ? '' : ' · web preview'}`;
     if (dom.scanBtn) dom.scanBtn.hidden = false;
 
     const hub = await store.get(KEYS.hub);

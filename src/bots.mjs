@@ -53,15 +53,20 @@ export const DEFAULT_ASSISTANT_CONFIG = {
   },
 };
 
-const AVATAR_COLORS = ['#52525b', '#3f3f46', '#71717a', '#57534e', '#78716c', '#404040', '#525252', '#737373', '#4b5563', '#6b7280'];
+// Soft, low-saturation tones plus two neutrals (same list as the UI picker).
+const AVATAR_COLORS = ['#d9b98a', '#a9b8a2', '#b7a9c2', '#8fa3b5', '#c9a39a', '#9db5b0', '#c2b280', '#a3a3a3', '#6b7280', '#3f3f46'];
 // Colours the hub handed out by itself before 1.2.150. The picker in the UI
 // never offered these exact values, so a bot still on one never had a colour
-// chosen by a person: it moves to the gray in the same place (see migrateDefaultAvatars).
-const OLD_AUTO_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc', '#8b5cf6'];
+// chosen by a person: it moves to the soft colour in the same place (see migrateDefaultAvatars).
+// '#52525b' is the main assistant's default from 1.2.150 (gray only, one hour on the market).
+const OLD_AUTO_COLORS = ['#7c5cff', '#22c55e', '#f59e0b', '#38bdf8', '#f472b6', '#a3e635', '#fb7185', '#c084fc', '#8b5cf6', '#52525b'];
 
-/** The gray an automatically given old colour becomes, or null to leave it. */
-export function grayForOldColor(color) {
-  const i = OLD_AUTO_COLORS.indexOf(String(color || '').trim().toLowerCase());
+/** The soft colour an automatically given old colour becomes, or null to leave it.
+ *  Both main-assistant defaults ('#7c5cff', 1.2.150's '#52525b') become sand. */
+export function softForOldColor(color) {
+  const c = String(color || '').trim().toLowerCase();
+  if (c === '#52525b') return AVATAR_COLORS[0];
+  const i = OLD_AUTO_COLORS.indexOf(c);
   return i === -1 ? null : AVATAR_COLORS[i % AVATAR_COLORS.length];
 }
 
@@ -93,7 +98,7 @@ export const AVATAR_SHAPES = [
 ];
 
 export const DEFAULT_AVATAR_SHAPE = 'squircle';
-export const DEFAULT_AVATAR_COLOR = '#52525b';
+export const DEFAULT_AVATAR_COLOR = '#d9b98a';
 const AVATAR_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 /** Uploaded images: what we accept in, and what we serve back out. */
@@ -303,8 +308,8 @@ export async function writeAssistantConfig(config) {
 
 // Names the app shipped under before. config/ is seeded copy-if-missing, so an
 // installed machine keeps the old one until this renames it (BUG-02).
-const OLD_APP_NAMES = new Set(['夜班', 'nightshift', 'desk', '长明', 'evenlight']);
-export const APP_NAME = '留灯';
+const OLD_APP_NAMES = new Set(['夜班', 'nightshift', 'desk', '长明', 'evenlight', '留灯']);
+export const APP_NAME = 'Lamplit';
 
 /** The name an installed config should now carry, or null to leave it. */
 export function renamedAppName(name) {
@@ -338,8 +343,8 @@ export async function migrateDefaultAvatars() {
     } catch {
       continue;
     }
-    const top = grayForOldColor(bot.avatarColor);
-    const inner = bot.avatar && typeof bot.avatar === 'object' ? grayForOldColor(bot.avatar.color) : null;
+    const top = softForOldColor(bot.avatarColor);
+    const inner = bot.avatar && typeof bot.avatar === 'object' ? softForOldColor(bot.avatar.color) : null;
     if (!top && !inner) continue;
     if (top) bot.avatarColor = top;
     if (inner) bot.avatar = { ...bot.avatar, color: inner };

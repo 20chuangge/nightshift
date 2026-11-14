@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="dark light" />
-<title>留灯</title>
+<title>Lamplit</title>
 <script>
   /* Pick the theme before the first paint, using the same choice as the hub's
      设置 → 外观 (the hub reports it to /api/ui/state and the shell caches it).
@@ -295,12 +295,12 @@
     <div class="brand">
       <div class="mark" aria-hidden="true"></div>
       <div>
-        <div class="name">留灯 <span style="opacity:.55;font-weight:500">Lamplit</span></div>
+        <div class="name">Lamplit</div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
 
-    <h1>连接你的留灯<span class="en">Connect to your Lamplit</span></h1>
+    <h1>连接你的 Lamplit<span class="en">Connect to your Lamplit</span></h1>
     <p class="lede">手机上用的是电脑端同一份界面。填上你电脑正在跑的那个 Hub 地址就行。</p>
 
     <div id="connect-error" class="err"></div>
@@ -322,7 +322,7 @@
     </form>
 
     <p class="hint">
-      在电脑上的留灯打开「设置 → 配对」，扫那里的二维码，或者照着填地址和配对码。
+      在电脑上的 Lamplit 打开「设置 → 配对」，扫那里的二维码，或者照着填地址和配对码。
       只要配对一台：电脑上添加过的其他机器会自动出现在列表里。
     </p>
     <div class="row">
@@ -343,7 +343,7 @@
     <div class="brand">
       <div class="mark" aria-hidden="true"></div>
       <div>
-        <div class="name">留灯 <span style="opacity:.55;font-weight:500">Lamplit</span></div>
+        <div class="name">Lamplit</div>
         <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
@@ -374,7 +374,7 @@
 
   <!-- 4. hub not reachable -->
   <section id="offline" class="card" hidden>
-    <h1>连不上你的留灯<span class="en">Hub not reachable</span></h1>
+    <h1>连不上你的 Lamplit<span class="en">Hub not reachable</span></h1>
     <p class="lede" id="offline-detail">Hub 没有响应。</p>
     <dl class="kv">
       <dt>Hub</dt><dd id="offline-url">—</dd>
@@ -384,12 +384,12 @@
       <button id="offline-change" class="ghost" type="button">换一个 Hub</button>
     </div>
     <p class="hint">
-      依次检查：电脑上留灯还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
+      依次检查：电脑上 Lamplit 还在跑吗？启动时带了 <code>ASSIST_ALLOW_REMOTE=1</code> 和
       <code>HOST=0.0.0.0</code> 吗？手机和电脑在同一个 Wi-Fi 吗？系统防火墙放行端口了吗？
     </p>
   </section>
 
-  <div class="foot" id="foot">留灯 Lamplit mobile</div>
+  <div class="foot" id="foot">Lamplit mobile</div>
 </div>
 
 <!-- Scanning with the camera inside the app (jsQR): no Google module needed. -->

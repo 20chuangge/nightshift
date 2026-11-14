@@ -37,7 +37,7 @@ resources/server/           ← 真正的后端（纯 Node，零依赖）
   src/*.mjs
   public/                   ← UI（HTML/CSS/JS 单文件 + 图标）
   config/ skills/ workspace/← 首次启动的种子
-%APPDATA%\Desk\             ← 运行时数据（ASSIST_HOME，名字沿用 Desk 时期）
+%APPDATA%\Lamplit\          ← 运行时数据（ASSIST_HOME；1.2.150 及更早装的电脑是 %APPDATA%\Desk\）
   config/ skills/ public/ workspace/ data/
 ```
 
@@ -58,7 +58,7 @@ npm run desktop:icons
 | 现象 | 原因 | 解决 |
 |---|---|---|
 | `Cannot create symbolic link ... libcrypto.dylib` | electron-builder 解压 `winCodeSign` 时含 macOS 符号链接，Windows 非管理员/未开开发者模式无法创建 | 解压产物其实已完整，把 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<随机数>` 复制成 `winCodeSign-2.6.0` 即可跳过重试 |
-| 启动白屏 | 端口被占或 server 起不来 | 看 `%APPDATA%\Desk\` 与启动日志；`Lamplit.exe` 会弹错误框并退出 |
+| 启动白屏 | 端口被占或 server 起不来 | 看 `%APPDATA%\Lamplit\`（老电脑是 `%APPDATA%\Desk\`）与启动日志；`Lamplit.exe` 会弹错误框并退出 |
 | 想改端口 | 默认随机 | 设环境变量 `PORT=4390` 后启动 |
 | 换 Electron 版本 | — | 改 `desktop/package.json` 的 `electron`，重装后重建 |
 

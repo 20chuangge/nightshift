@@ -1,5 +1,5 @@
 /**
- * 留灯 · Lamplit desktop shell (长明 · Evenlight 1.2.146-1.2.149, Nightshift before).
+ * Lamplit desktop shell (长明 · Evenlight 1.2.146-1.2.149, Nightshift before).
  *
  * The renderer is just the web UI; all the value sits in the Node server that
  * this shell starts as a child process. Keeping them separate means a crashed
@@ -9,7 +9,8 @@
  * Layout, packaged:
  *   resources/server/src/*      <- the agent (read-only, ships with the app)
  *   resources/server/config/*   <- seed config, copied to userData on first run
- *   %APPDATA%/Desk/             <- ASSIST_HOME: config, skills, public, workspace, data
+ *   %APPDATA%/Lamplit/          <- ASSIST_HOME: config, skills, public, workspace, data
+ *                                  (%APPDATA%/Desk/ on installs from before 1.2.151)
  */
 import { app, BrowserWindow, Menu, Tray, shell, dialog, nativeImage, ipcMain, session, net, Notification, clipboard } from 'electron';
 import { spawn } from 'node:child_process';
@@ -19,15 +20,17 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pickDataDir } from './datadir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isPackaged = app.isPackaged;
 const DEV_URL = process.env.ASSIST_DEV_URL || '';
 
-// The product is 留灯 · Lamplit (长明 · Evenlight 1.2.146-1.2.149, Nightshift before). Installs from when it was called Desk keep
-// their data where it already is, %APPDATA%\Desk: set before anything reads it.
+// The product is Lamplit (长明 · Evenlight 1.2.146-1.2.149, Nightshift before). Installs from when it was called Desk keep
+// their data where it already is, %APPDATA%\Desk; a new install uses
+// %APPDATA%\Lamplit (datadir.mjs). Set before anything reads it.
 app.setName('Lamplit');
-app.setPath('userData', path.join(app.getPath('appData'), 'Desk'));
+app.setPath('userData', pickDataDir(app.getPath('appData')));
 
 /** Shell text follows the system language (the web UI has its own setting). */
 const L = (zh, en) => (/^zh/i.test(app.getLocale?.() || process.env.LANG || '') ? zh : en);
@@ -511,8 +514,8 @@ function launchServer({ host, port }) {
       }
       if (win && !win.isDestroyed()) {
         dialog.showErrorBox(
-          L('留灯的后台进程退出了', 'The Lamplit server stopped'),
-          L(`一分钟内连续退出了好几次（退出码 ${code ?? signal}）。重新打开留灯即可恢复；详情见 ${BOOT_LOG}`, `It stopped several times in a minute (exit code ${code ?? signal}). Reopen Lamplit to recover; details in ${BOOT_LOG}`),
+          L('Lamplit 的后台进程退出了', 'The Lamplit server stopped'),
+          L(`一分钟内连续退出了好几次（退出码 ${code ?? signal}）。重新打开 Lamplit 即可恢复；详情见 ${BOOT_LOG}`, `It stopped several times in a minute (exit code ${code ?? signal}). Reopen Lamplit to recover; details in ${BOOT_LOG}`),
         );
       }
       app.quit();
@@ -567,7 +570,7 @@ function createWindowFor(url, bounds = null) {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#0a0a0a',
-    title: L('留灯', 'Lamplit'),
+    title: 'Lamplit',
     icon: path.join(__dirname, 'build', 'icon.png'),
     autoHideMenuBar: true,
     show: false,
@@ -608,10 +611,10 @@ function createWindowFor(url, bounds = null) {
       hangDialog = true;
       const { response } = await dialog.showMessageBox(self, {
         type: 'warning',
-        title: L('留灯', 'Lamplit'),
+        title: 'Lamplit',
         message: L('页面没有响应', 'The page is not responding'),
         detail: L('可以再等一会儿，或者重新加载这一页（聊天记录不会丢）。', 'Wait a little longer, or reload the page (your chats are kept).'),
-        buttons: [L('等待', 'Wait'), L('重新加载', 'Reload'), L('退出留灯', 'Quit Lamplit')],
+        buttons: [L('等待', 'Wait'), L('重新加载', 'Reload'), L('退出 Lamplit', 'Quit Lamplit')],
         defaultId: 1,
         cancelId: 0,
         noLink: true,
@@ -784,12 +787,12 @@ function machinesMenu() {
 
 /** Tray and app menu both list the machines; rebuild them after any change. */
 function refreshChrome() {
-  if (win && !win.isDestroyed()) win.setTitle(remoteHub ? `${L('留灯', 'Lamplit')} — ${machineLabel(remoteHub)}` : L('留灯', 'Lamplit'));
+  if (win && !win.isDestroyed()) win.setTitle(remoteHub ? `${'Lamplit'} — ${machineLabel(remoteHub)}` : 'Lamplit');
   buildMenu();
   if (!tray) return;
-  tray.setToolTip(remoteHub ? `${L('留灯', 'Lamplit')} → ${machineLabel(remoteHub)}` : L('留灯', 'Lamplit'));
+  tray.setToolTip(remoteHub ? `${'Lamplit'} → ${machineLabel(remoteHub)}` : 'Lamplit');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: L('打开留灯', 'Open Lamplit'), click: showWindow },
+    { label: L('打开 Lamplit', 'Open Lamplit'), click: showWindow },
     { type: 'separator' },
     ...machinesMenu(),
     { type: 'separator' },
@@ -817,7 +820,7 @@ function buildMenu() {
   if (HUB_MODE) return;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
-      label: L('留灯', 'Lamplit'),
+      label: 'Lamplit',
       submenu: [
         { label: L('机器', 'Machines'), submenu: machinesMenu() },
         { type: 'separator' },
@@ -1364,7 +1367,7 @@ if (!gotLock) {
       // checked are skipped inside autoUpdateMachine.
       setInterval(() => { updateAttempts.clear(); autoUpdateMachines().catch(() => {}); }, 10 * 60 * 1000);
     } catch (err) {
-      dialog.showErrorBox(L('留灯启动失败', 'Lamplit failed to start'), String(err?.stack || err));
+      dialog.showErrorBox(L('Lamplit 启动失败', 'Lamplit failed to start'), String(err?.stack || err));
       app.quit();
     }
   });

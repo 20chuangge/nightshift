@@ -402,7 +402,7 @@ public class NightshiftWatcher extends Service {
                 String status = event.optString("status", "success");
                 String summary = event.optString("summary", "");
                 String title = "success".equals(status) ? "这一轮做完了" : "这一轮结束了：" + status;
-                notify(title, summary.isEmpty() ? "打开留灯看看结果。" : summary, hub,
+                notify(title, summary.isEmpty() ? "打开 Lamplit 看看结果。" : summary, hub,
                         "", event.optString("botId", ""), event.optString("botName", ""));
             }
         } catch (Exception err) {
@@ -417,7 +417,7 @@ public class NightshiftWatcher extends Service {
         if (manager == null) return;
         NotificationChannel service = new NotificationChannel(
                 CHANNEL_SERVICE, "后台运行", NotificationManager.IMPORTANCE_MIN);
-        service.setDescription("留灯在后台盯着任务。关掉它就不再提醒。");
+        service.setDescription("Lamplit 在后台盯着任务。关掉它就不再提醒。");
         service.setShowBadge(false);
         manager.createNotificationChannel(service);
 
@@ -628,7 +628,7 @@ public class NightshiftWatcher extends Service {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(context, CHANNEL_SERVICE)
                 : new Notification.Builder(context);
-        builder.setContentTitle("留灯在后台盯着")
+        builder.setContentTitle("Lamplit 在后台盯着")
                 .setContentText("有结果会提醒你")
                 .setSmallIcon(R.drawable.ic_stat_nightshift)
                 .setContentIntent(openApp(0, null, null, null))

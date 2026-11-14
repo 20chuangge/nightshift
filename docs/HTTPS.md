@@ -1,6 +1,6 @@
-# 让留灯走 HTTPS（公网直连）
+# 让 Lamplit 走 HTTPS（公网直连）
 
-留灯的连接默认是明文 HTTP。局域网里无所谓，一旦放到公网（云主机、家里路由器映射、隧道），
+Lamplit 的连接默认是明文 HTTP。局域网里无所谓，一旦放到公网（云主机、家里路由器映射、隧道），
 配对后的凭据、聊天内容、工作区文件和 Bot 看屏幕的画面都会明文过网；而远程机器上的 Bot 能执行
 命令、有的还能 sudo。所以**公网入口必须是加密的**。
 
@@ -28,14 +28,14 @@ nightshift.example.com {
 
 Caddy 自动申请并续期证书，只需要域名的 A 记录指向这台机器，安全组放行 80/443。
 
-**关键一步**：反代在前面时，留灯必须打开 `ASSIST_TRUST_PROXY=1`，否则它看到的每个请求都来自
+**关键一步**：反代在前面时，Lamplit 必须打开 `ASSIST_TRUST_PROXY=1`，否则它看到的每个请求都来自
 127.0.0.1，会被当成本机用户——等于没有认证。启动参数（systemd 里加一行）：
 
 ```ini
 Environment=ASSIST_TRUST_PROXY=1
 ```
 
-同时让留灯只听本机（代理会转发）：
+同时让 Lamplit 只听本机（代理会转发）：
 
 ```ini
 Environment=HOST=127.0.0.1
@@ -78,7 +78,7 @@ tailscale funnel status
 
 ## 4. 自带证书 / 自签（不推荐给浏览器）
 
-留灯自己也支持直接跑 https。把证书放进 `data/tls/cert.pem` 和 `data/tls/key.pem`，
+Lamplit 自己也支持直接跑 https。把证书放进 `data/tls/cert.pem` 和 `data/tls/key.pem`，
 或者用环境变量指定：
 
 ```bash
@@ -91,7 +91,7 @@ ASSIST_TLS_CERT=/etc/ssl/nightshift/fullchain.pem ASSIST_TLS_KEY=/etc/ssl/nights
 
 ## 反代不在本机时（docker bridge、另一台机器）
 
-代理和留灯不在同一台机器上时，来源地址不是 127.0.0.1，需要再给一个共享密钥：
+代理和 Lamplit 不在同一台机器上时，来源地址不是 127.0.0.1，需要再给一个共享密钥：
 
 ```ini
 Environment=ASSIST_TRUST_PROXY=1
@@ -104,7 +104,7 @@ Environment=ASSIST_PROXY_SECRET=<随机字符串>
 proxy_set_header X-Nightshift-Proxy <同一个字符串>;
 ```
 
-没有这个头、来源又不是本机的请求，留灯不会相信它自己声称的地址，仍然要求认证（失败关闭）。
+没有这个头、来源又不是本机的请求，Lamplit 不会相信它自己声称的地址，仍然要求认证（失败关闭）。
 
 ---
 

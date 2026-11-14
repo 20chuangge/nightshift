@@ -1,6 +1,6 @@
 {
-  "name": "留灯 Lamplit",
-  "short_name": "留灯",
+  "name": "Lamplit",
+  "short_name": "Lamplit",
   "description": "让闲置的电脑替你干活的 AI 助理。",
   "lang": "zh-CN",
   "start_url": "/",

@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="留灯" />
+<meta name="apple-mobile-web-app-title" content="Lamplit" />
 <meta name="format-detection" content="telephone=no" />
-<title>留灯 · 个人助理</title>
+<title>Lamplit · 个人助理</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <link rel="icon" href="icons/icon-32.png" sizes="32x32" />
@@ -436,7 +436,7 @@
     position: relative; flex: none;
     width: var(--av-size, 52px); height: var(--av-size, 52px);
     display: grid; place-items: center; overflow: hidden;
-    background: var(--av-color, #52525b);
+    background: var(--av-color, #d9b98a);
     -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
     -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
     -webkit-mask-position: center; mask-position: center;
@@ -3230,6 +3230,64 @@
     .dsec-head { font-size: 17px; }
     .dsec-sub { font-size: 13px; color: var(--muted); }
   }
+
+  /* =====================================================================
+     design v3 (交付/设计方案.html), in the black / white / gray palette:
+     radii 10 / 14 / 18, thin lines, no shadows on desktop.
+     ===================================================================== */
+  /* approval: the one card that stands out - title, why, the command, one row of buttons */
+  .approval.pending, html[data-theme="light"] .approval.pending {
+    border: 1px solid var(--border-strong); border-radius: 14px; padding: 16px 18px;
+    background: linear-gradient(180deg, var(--accent-soft), transparent 72%), var(--panel);
+  }
+  .approval .approval-top { margin-bottom: 4px; }
+  .approval-kicker { font-size: 11.5px; color: var(--dim); }
+  .approval-title { font-size: 15px; font-weight: 650; margin-bottom: 4px; }
+  .approval-why, .approval-impact { font-size: 12.5px; color: var(--muted); margin: 2px 0 0; }
+  .approval-detail, html[data-theme="light"] .approval-detail { margin: 10px 0 4px; padding: 9px 12px; border: 0; border-radius: 10px; background: var(--bg); }
+  .approval-detail code { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .approval-actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 14px; }
+  .approval-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  .approval-buttons .btn { min-height: 36px; padding: 0 16px; border-radius: 10px; font-size: 13.5px; font-weight: 600; }
+  .approval-buttons .btn:not(.primary) { background: transparent; border: 1px solid var(--border-strong); color: var(--text); font-weight: 500; }
+  .approval-buttons .btn:not(.primary):hover { background: var(--panel-2); }
+  .approval-note, html[data-theme="light"] .approval-note { min-height: 34px; font-size: 12.5px; border-radius: 10px; background: transparent; }
+  .approval-tech { margin-top: 10px; }
+  .approval-tech > summary { font-size: 12px; color: var(--dim); }
+  .approval.pending .approval-tech > summary { display: none; } /* the 看详情 button opens it */
+  .composer-box { border-radius: 18px; }
+
+  @media (max-width: 860px) {
+    /* phone: a pending approval sits at the bottom of the chat, in reach of a thumb */
+    .messages .approval.pending {
+      position: sticky; bottom: 8px; z-index: 3; border-radius: 22px; padding: 18px;
+      box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+    }
+    html[data-theme="light"] .messages .approval.pending { box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.10); }
+    .approval-buttons .btn { flex: 1 1 0; min-height: 44px; border-radius: 12px; font-size: 15px; }
+    .approval-buttons .approval-more { flex: 1 1 100%; min-height: 40px; font-size: 14px; }
+
+    /* phone home: a list of conversations, the main assistant first like the rest */
+    .sidebar.open .bot, .sidebar.open .group {
+      min-height: 64px; margin: 2px 10px; padding: 10px 12px; gap: 12px; border-radius: 16px; width: auto; max-width: calc(100% - 20px); box-sizing: border-box;
+    }
+    .sidebar.open .bot.active { background: transparent; }
+    .sidebar.open .bot:active, .sidebar.open .group:active { background: var(--panel); }
+    .sidebar.open .bot .av, .sidebar.open .bot.is-primary .av { --av-size: 44px !important; }
+    .sidebar.open .bot.is-primary { flex-direction: row; gap: 12px; padding: 10px 12px; min-height: 64px; background: var(--panel); }
+    .sidebar.open .bot.is-primary .bot-text { flex: 1; text-align: left; }
+    .sidebar.open .bot.is-primary .bot-name { justify-content: flex-start; }
+    .sidebar.open .bot-name, .sidebar.open .bot.is-primary .bot-name { font-size: 15.5px; font-weight: 650; }
+    .sidebar.open .bot.is-primary .bot-preview, .sidebar.open .bot.is-primary .bot-time { display: block; }
+    .sidebar.open .bot.is-primary .bot-more { display: grid; }
+    .sidebar.open .bot-preview { font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sidebar.open .bot-time { font-size: 12px; }
+
+    /* bottom bar: settings + search stay inside the screen */
+    .sidebar.open .sidebar-bottom { box-sizing: border-box; width: 100%; max-width: 100vw; }
+    .sidebar.open .home-search { min-width: 0; flex: 1 1 0; height: 48px; }
+    .sidebar.open #settings-btn { width: 48px; height: 48px; }
+  }
 </style>
 </head>
 <body>
@@ -3501,7 +3559,7 @@
 
       <section class="dsec" id="sec-model">
         <div class="dsec-head">模型</div>
-        <p class="dsec-sub">接入一个真实模型，留灯才能听懂你的话。不接入时用内置演示，回答是脚本写好的。</p>
+        <p class="dsec-sub">接入一个真实模型，Lamplit 才能听懂你的话。不接入时用内置演示，回答是脚本写好的。</p>
 
         <form id="settings-form" novalidate>
           <label class="lbl" for="set-provider">服务商</label>
@@ -3609,7 +3667,7 @@
         </div>
         <div class="voice-set" id="cliagents-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">用订阅额度的编程助手</div>
-          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；留灯不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
+          <div class="row-note">机器人可以把写代码的活交给这台机器上的 Claude Code、Codex、Cursor 或 Qoder，用的是你自己的订阅额度，不按次花 API 费用；每个都可以选默认模型。需要你在这台机器上自己装好命令行版、用官方方式登录一次；Lamplit 不读也不碰它们的登录信息。每次交出去之前都会先问你。</div>
           <div id="cliagents-list" class="row-note">正在检查…</div>
           <div class="btn-row"><button class="btn tiny" id="cliagents-refresh" type="button">重新检查</button></div>
         </div>
@@ -3789,7 +3847,7 @@
         <details class="vault-add" id="feishu-guide">
           <summary>第一次用：怎么创建飞书应用（约 5 分钟）</summary>
           <ol class="feishu-steps">
-            <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台</a>，点「创建企业自建应用」，起个名字（比如「留灯」）。</li>
+            <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noreferrer">飞书开放平台</a>，点「创建企业自建应用」，起个名字（比如「Lamplit」）。</li>
             <li>左边「添加应用能力」→ 添加「机器人」。</li>
             <li>「权限管理」里开通：获取与发送单聊、群组消息（im:message）、以应用的身份发消息（im:message:send_as_bot）、读取用户发给机器人的单聊消息、接收群聊中@机器人消息、获取与上传图片或文件资源（im:resource）。</li>
             <li>「凭证与基础信息」里复制 App ID 和 App Secret，填到下面，打开「启用」并保存，等状态变成「已连接」。</li>
@@ -3985,7 +4043,7 @@
               <input type="checkbox" id="allow-remote" />
               <span>允许手机连接</span>
             </label>
-            <div class="row-note" id="allow-remote-note">打开后，这台电脑的留灯会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
+            <div class="row-note" id="allow-remote-note">打开后，这台电脑的 Lamplit 会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
           </div>
           <div class="pair-row" style="align-items:center;margin-top:14px">
             <div>
@@ -4030,7 +4088,7 @@
           <div class="pair-hint">没有摄像头或不想扫码时，手机浏览器打开上面的地址，输入这个配对码。</div>
           <div class="pair-empty" id="pair-empty" hidden></div>
         </div>
-        <div class="row-note">配对码只用于把手机接进这台电脑上的留灯，不会上传到任何地方。</div>
+        <div class="row-note">配对码只用于把手机接进这台电脑上的 Lamplit，不会上传到任何地方。</div>
 
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
         <div class="device-list" id="device-list"></div>
@@ -4051,7 +4109,7 @@
           <ol class="feishu-steps">
             <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
             <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
-            <li>电脑上：什么都不用改。局域网连不上时，留灯会自动改走 Tailscale 地址，不用重新配对。</li>
+            <li>电脑上：什么都不用改。局域网连不上时，Lamplit 会自动改走 Tailscale 地址，不用重新配对。</li>
             <li>手机上：打开 Tailscale，再用手机浏览器打开上面的 Tailscale 地址，输入配对码。</li>
           </ol>
         </details>
@@ -4080,14 +4138,14 @@
           </div>
           <div class="row-note" id="qr-iphone">iPhone 扫码后在 Safari 里打开，点「分享」→「添加到主屏幕」，以后从主屏幕一按就进来。</div>
           <div class="row-note" id="qr-tailnet-note" hidden>在外面用的时候，手机上也要装 Tailscale 并登录同一个账号，然后扫「在外面」那个码。</div>
-          <div class="row-note" id="qr-auto-note" hidden>这个码里带着这台机器的所有地址。用留灯 App 扫：和电脑在同一个局域网就走局域网，不在就自动走 Tailscale（手机上要装 Tailscale 并登录同一个账号）。</div>
+          <div class="row-note" id="qr-auto-note" hidden>这个码里带着这台机器的所有地址。用 Lamplit App 扫：和电脑在同一个局域网就走局域网，不在就自动走 Tailscale（手机上要装 Tailscale 并登录同一个账号）。</div>
           <div class="row-note" id="qr-error" hidden></div>
         </div>
       </div>
 
       <section class="dsec" id="sec-about">
         <div class="dsec-head">关于</div>
-        <div class="kv"><span class="k">应用</span><span class="v" id="about-app">留灯</span></div>
+        <div class="kv"><span class="k">应用</span><span class="v" id="about-app">Lamplit</span></div>
         <div class="kv"><span class="k">版本</span><span class="v" id="about-version">—</span></div>
         <div class="kv"><span class="k">服务</span><span class="v" id="about-server">—</span></div>
         <div class="kv"><span class="k">机器地址</span><span class="v" id="about-origin">—</span></div>
@@ -4157,7 +4215,7 @@
     <label class="form-label" for="vnc-addr" style="margin-top:8px">IP 地址</label>
     <input class="field" id="vnc-addr" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" inputmode="url" />
 
-    <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：留灯的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
+    <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：Lamplit 的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
 
     <label class="form-label" for="vnc-ssh-user" style="margin-top:8px">SSH 用户名</label>
     <input class="field" id="vnc-ssh-user" placeholder="ubuntu" autocomplete="off" spellcheck="false" />
@@ -4184,7 +4242,7 @@
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：
-      装依赖 → 部署留灯 → 配好每个 Bot 的桌面 → 自动配对并加进机器列表。
+      装依赖 → 部署 Lamplit → 配好每个 Bot 的桌面 → 自动配对并加进机器列表。
       密码只用于这一次配置，不会保存。
     </div>
     <div class="row-note">支持 Linux（Ubuntu、Debian、Rocky 等）和 Windows 10/11。Windows 要先在「设置 → 系统 → 可选功能」里装好 OpenSSH 服务器，并用管理员账号。</div>
@@ -4319,12 +4377,12 @@
   <div class="auth-card">
     <div class="auth-top">
       <div class="brand-mark" aria-hidden="true"></div>
-      <span class="name" id="auth-app-name">留灯</span>
+      <span class="name" id="auth-app-name">Lamplit</span>
     </div>
-    <h1>连接你的留灯</h1>
-    <p class="auth-sub">留灯正在这台机器上运行。这台设备还没有获得授权——输入地址和配对码，连接一次就好。</p>
+    <h1>连接你的 Lamplit</h1>
+    <p class="auth-sub">Lamplit 正在这台机器上运行。这台设备还没有获得授权——输入地址和配对码，连接一次就好。</p>
 
-    <label class="lbl" for="auth-url">留灯地址</label>
+    <label class="lbl" for="auth-url">Lamplit 地址</label>
     <input class="field" id="auth-url" autocomplete="off" spellcheck="false" inputmode="url" />
 
     <label class="lbl" for="auth-code">配对码</label>
@@ -4333,7 +4391,7 @@
     <button class="btn primary block" id="auth-connect" type="button">连接</button>
     <div class="auth-msg" id="auth-msg" role="alert"></div>
 
-    <p class="auth-foot">配对码是电脑上留灯的「设置 → 配对」里的 8 位数字，只在这台设备上生效。</p>
+    <p class="auth-foot">配对码是电脑上 Lamplit 的「设置 → 配对」里的 8 位数字，只在这台设备上生效。</p>
   </div>
 </div>
 
@@ -4746,11 +4804,13 @@ const AVATAR_SHAPES = [
 ];
 
 /* Muted, slightly dusty tones: they sit well on both themes and never shout. */
+/* Soft, low-saturation tones (sand, sage, lavender, haze blue, clay, sea glass,
+   khaki) plus two neutrals: colour without shouting on the black/white UI. */
 const AVATAR_COLORS = [
-  '#52525b', '#3f3f46', '#71717a', '#57534e', '#78716c', '#404040', '#525252', '#737373', '#4b5563', '#6b7280',
+  '#d9b98a', '#a9b8a2', '#b7a9c2', '#8fa3b5', '#c9a39a', '#9db5b0', '#c2b280', '#a3a3a3', '#6b7280', '#3f3f46',
 ];
 
-const AVATAR_DEFAULT = { shape: 'squircle', color: '#52525b' };
+const AVATAR_DEFAULT = { shape: 'squircle', color: '#d9b98a' };
 const SHAPE_IDS = new Set(AVATAR_SHAPES.map((s) => s.id));
 const LEGACY_SHAPES = { octagon: 'hex', gem: 'diamond', wave: 'squircle', ring: 'circle', chip: 'squircle' };
 const PICKER_SHAPES = AVATAR_SHAPES.filter((shape) => shape.picker !== false);
@@ -4764,6 +4824,15 @@ const faceCache = new Map();
 /** Narrow silhouettes would crop centred eyes; shrink them per shape. */
 const FACE_ZOOM = { star: 0.86, flower: 0.9, leaf: 0.78, diamond: 0.84, drop: 0.92, arch: 0.96 };
 
+/** Relative luminance above ~0.45: dark eyes read better than white ones. */
+function isLightColor(hex) {
+  const h = String(hex || '').replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h.slice(0, 6);
+  if (!/^[0-9a-f]{6}$/i.test(full)) return false;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.45;
+}
+
 function faceSvg(color, zoom = 1) {
   const key = `${String(color || AVATAR_DEFAULT.color).trim().toLowerCase()}@${zoom}`;
   const cached = faceCache.get(key);
@@ -4771,8 +4840,9 @@ function faceSvg(color, zoom = 1) {
   const bg = /^#[0-9a-f]{3,8}$/.test(String(color || '').trim().toLowerCase())
     ? String(color).trim().toLowerCase()
     : AVATAR_DEFAULT.color;
+  const ink = isLightColor(bg) ? '#1c1a17' : '#fff';
   const eye = (x) => `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='#000' opacity='.16' transform='translate(0 1.6)'/>`
-    + `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='#fff'/>`;
+    + `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='${ink}'/>`;
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs>`
     + `<linearGradient id='l' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#fff' stop-opacity='.26'/><stop offset='.55' stop-color='#fff' stop-opacity='0'/><stop offset='1' stop-color='#000' stop-opacity='.16'/></linearGradient>`
     + `</defs>`
@@ -5805,7 +5875,7 @@ async function api(path, options = {}) {
   try {
     res = await fetch(path, opts);
   } catch (cause) {
-    const err = new Error('无法连接留灯服务，网络可能断了。');
+    const err = new Error('无法连接 Lamplit 服务，网络可能断了。');
     err.status = 0;
     err.cause = cause;
     throw err;
@@ -6056,7 +6126,7 @@ async function connectDevice() {
     button.disabled = false;
     button.textContent = '连接';
     if (err.code === 'PAIR_INVALID_CODE' || err.status === 401) {
-      setAuthMsg('配对码不对，检查一下电脑上留灯的「设置 → 配对」。');
+      setAuthMsg('配对码不对，检查一下电脑上 Lamplit 的「设置 → 配对」。');
     } else if (err.code === 'PAIR_RATE_LIMITED' || err.status === 429) {
       setAuthMsg('试得太多次了，等一分钟再试。');
     } else if (err.status === 404) {
@@ -6175,7 +6245,7 @@ function showFatal(err) {
   $('app').classList.remove('is-hidden');
   messagesEl.innerHTML = '';
   const wrap = el('div', 'empty');
-  wrap.appendChild(el('h2', null, '连不上留灯'));
+  wrap.appendChild(el('h2', null, '连不上 Lamplit'));
   wrap.appendChild(el('p', null, err && err.message ? err.message : '服务没有响应。'));
   const retry = el('button', 'btn primary', '重试');
   retry.addEventListener('click', () => location.reload());
@@ -6222,7 +6292,7 @@ function updateModelUi() {
   // about block
   const st = state.settings || {};
   const app = st.app || {};
-  $('about-app').textContent = '留灯 Lamplit';
+  $('about-app').textContent = 'Lamplit';
   $('about-version').textContent = app.version || (state.config && state.config.version) || '—';
   const server = st.server || {};
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
@@ -7278,7 +7348,7 @@ async function loadCliAgents(refresh = false) {
   const box = $('cliagents-list');
   if (!box) return;
   let data;
-  try { data = await api(`/api/cliagents${refresh ? '?refresh=1' : ''}`); } catch { box.textContent = '这台机器的留灯版本太旧，还不支持。'; return; }
+  try { data = await api(`/api/cliagents${refresh ? '?refresh=1' : ''}`); } catch { box.textContent = '这台机器的 Lamplit 版本太旧，还不支持。'; return; }
   box.innerHTML = '';
   for (const a of data.agents || []) {
     const row = document.createElement('div');
@@ -7510,7 +7580,7 @@ async function toggleVoice() {
     return;
   }
   const micError = (name, message = '') => toast(
-    name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许留灯使用麦克风'
+    name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许 Lamplit 使用麦克风'
       : name === 'NotFoundError' ? '没找到麦克风' : `打不开麦克风：${message || name}`, true);
   // Desktop app on a plain-http machine: the app records for the page.
   if ((!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) && window.desk?.voiceStart) {
@@ -7906,7 +7976,7 @@ const TOOL_TEXT = {
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
   machine_switch: { label: '把任务交给另一台机器', title: '想切到另一台机器，把任务交给那里的助理', impact: '窗口会切到那台机器，那里的助理接着做。' },
   machine_list: { label: '查看机器', title: '想看看有哪些机器', impact: '只读取名单。' },
-  fs_delete: { label: '删除文件', title: '想删除一个文件或文件夹', impact: '删掉之后，留灯里没有撤销按钮。' },
+  fs_delete: { label: '删除文件', title: '想删除一个文件或文件夹', impact: '删掉之后，Lamplit 里没有撤销按钮。' },
   fs_mkdir: { label: '新建文件夹', title: '想新建一个文件夹', impact: '只会在工作区里加一个目录，不改动已有文件。' },
   fs_read: { label: '读取文件', title: '想读取一个文件', impact: '只会读取内容，不会改动它。' },
   fs_list: { label: '查看目录', title: '想看看目录里有什么', impact: '只会读取文件名，不会改动任何东西。' },
@@ -8804,26 +8874,20 @@ function buildApprovalCard(data) {
     return card;
   }
 
+  // One row of buttons (批准 / 拒绝 / 看详情), the optional note under it.
+  // 批准 only approves this one step; 拒绝 tells the bot no.
+  card.classList.add('pending');
   const actions = el('div', 'approval-actions');
-  const choose = el('div', 'approval-choose');
+  const choose = el('div', 'approval-buttons');
 
-  const allow = el('button', 'choice');
+  const allow = el('button', 'btn primary approval-allow', '批准');
   allow.type = 'button';
-  allow.appendChild(el('span', 'choice-key', 'A'));
-  const allowBody = el('span', 'choice-body');
-  allowBody.appendChild(el('span', 'choice-title', '允许这一次'));
-  allowBody.appendChild(el('span', 'choice-desc', '只批准这一步，做完就结束'));
-  allow.appendChild(allowBody);
-  allow.appendChild(el('span', 'choice-go', '›'));
-
-  const reject = el('button', 'choice');
+  allow.title = '只批准这一步，做完就结束';
+  const reject = el('button', 'btn approval-reject', '拒绝');
   reject.type = 'button';
-  reject.appendChild(el('span', 'choice-key', 'B'));
-  const rejectBody = el('span', 'choice-body');
-  rejectBody.appendChild(el('span', 'choice-title', '拒绝'));
-  rejectBody.appendChild(el('span', 'choice-desc', '不执行，把「不行」告诉它'));
-  reject.appendChild(rejectBody);
-  reject.appendChild(el('span', 'choice-go', '›'));
+  reject.title = '不执行，把「不行」告诉它';
+  const more = el('button', 'btn approval-more', '看详情');
+  more.type = 'button';
 
   const note = el('input', 'field approval-note');
   note.placeholder = '想补一句话？（可选）';
@@ -8834,10 +8898,17 @@ function buildApprovalCard(data) {
 
   choose.appendChild(allow);
   choose.appendChild(reject);
+  choose.appendChild(more);
   actions.appendChild(choose);
   actions.appendChild(note);
   card.appendChild(actions);
   appendTechnicalDetails(card, data);
+  const tech = card.querySelector('.approval-tech');
+  more.addEventListener('click', () => {
+    tech.open = !tech.open;
+    more.textContent = tech.open ? '收起详情' : '看详情';
+    if (tech.open) tech.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
   return card;
 }
 
@@ -8857,6 +8928,7 @@ function settleApprovalCard(card, decision, note) {
   if (!card) return;
   hideToast(); // "waiting for you" is no longer true the moment you answer
   card.classList.add('resolved');
+  card.classList.remove('pending');
   const top = card.querySelector('.approval-top');
   if (top && top.firstChild) top.firstChild.textContent = '已处理';
   const wait = card.querySelector('.approval-wait');
@@ -9718,7 +9790,7 @@ function renderPairing() {
       ? '电脑上显示一个二维码，手机扫一下就进去了。'
       : (deskCanRebind
         ? '先打开上面的「允许手机连接」，再点这里出二维码。'
-        : '这台机器现在只监听本机，手机连不进来。在跑留灯的那台电脑上打开「允许手机连接」。');
+        : '这台机器现在只监听本机，手机连不进来。在跑 Lamplit 的那台电脑上打开「允许手机连接」。');
   }
 
   $('pair-url').textContent = url || location.origin;
@@ -9731,7 +9803,7 @@ function renderPairing() {
       ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
       : (s.server && s.server.lanUrl)
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
-        : '这是本机的留灯，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
+        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
   }
   // A public address: say the connection is not encrypted.
   try {
@@ -9798,7 +9870,7 @@ function drawQr(url, note = '') {
     const qr = window.qrcode(0, 'M');
     qr.addData(url);
     qr.make();
-    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接留灯' });
+    box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接 Lamplit' });
   } catch (err) {
     box.innerHTML = '';
     const hint = document.createElement('div');
@@ -9867,7 +9939,7 @@ function showQrError(err) {
   const code = err && err.code;
   let text = (err && err.message) || '生成二维码失败';
   if (code === 'REMOTE_DISABLED') {
-    text = '这台电脑的留灯现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
+    text = '这台电脑的 Lamplit 现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
   }
   box.textContent = text;
   if (code === 'REMOTE_DISABLED' && window.desk?.setRemote) {
@@ -9907,7 +9979,7 @@ async function requestPairLink(preferredKind = '') {
       // One code with every address: the phone app picks LAN when it is on the
       // same network and Tailscale when it is not - nothing to choose here.
       if ($('pair-tabs')) $('pair-tabs').hidden = true;
-      drawQr(made.qr, '手机扫这个码连接留灯');
+      drawQr(made.qr, '手机扫这个码连接 Lamplit');
       $('qr-url').textContent = made.qr;
       $('qr-copy').disabled = false;
       $('qr-iphone').hidden = false;
@@ -10303,7 +10375,7 @@ function setConnected(ok) {
   state.conn.offline = true;
   if (banner) {
     $('conn-text').textContent = onLocalMachine()
-      ? '连不上本机的留灯服务，正在重连…'
+      ? '连不上本机的 Lamplit 服务，正在重连…'
       : `连不上「${machineDisplayName()}」，正在重连…（那台机器可能关机、断网或在重启）`;
     $('conn-local').hidden = onLocalMachine() || !window.desk?.useLocal;
     banner.hidden = false;
@@ -10760,7 +10832,7 @@ async function loadMcp() {
   try {
     [data, cat] = await Promise.all([api('/api/mcp'), api('/api/mcp/catalog')]);
   } catch {
-    if ($('mcp-catalog')) $('mcp-catalog').textContent = '这台机器的留灯版本太旧，还不支持连接应用。';
+    if ($('mcp-catalog')) $('mcp-catalog').textContent = '这台机器的 Lamplit 版本太旧，还不支持连接应用。';
     return;
   }
   mcpUi.servers = data.servers || [];
@@ -11456,11 +11528,11 @@ function renderPolicy(policy) {
    folder stay there. */
 async function changeWorkspace(current, platform) {
   let info = null;
-  try { info = await api('/api/workspace'); } catch { toast('这台机器的留灯版本太旧，还不能换工作区', true); return; }
-  const hint = platform === 'win32' ? '比如 D:\\留灯工作区' : '比如 /home/me/workspace';
+  try { info = await api('/api/workspace'); } catch { toast('这台机器的 Lamplit 版本太旧，还不能换工作区', true); return; }
+  const hint = platform === 'win32' ? '比如 D:\\Lamplit 工作区' : '比如 /home/me/workspace';
   const answer = await askText({
     title: '更改工作区位置',
-    text: `填一个文件夹的完整路径（${hint}）。所有机器人都能在这里读写，别选放着重要资料的文件夹；原来工作区里的文件不会自动搬过去；换完留灯会重启几秒钟。留空 = 回到默认位置（${info.defaultPath}）。`,
+    text: `填一个文件夹的完整路径（${hint}）。所有机器人都能在这里读写，别选放着重要资料的文件夹；原来工作区里的文件不会自动搬过去；换完 Lamplit 会重启几秒钟。留空 = 回到默认位置（${info.defaultPath}）。`,
     value: current,
     placeholder: hint,
     confirmLabel: '更改并重启',
@@ -11471,7 +11543,7 @@ async function changeWorkspace(current, platform) {
   try {
     const r = await api('/api/workspace', { method: 'PUT', body: { path: next } });
     if (!r.restarting) { toast('工作区没有变化'); return; }
-    toast(`工作区改到 ${r.path}，留灯正在重启…`);
+    toast(`工作区改到 ${r.path}，Lamplit 正在重启…`);
     setTimeout(() => location.reload(), 6000);
   } catch (err) {
     toast(`换工作区失败：${err.message}`, true);
@@ -12391,7 +12463,7 @@ function renderMachinesList() {
     // and can hand out a one-time link into any of them.
     box.innerHTML = '<div class="machine-empty">正在读取机器列表…</div>';
     renderBrowserMachines().catch(() => {
-      box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。这台机器离线时读不到机器列表；添加机器请在留灯客户端里操作。</div>`;
+      box.innerHTML = `<div class="machine-empty">当前：${escapeHtml(machineDisplayName())}。这台机器离线时读不到机器列表；添加机器请在 Lamplit 客户端里操作。</div>`;
     });
     return;
   }
@@ -12445,7 +12517,7 @@ async function renderBrowserMachines() {
     </div>`;
   const rows = machines.map(row);
   if (!others.length) {
-    rows.push('<div class="machine-empty">还没有别的机器。在留灯客户端里「添加机器」，它们就会出现在这里。</div>');
+    rows.push('<div class="machine-empty">还没有别的机器。在 Lamplit 客户端里「添加机器」，它们就会出现在这里。</div>');
   }
   if (mine && !mine.url) {
     rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
@@ -12602,8 +12674,8 @@ async function checkBusy() {
   if (busyWatch.dismissed) return;
   const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
   $('busy-text').textContent = l.why === 'memory'
-    ? `这台机器内存快用完了（只剩 ${gb(l.memFreeMB)} / ${gb(l.memTotalMB)}），留灯会变慢。可以关掉不用的程序，或给它加内存。`
-    : `这台机器很忙：CPU 已经满负荷一分多钟（${l.cores} 核，${l.cpu}%），留灯会变慢。常见原因是系统更新或杀毒扫描；虚拟机建议至少 2 核、4 GB 内存。`;
+    ? `这台机器内存快用完了（只剩 ${gb(l.memFreeMB)} / ${gb(l.memTotalMB)}），Lamplit 会变慢。可以关掉不用的程序，或给它加内存。`
+    : `这台机器很忙：CPU 已经满负荷一分多钟（${l.cores} 核，${l.cpu}%），Lamplit 会变慢。常见原因是系统更新或杀毒扫描；虚拟机建议至少 2 核、4 GB 内存。`;
   banner.hidden = false;
 }
 
@@ -13116,7 +13188,7 @@ async function provisionApi(path, options = {}) {
   if (!window.desk?.localProvision || machineBridge?.local) return api(path, options);
   const res = await window.desk.localProvision({ method: options.method || 'GET', path, body: options.body });
   if (res.status >= 200 && res.status < 300) return res.json;
-  const err = new Error(res.json?.error?.message || (res.status ? `HTTP ${res.status}` : '连不上本机的留灯服务'));
+  const err = new Error(res.json?.error?.message || (res.status ? `HTTP ${res.status}` : '连不上本机的 Lamplit 服务'));
   err.status = res.status;
   throw err;
 }

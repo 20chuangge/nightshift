@@ -1,4 +1,4 @@
-// 留灯 · Lamplit site: theme switch, newest downloads, gentle reveal, docs contents.
+// Lamplit site: theme switch, newest downloads, gentle reveal, docs contents.
 (() => {
   const root = document.documentElement;
   const KEY = 'evenlight.theme';
@@ -13,7 +13,7 @@
   // Installers were named Nightshift-* before 1.2.146 and Evenlight-* until 1.2.149.
   (async () => {
     try {
-      const res = await fetch('https://api.github.com/repos/20chuangge/nightshift/releases/latest', { headers: { accept: 'application/vnd.github+json' } });
+      const res = await fetch('https://api.github.com/repos/20chuangge/lamplit/releases/latest', { headers: { accept: 'application/vnd.github+json' } });
       if (!res.ok) return;
       const rel = await res.json();
       const find = (re) => (rel.assets || []).find((a) => re.test(a.name));
