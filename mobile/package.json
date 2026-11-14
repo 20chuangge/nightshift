@@ -1,9 +1,9 @@
 {
   "name": "desk-mobile",
-  "version": "1.2.149",
+  "version": "1.2.150",
   "private": true,
   "type": "module",
-  "description": "Evenlight (长明) mobile shell (Capacitor): connects to an Evenlight hub on your LAN and shows its web UI.",
+  "description": "Lamplit (留灯) mobile shell (Capacitor): connects to an Lamplit hub on your LAN and shows its web UI.",
   "engines": {
     "node": ">=20"
   },

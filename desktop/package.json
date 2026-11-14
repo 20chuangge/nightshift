@@ -1,13 +1,13 @@
 {
   "name": "desk-desktop",
-  "productName": "Evenlight",
-  "version": "1.2.149",
-  "description": "Evenlight - AI bots that put your idle computers to work",
+  "productName": "Lamplit",
+  "version": "1.2.150",
+  "description": "Lamplit - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
   "type": "module",
   "author": {
-    "name": "Evenlight"
+    "name": "Lamplit"
   },
   "license": "MIT",
   "scripts": {
