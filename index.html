@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>长明 Evenlight</title>
-<meta name="description" content="长明是一个有自己电脑的 AI 助理：说一句要做什么，它在你的电脑、闲置的旧电脑或云主机上把事情办完，要你点头的事先问你。开源免费，模型用你自己的。" />
-<meta name="theme-color" content="#0B0C10" />
+<title>留灯 Lamplit</title>
+<meta name="description" content="留灯是一个有自己电脑的 AI 助理：说一句要做什么，它在你的电脑、闲置的旧电脑或云主机上把事情办完，要你点头的事先问你。开源免费，模型用你自己的。" />
+<meta name="theme-color" content="#0A0A0A" />
 <link rel="icon" href="icon.svg" type="image/svg+xml" />
-<meta property="og:title" content="长明 Evenlight" />
+<meta property="og:title" content="留灯 Lamplit" />
 <meta property="og:description" content="你休息时，灯还亮着。一个有自己电脑的 AI 助理。" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,7 +18,7 @@
 
 <header class="top">
   <div class="wrap bar">
-    <a class="brand" href="./"><img src="icon.svg" alt="" width="26" height="26" /><span>长明</span><span class="en">Evenlight</span></a>
+    <a class="brand" href="./"><img src="icon.svg" alt="" width="26" height="26" /><span>留灯</span><span class="en">Lamplit</span></a>
     <nav>
       <a class="hide-sm" href="#what">能做什么</a>
       <a class="hide-sm" href="#safe">安全</a>
@@ -34,7 +34,7 @@
   <section class="hero">
     <div class="glow" aria-hidden="true"></div>
     <div class="wrap">
-      <p class="kicker">长明 · Evenlight</p>
+      <p class="kicker">留灯 · Lamplit</p>
       <h1>你休息时，<br class="br-sm" /><em>灯还亮着。</em></h1>
       <p class="lead">一个有自己电脑的 AI 助理。说一句要做什么，它就在你的电脑、家里闲置的旧电脑或云主机上把事情办完；要你点头的事，它先问你。</p>
       <div class="cta">
@@ -47,9 +47,9 @@
       </div>
       <p class="meta"><span id="dl-size">Windows 10 / 11 · 64 位</span><i></i>Android<i></i>开源免费 · MIT</p>
 
-      <div class="stage" aria-label="长明的对话界面示意（演示内容）">
+      <div class="stage" aria-label="留灯的对话界面示意（演示内容）">
         <div class="win">
-          <div class="win-bar"><span></span><span></span><span></span><b>长明 · 本机</b></div>
+          <div class="win-bar"><span></span><span></span><span></span><b>留灯 · 本机</b></div>
           <div class="win-body">
             <aside class="win-side">
               <div class="who on"><i class="av a1"></i><div><b>助理</b><small>正在整理下载目录</small></div></div>
@@ -147,11 +147,11 @@
   <section id="faq" class="faq">
     <div class="wrap narrow">
       <h2>常见问题</h2>
-      <details><summary>要钱吗？</summary><p>长明本身开源免费。花钱的只有你自己接的模型服务（按用量计费，DeepSeek 日常使用每月几块到几十块），以及可选的生图、生视频服务。</p></details>
-      <details><summary>能用我的 Claude / ChatGPT 订阅吗？</summary><p>写代码可以：把活交给这台电脑上已登录的 Claude Code、Codex、Cursor 或 Qoder，用的就是你的订阅额度。日常对话用的是你填的模型密钥——订阅账号不允许被第三方软件当接口调用，长明也不读取任何订阅的登录信息。</p></details>
-      <details><summary>我的数据会传到哪里？</summary><p>长明运行在你自己的电脑和机器上，没有我们的服务器。对话发给你自己选的模型服务商；密码和授权码存在本机加密的保险箱里，不会发给模型。</p></details>
+      <details><summary>要钱吗？</summary><p>留灯本身开源免费。花钱的只有你自己接的模型服务（按用量计费，DeepSeek 日常使用每月几块到几十块），以及可选的生图、生视频服务。</p></details>
+      <details><summary>能用我的 Claude / ChatGPT 订阅吗？</summary><p>写代码可以：把活交给这台电脑上已登录的 Claude Code、Codex、Cursor 或 Qoder，用的就是你的订阅额度。日常对话用的是你填的模型密钥——订阅账号不允许被第三方软件当接口调用，留灯也不读取任何订阅的登录信息。</p></details>
+      <details><summary>我的数据会传到哪里？</summary><p>留灯运行在你自己的电脑和机器上，没有我们的服务器。对话发给你自己选的模型服务商；密码和授权码存在本机加密的保险箱里，不会发给模型。</p></details>
       <details><summary>它会不会乱动我的电脑？</summary><p>删除文件、执行命令、发消息这类操作默认先问你；它只能碰工作区和你开放的文件夹；格式化、删系统这类危险命令永远拦下。这些都能在「设置 → 权限」里调。</p></details>
-      <details><summary>升级会丢数据吗？以前叫「夜班」的版本呢？</summary><p>不会。直接安装新版即可，助手、记忆、设置都保留；已添加的远程机器会自动更新。长明在 1.2.146 之前叫 Nightshift · 夜班，数据在同一个位置，直接覆盖安装就行。</p></details>
+      <details><summary>升级会丢数据吗？以前叫「长明」「夜班」的版本呢？</summary><p>不会。直接安装新版即可，助手、记忆、设置都保留；已添加的远程机器会自动更新。留灯以前叫「长明 · Evenlight」（1.2.146–1.2.149），更早叫 Nightshift · 夜班，数据都在同一个位置，直接覆盖安装就行。</p></details>
       <details><summary>支持 Mac 吗？</summary><p>电脑端目前只有 Windows；Linux 机器可以作为远程机器接入干活。手机端有安卓 App，iPhone 可以用浏览器打开电脑上的地址。</p></details>
     </div>
   </section>
@@ -159,14 +159,14 @@
 
 <footer>
   <div class="wrap foot">
-    <a class="brand" href="./"><img src="icon.svg" alt="" width="20" height="20" /><span>长明</span><span class="en">Evenlight</span></a>
+    <a class="brand" href="./"><img src="icon.svg" alt="" width="20" height="20" /><span>留灯</span><span class="en">Lamplit</span></a>
     <nav>
       <a href="docs.html">文档</a>
       <a href="https://github.com/20chuangge/nightshift">GitHub</a>
       <a href="https://github.com/20chuangge/nightshift/releases">更新说明</a>
       <a href="https://github.com/20chuangge/nightshift/blob/main/LICENSE">MIT 许可证</a>
     </nav>
-    <span class="was">原名 Nightshift · 夜班</span>
+    <span class="was">曾用名 长明 Evenlight、Nightshift 夜班</span>
   </div>
 </footer>
 
